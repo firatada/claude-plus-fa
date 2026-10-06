@@ -80,8 +80,17 @@ The installer:
 
 ## Uninstall
 
-- Remove the claude-plus hooks and the `statusLine` entry from `~/.claude/settings.json`, or restore the backup the installer created.
-- Delete `~/.claude/statusline.py`, the three claude-plus scripts in `~/.claude/hooks`, and `~/.local/bin/glm.cmd`.
+From inside the claude-plus folder, run:
+
+```
+.\uninstall.cmd
+```
+
+- It removes the claude-plus hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
+- It deletes the installed scripts, `glm.cmd` and the state files claude-plus keeps.
+- Your own hooks and your own status line are left untouched.
+- Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them.
+- Restart any open Claude Code session afterwards.
 
 ## Limits
 
@@ -99,6 +108,7 @@ The installer:
 | `glm-fallback.py` | Shows the free-model switch dialog when the usage limit is reached |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
 | `install.cmd`, `install.py` | The installer |
+| `uninstall.cmd`, `uninstall.py` | Removes claude-plus in one step |
 
 ## License
 
