@@ -28,9 +28,9 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - As a result, nothing learned during the session is lost when the conversation is compacted.
 
 **After compaction**
-- Once the conversation has been compacted, Claude **automatically** reads `handoff.md` and `memory.md` back before continuing.
-- The same happens when you open a new session in a project that has a `handoff.md`.
-- It reads the `.md` files and then informs you about it.
+- Right after the conversation has been compacted, Claude **automatically** reads `handoff.md` and `memory.md` back, so it continues from the full record instead of the short summary alone.
+- Once it has read them, it tells you which `.md` files it read, so you always know what the session is working from.
+- The same read-back also takes place when you start a new session in a project that has a `handoff.md`.
 
 **Auto Switch to Free Models When Claude Tokens End**
 - When your Claude usage limit runs out, a dialog offers to carry on with a **free** model, GLM by [z.ai](https://z.ai).
