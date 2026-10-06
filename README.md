@@ -19,8 +19,12 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows.
 - No more scrolling up to find what you asked.
 
 **Context guard**
-- At 90 % context, Claude writes everything down before auto-compaction.
-- It commits finished work, updates `memory.md` and writes `handoff.md`.
+- The status line lets you watch the context; claude-plus also tracks it for you.
+- At 90 %, before auto-compaction, Claude automatically updates the project's docs:
+  - commits the finished work;
+  - updates `memory.md` (state, decisions and why);
+  - writes `handoff.md` (the exact next step).
+- Nothing learned in the session is lost to compaction.
 
 **After compaction**
 - Claude reads `handoff.md` and `memory.md` back.
