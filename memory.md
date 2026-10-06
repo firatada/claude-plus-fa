@@ -1,0 +1,42 @@
+# claude-plus — memory
+
+## Files and where they install
+| Source | Installed to | Job |
+|---|---|---|
+| `glm.cmd` | `~/.local/bin` (on the user PATH) | runs `claude` against `https://api.z.ai/api/anthropic`, main model `glm-4.7-flash`, small model `glm-4.5-flash`. Shares `~/.claude`, so `glm --resume` sees every session |
+| `glm-fallback.py` | `~/.claude/hooks` | `StopFailure` hook, matcher `rate_limit`. Silent unless the key file holds a real `CLAUDEX_KEY` (not empty, not the placeholder): without one, Yes would only send the conversation to z.ai to be refused. Shows a Yes/No dialog; on Yes opens `cmd /k glm --resume <sid> [--dangerously-skip-permissions] "<continue prompt>"` in the session's cwd |
+| `statusline.py` | `~/.claude` | `statusLine` command: model · `ctx` bar · `5h` bar + reset time · `week` bar + reset day/time. Bars green < 50 %, yellow < 80 %, red above. `5h`/`week` come from `rate_limits`, which only a claude.ai subscription sends, so GLM sessions show `ctx` alone |
+| `prompt-recall.py` | `~/.claude/hooks` | `UserPromptSubmit` hook: writes the prompt to `~/.claude/state/context/<session_id>.prompt.json` (`{"prompt", "at"}`) and prints nothing, because a UserPromptSubmit hook's stdout is added to Claude's context. `statusline.py` shows it on a second line as `› HH:MM  <prompt>`, whitespace collapsed, cut to the console width (read from `CONOUT$`, since Claude Code passes no width and stdout is a pipe; 120 if that fails) |
+| `context-guard.py` | `~/.claude/hooks` | one script, four modes: `stop` (Stop: at ≥ 90 % context, once per climb, exit 2 with the documentation steps; re-arms when usage falls under 50 %), `precompact` (PreCompact: stdout becomes extra compaction instructions), `resumed` (SessionStart matcher `compact`: tells Claude to read `handoff.md` and `memory.md` when present, then run the resume steps; the same session continues, so this is where the 90 % documents get read back), `started` (SessionStart matcher `startup|clear`: if the cwd has `handoff.md`, tells Claude its date and to read it and `memory.md` first; silent otherwise; `--resume` needs nothing because the conversation comes back). `resumed` and `started` answer in JSON: `systemMessage` tells the user which files will be read (or, after compaction, that no handoff.md was found), `additionalContext` tells Claude to read them and then name the files it read in one line |
+| `install.py` / `install.cmd` | — | copies the files, adds `~/.local/bin` to the user PATH if missing, registers the hook in `~/.claude/settings.json` (backup `settings.json.before-claude-plus`), sets `statusLine` only if none exists or it is already ours, creates the key file with a placeholder and opens Notepad if the key is missing |
+
+Public and personal behaviour (2026-10-06): one code base, published as `firatada-ctrl/claude-plus` under MIT. `context-guard.py` carries built-in steps (`WARN_STEPS`, `RESUME_STEPS`) in its `stop` and `resumed` messages. `~/.claude/claude-plus.local.json` with `{"rule": "<where your steps live>"}` replaces them with "run the ... steps in <rule>"; a missing, unreadable or non-object file falls back to the built-in steps. The installer never writes that file. The maintainer's copy points at the global CLAUDE.md, section "Never let unwritten knowledge accumulate", which holds a richer procedure (mindmap page, rules to propose). Two branches or two repos were rejected: every fix would have to be carried twice and the copies drift.
+
+Key file: `~/.claudex/profiles/glm/.env`, line `CLAUDEX_KEY="..."`. Never in this repo. The path is claudex's, so `claudex validate glm` works on it; glm.cmd itself does not need claudex.
+
+## Behaviour
+- Hook timeout is 3600 s because the dialog waits inside the hook. A detached child would be simpler but was killed when its parent ended in testing.
+- Guard: if `ANTHROPIC_BASE_URL` is set the hook does nothing, so a GLM session hitting its own limit never relaunches itself.
+- `--dangerously-skip-permissions` is added when the hook input's `permission_mode` is `bypassPermissions`, or when the field is missing.
+- Hooks load at session start: open sessions need a restart after install. `statusLine` does not: open sessions picked it up live.
+- Context state: `statusline.py` writes `~/.claude/state/context/<session_id>.json` (`{"used_percentage": n}`) on every refresh; `context-guard.py stop` reads it and keeps a `<session_id>.warned` flag. Without our status line the guard stays silent. The figure lags by one message.
+- 90 % was chosen because auto-compaction fired at 966–979K tokens of a 1M window (15 of 15 past compactions, about 96.7 %); 95 % left too little room for the documentation pass.
+- Status line input fields used: `model.display_name`, `context_window.used_percentage` (null before the first reply), `rate_limits.five_hour|seven_day.used_percentage` and `.resets_at` (epoch seconds).
+
+## Tested (2026-10-01)
+- Claude session resumed on GLM with history intact.
+- Dialog Yes opens the window with the right command; No does nothing.
+- Install into an empty fake profile, run twice: one hook entry, other settings untouched; real install leaves settings.json unchanged when already installed.
+- Status line seen live in a real session: `Opus 5.5 · ctx 58% · 5h 38% 02:40 · week 42% Tue 07:00`; an existing foreign `statusLine` is left alone by the installer.
+- Context guard (2026-10-02): simulated climb 85 → 91 (warns) → 93 (silent) → 3 (re-arms) → 92 (warns again); `stop_hook_active` and missing state stay silent. A live session wrote its state file. End to end with `glm -p --session-id` and a preset 95 % state: Claude Code fed the Stop warning to the model, which started the steps; `/compact` on the same session ran the PreCompact instructions and the SessionStart `compact` message (both visible in the transcript). NOT yet seen on a real 90 % climb.
+- `handoff.md` is looked up from the hook's `cwd` upwards, stopping at the git root: sessions drift into subfolders (a client project sat in `site\` and `web\`), and a cwd-only lookup missed the project's handoff there. Verified on the real client-project folder from its root and from `site\`.
+- Startup message (2026-10-02): silent without handoff.md; names the date and the files when present; reached the model in a real `glm -p` session (GLM-4.7-Flash then ignored it, a model weakness, not a hook failure). Installer keeps `resumed` and `started` as separate SessionStart entries.
+- File announcement (2026-10-05): `claude -p` in a temp folder with handoff.md + memory.md: the startup hook's JSON reached Claude Code (`hook_response`), Claude read both files and opened with "Read handoff.md and memory.md from …". `/compact` on a resumed session: the `compact` hook's JSON arrived and the next reply named handoff.md by full path. Haiku named the file without a visible Read call in that second reply, so the one-line report is the model's word, not proof of a read. How `systemMessage` looks in the interactive terminal was not seen (`-p` does not draw it). Testing `/compact` from Git Bash needs `MSYS_NO_PATHCONV=1`, otherwise `/compact` arrives as a Windows path.
+- Prompt recall (2026-10-06): Claude Code 2.1.287 splits the status line's stdout into lines and drops empty ones, so a second line shows (checked in the binary, `sGn`); `UserPromptSubmit` input carries the text as `prompt`. A real `claude -p` session wrote the prompt file; the hook's stdout stayed empty. The second line in a live terminal not yet seen; it appears after the first prompt of a session started after install.
+- NOT yet seen on a real usage-limit hit.
+
+## Limits
+- Windows only (MessageBoxW, cmd).
+- A short 429 that ends a turn also triggers the dialog.
+- The old window stays open; close it yourself.
+- Every project can fall back, so sensitive code can go to z.ai if you click Yes.
