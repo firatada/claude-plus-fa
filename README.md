@@ -93,8 +93,6 @@ Open the claude-plus folder and double-click `uninstall.cmd`. If you prefer the 
 ## Limits
 
 - claude-plus runs on Windows only.
-- A brief rate-limit error can occasionally open the free-model switch dialog as well.
-- After switching, the original window stays open, so you may want to close it yourself.
 
 ## Files
 
