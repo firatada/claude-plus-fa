@@ -37,7 +37,6 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - Choosing Yes resumes the very same session, with its full conversation, in a new window.
 - **The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, are free on z.ai.**
 - The switch requires a free z.ai API key; without one, the dialog never appears.
-- **Please note that choosing Yes sends the session's code and conversation to z.ai**, which is a third party.
 
 **Get your free z.ai API key**
 1. Create an account at [z.ai](https://z.ai).
