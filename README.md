@@ -15,7 +15,7 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows.
 - Usage bars need a claude.ai subscription.
 
 **Last prompt**
-- Your last prompt, on the second line.
+- You will be able to see your last prompt here, on the second line.
 - No more scrolling up to find what you asked.
 
 **Context guard**
