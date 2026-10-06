@@ -1,5 +1,5 @@
 # Claude Code status line: model, context used, 5-hour session and weekly usage, and
-# on a second line the last prompt of this session (written by prompt-recall.py).
+# below it the last prompt of this session in full, up to PROMPT_LINES lines (written by prompt-recall.py).
 # Claude Code pipes a JSON object on stdin and shows every non-empty line printed.
 # rate_limits only exists for a claude.ai subscription, so a GLM session shows
 # the context bar alone.
@@ -7,7 +7,7 @@
 # Part of claude-plus. Edit the copy in the claude-plus folder and rerun install.cmd.
 #
 # It also records the context figure per session for context-guard.py.
-import json, os, shutil, sys, time
+import json, os, shutil, sys, textwrap, time
 
 sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 
@@ -56,8 +56,12 @@ def columns():
         return shutil.get_terminal_size((120, 20)).columns
 
 
+PROMPT_LINES = 12  # a pasted wall of text must not push the prompt off the screen
+
+
 def last_prompt(sid):
-    """'> 14:32  what you last asked', cut to one terminal line, or None."""
+    """'> 14:32  what you last asked', wrapped to the terminal width and shown in full up to
+    PROMPT_LINES lines, as a list of lines, or []."""
     try:
         with open(os.path.join(os.path.expanduser("~"), ".claude", "state", "context",
                                sid + ".prompt.json"), encoding="utf-8") as f:
@@ -65,12 +69,15 @@ def last_prompt(sid):
         text = " ".join(saved["prompt"].split())
         stamp = time.strftime("%H:%M", time.localtime(float(saved["at"])))
     except (OSError, ValueError, KeyError, TypeError):
-        return None
+        return []
     lead = "› %s  " % stamp
-    room = max(20, columns() - len(lead) - 4)
-    if len(text) > room:
-        text = text[:room - 1].rstrip() + "…"
-    return DIM + lead + RESET + text
+    lines = textwrap.wrap(text, max(20, columns() - len(lead) - 4), break_long_words=True) or [""]
+    if len(lines) > PROMPT_LINES:
+        lines = lines[:PROMPT_LINES]
+        lines[-1] = lines[-1][:-1].rstrip() + "…"
+    # Claude Code trims every line, so the continuation indent hides behind a colour code
+    indent = DIM + " " * len(lead) + RESET
+    return [DIM + lead + RESET + lines[0]] + [indent + l for l in lines[1:]]
 
 
 data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
@@ -88,6 +95,5 @@ if "seven_day" in limits:
     parts.append(bar("week", w.get("used_percentage"), resets(w.get("resets_at"), "%a %H:%M")))
 
 print("  ·  ".join(parts))
-recalled = last_prompt(data.get("session_id") or "")
-if recalled:
-    print(recalled)
+for line in last_prompt(data.get("session_id") or ""):
+    print(line)

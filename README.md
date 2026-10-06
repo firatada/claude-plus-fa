@@ -14,7 +14,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - Each bar changes colour as it fills: green below 50 %, yellow below 80 %, and red above that.
 
 **Last prompt**
-- You will be able to see your last prompt here, on the second line.
+- You will be able to see your last prompt here, on the second line, in full: a long prompt wraps over as many lines as it needs, up to 12.
 - There is no need to scroll back through a long answer to recall what you asked.
 
 **Context Tracker**
