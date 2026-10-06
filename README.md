@@ -7,7 +7,7 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows.
 
 ## What you get
 
-![The claude-plus status line: model, context, 5-hour and weekly usage, and the last prompt](docs/status-line.png)
+![The claude-plus status line: model, context, 5-hour and weekly usage, and the last prompt](docs/status-line-v2.png)
 
 **Status line**
 - Model, context used, 5-hour and weekly usage, with reset times.
