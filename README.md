@@ -30,7 +30,7 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows.
 **After compaction**
 - **Automatically**, Claude reads `handoff.md` and `memory.md` back.
 - The same happens when a new session opens in a project with a `handoff.md`.
-- It tells you which files it read.
+- It reads the `.md` files and then informs you about it.
 
 **Auto Switch to Free Models When Claude Tokens End**
 - When your Claude usage limit runs out, a dialog offers to continue on a **free** model: GLM by [z.ai](https://z.ai).
