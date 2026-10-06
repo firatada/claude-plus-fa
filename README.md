@@ -12,13 +12,12 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows.
 **Status line**
 - Model, context used, 5-hour and weekly usage, with reset times.
 - Green under 50 %, yellow under 80 %, red above.
-- Usage bars need a claude.ai subscription.
 
 **Last prompt**
 - You will be able to see your last prompt here, on the second line.
 - No more scrolling up to find what you asked.
 
-**Context guard**
+**Context Tracker**
 - The status line lets you watch the context; claude-plus also tracks it for you.
 - At 90 %, before auto-compaction, Claude automatically updates the project's docs:
   - commits the finished work;
@@ -34,17 +33,24 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows.
 - In a project with a `handoff.md`, Claude reads it first.
 - No handoff, no message.
 
-**Usage-limit fallback (optional)**
-- When your usage limit runs out, a dialog offers to continue on z.ai's GLM model.
-- Yes resumes the same session in a new window.
-- Needs a z.ai API key. Without one, no dialog.
+**Auto Switch to Free Models When Claude Tokens End**
+- When your Claude usage limit runs out, a dialog offers to continue on a **free** model: GLM by [z.ai](https://z.ai).
+- Yes resumes the same session, with the whole conversation, in a new window.
+- **The models used (GLM-4.7-Flash, GLM-4.5-Flash) are free on z.ai.**
+- Needs a free z.ai API key. Without one, no dialog.
 - **Yes sends the session's code and conversation to z.ai**, a third party.
+
+**Get your free z.ai API key**
+1. Sign up at [z.ai](https://z.ai).
+2. Open [API Keys](https://z.ai/manage-apikey/apikey-list) and create a new key.
+3. Copy the key.
+4. Run `install.cmd`. Notepad opens `~/.claudex/profiles/glm/.env`; replace `PASTE_YOUR_KEY_HERE` with the key and save.
 
 ## Requirements
 
 - Windows 10 or 11
 - [Claude Code](https://code.claude.com) and Python 3.8+ on `PATH`
-- For the fallback: a [z.ai API key](https://z.ai/manage-apikey/apikey-list)
+- For the free-model switch: a free [z.ai API key](https://z.ai/manage-apikey/apikey-list)
 
 ## Install
 
@@ -82,8 +88,8 @@ The installer:
 ## Limits
 
 - Windows only.
-- A short rate-limit error can also open the fallback dialog.
-- After the fallback, close the old window yourself.
+- A short rate-limit error can also open the free-model switch dialog.
+- After the switch, close the old window yourself.
 
 ## Files
 
