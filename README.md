@@ -18,20 +18,19 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows.
 - No more scrolling up to find what you asked.
 
 **Context Tracker**
-- The status line lets you watch the context; claude-plus also tracks it for you.
-- At 90 %, before auto-compaction, Claude automatically updates the project's docs:
+- The status line lets you watch the context; claude-plus also tracks it for you, all the time.
+
+**Auto Save Before /compact, at 90 %**
+- **Automatically**, at 90 % context, before Claude Code's own auto-compaction (about 97 %), Claude:
   - commits the finished work;
   - updates `memory.md` (state, decisions and why);
   - writes `handoff.md` (the exact next step).
 - Nothing learned in the session is lost to compaction.
 
 **After compaction**
-- Claude reads `handoff.md` and `memory.md` back.
+- **Automatically**, Claude reads `handoff.md` and `memory.md` back.
+- The same happens when a new session opens in a project with a `handoff.md`.
 - It tells you which files it read.
-
-**New session**
-- In a project with a `handoff.md`, Claude reads it first.
-- No handoff, no message.
 
 **Auto Switch to Free Models When Claude Tokens End**
 - When your Claude usage limit runs out, a dialog offers to continue on a **free** model: GLM by [z.ai](https://z.ai).
