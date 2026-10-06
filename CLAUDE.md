@@ -16,3 +16,6 @@ Install or reinstall: double-click `install.cmd` (or `python install.py`). Remov
 - [`memory.md`](./memory.md) — what each file does, where it installs, how it was tested, known limits. Read it before any change AND before answering any question about how this works or should work; the code is only the implementation of those rules.
 - [`LICENSE`](./LICENSE) — MIT.
 - Design lessons (maintainer's knowledge base, outside this repo): `claude-code.md` § "Falling back to another provider when the usage limit hits".
+
+## Writing for users
+- **Running a `.cmd` file means double-clicking it.** Wherever a doc or a reply tells the user to run `install.cmd` or `uninstall.cmd`, say to double-click it in the claude-plus folder. The terminal form (`.\install.cmd`) may follow as the alternative; it never leads.

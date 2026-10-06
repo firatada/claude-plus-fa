@@ -42,7 +42,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 1. Create an account at [z.ai](https://z.ai).
 2. Go to the [API Keys](https://z.ai/manage-apikey/apikey-list) page and create a new key.
 3. Copy the key.
-4. Run `install.cmd`. It opens `~/.claudex/profiles/glm/.env` in Notepad; replace `PASTE_YOUR_KEY_HERE` with your key and save the file.
+4. Double-click `install.cmd` in the claude-plus folder. It opens `~/.claudex/profiles/glm/.env` in Notepad; replace `PASTE_YOUR_KEY_HERE` with your key and save the file.
 
 ## Requirements
 
@@ -52,14 +52,16 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 ## Install
 
+1. Download the ZIP from this page (Code, Download ZIP) and extract it.
+2. Open the extracted claude-plus folder and double-click `install.cmd`.
+
+- If you prefer git, clone the repository instead and double-click `install.cmd` in the cloned folder:
+
 ```
 git clone https://github.com/firatada-ctrl/claude-plus
-cd claude-plus
-.\install.cmd
 ```
 
-- If you do not use git, download the ZIP from this page (Code, Download ZIP), extract it and double-click `install.cmd`.
-- To update, run the installer again; it is safe to run as often as you like.
+- To update, double-click `install.cmd` again; it is safe to run as often as you like.
 - Restart any Claude Code session that is already open, since hooks are loaded when a session starts.
 
 The installer:
@@ -80,11 +82,7 @@ The installer:
 
 ## Uninstall
 
-From inside the claude-plus folder, run:
-
-```
-.\uninstall.cmd
-```
+Open the claude-plus folder and double-click `uninstall.cmd`. If you prefer the terminal, run `.\uninstall.cmd` inside that folder instead.
 
 - It removes the claude-plus hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
 - It deletes the installed scripts, `glm.cmd` and the state files claude-plus keeps.
