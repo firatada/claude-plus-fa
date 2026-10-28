@@ -6,7 +6,7 @@
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
-import ctypes, json, os, shutil, subprocess, sys, time, winreg
+import ctypes, json, os, shutil, sys, time, winreg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -105,9 +105,9 @@ def ensure_key():
         os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
         with open(KEY_FILE, "w", encoding="utf-8", newline="\n") as f:
             f.write('# z.ai API key for glm.cmd. DO NOT commit.\nCLAUDEX_KEY="%s"\n' % PLACEHOLDER)
-    print("ACTION  paste your z.ai key (https://z.ai/manage-apikey/apikey-list) into %s, then save"
+    # optional: everything except the GLM switch works without a key, so never push the user into it
+    print("note    optional: for the free GLM switch, put a z.ai key (https://z.ai/manage-apikey/apikey-list) in %s"
           % KEY_FILE)
-    subprocess.Popen(["notepad.exe", KEY_FILE])
     return False
 
 

@@ -45,7 +45,15 @@ It is completely free!
 1. Create an account at [z.ai/model-api](https://z.ai/model-api).
 2. Go to the [API Keys](https://z.ai/manage-apikey/apikey-list) page and create a new key.
 3. Copy the key.
-4. Double-click `install.cmd` in the claude-plus folder. It opens `~/.claudex/profiles/glm/.env` in Notepad; replace `PASTE_YOUR_KEY_HERE` with your key and save the file. Never paste the key into a chat.
+4. Ask Claude Code to open the key file, which the installer created:
+
+```
+Open the claude-plus z.ai key file ~/.claudex/profiles/glm/.env in Notepad.
+```
+
+5. Replace `PASTE_YOUR_KEY_HERE` with your key and save the file. Never paste the key into a chat.
+
+The key is optional: without it, everything else in claude-plus works as usual.
 
 ## Requirements
 
