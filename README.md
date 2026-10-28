@@ -35,14 +35,17 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 **Auto Switch to Free Models When Claude Tokens End**
 - When your Claude usage limit runs out, a dialog offers to carry on with a **free** model, GLM by [z.ai](https://z.ai).
 - Choosing Yes resumes the very same session, with its full conversation, in a new window.
-- **The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, are free on z.ai.**
+- **It is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai.
 - The switch requires a free z.ai API key; without one, the dialog never appears.
 
 **Get your free z.ai API key**
-1. Create an account at [z.ai](https://z.ai).
+
+It is completely free!
+
+1. Create an account at [z.ai/model-api](https://z.ai/model-api).
 2. Go to the [API Keys](https://z.ai/manage-apikey/apikey-list) page and create a new key.
 3. Copy the key.
-4. Double-click `install.cmd` in the claude-plus folder. It opens `~/.claudex/profiles/glm/.env` in Notepad; replace `PASTE_YOUR_KEY_HERE` with your key and save the file.
+4. Double-click `install.cmd` in the claude-plus folder. It opens `~/.claudex/profiles/glm/.env` in Notepad; replace `PASTE_YOUR_KEY_HERE` with your key and save the file. Never paste the key into a chat.
 
 ## Requirements
 
@@ -51,6 +54,14 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - For the free-model switch only: a free [z.ai API key](https://z.ai/manage-apikey/apikey-list)
 
 ## Install
+
+The easiest way is to ask Claude Code:
+
+```
+Install claude-plus from github.com/firatada-ctrl/claude-plus.
+```
+
+By hand instead:
 
 1. Download the ZIP from this page (Code, Download ZIP) and extract it.
 2. Open the extracted claude-plus folder and double-click `install.cmd`.
