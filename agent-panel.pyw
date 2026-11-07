@@ -739,6 +739,8 @@ class Panel:
             c.itemconfigure(box, outline=C["line"], width=1)
             c.configure(cursor="arrow")
 
+        # An open session comes forward on a single click; a closed one opens only on a
+        # double click, so a stray click never starts a session.
         def click(e):
             if not here:
                 self.flash("That folder no longer exists.")
@@ -746,11 +748,16 @@ class Panel:
                 if not focus_session(s):
                     self.flash("Already open, but its window was not found.")
             else:
+                self.flash("Double-click to open it.")
+
+        def double(e):
+            if here and not s["status"]:
                 open_session(s)
                 self.flash("Opening " + s["title"][:40])
         c.tag_bind(tag, "<Enter>", enter)
         c.tag_bind(tag, "<Leave>", leave)
         c.tag_bind(tag, "<Button-1>", click)
+        c.tag_bind(tag, "<Double-Button-1>", double)
         c.tag_bind(tag, "<Button-3>", lambda e: self.menu(e, s))
 
     # ----- right-click menu -----
