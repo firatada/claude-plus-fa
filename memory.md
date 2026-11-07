@@ -53,3 +53,14 @@ Key file: `~/.claudex/profiles/glm/.env`, line `CLAUDEX_KEY="..."`. Never in thi
 - A short 429 that ends a turn also triggers the dialog.
 - The old window stays open; close it yourself.
 - Every project can fall back, so sensitive code can go to z.ai if you click Yes.
+
+## Open questions
+- GitHub repo rename `firatada-ctrl/claude-plus` to `claude-plus-fa`, and the push of everything since 7c1155a: both wait for Fırat (he asked for more revisions first, 2026-11-07).
+- Manrope and Inter for the Agent Panel: offered to bundle them (download from Google Fonts, OFL), not chosen yet; the panel uses Segoe UI.
+- The claude-plus card on firatada.com does not mention the Agent Panel or the new name yet.
+
+## Decisions
+- 2026-11-07, Agent Panel built as a Tk window, not a web view: about 25 MB against 100 MB or more for an always-open panel, no .NET bridge to install. The Spark look was ported with an agreed boundary (see Behaviour). Rejected: pywebview with WebView2.
+- 2026-11-07, a click on an open session restores its window (`SW_RESTORE` only if minimised) and raises it. Maximising was tried first and rejected by Fırat: he wants the window back where it was.
+- 2026-11-07, Delete goes to the Recycle Bin, never a permanent delete, so a slip can be undone (Fırat's choice).
+- 2026-11-07, package display name `claude-plus-fa` (FA for Fırat Ada); file names such as `claude-plus.local.json` and the backup suffixes keep the old name so existing installs do not break.
