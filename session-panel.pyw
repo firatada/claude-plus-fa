@@ -169,7 +169,7 @@ def running():
         except Exception:
             continue
         if o.get("sessionId") and o.get("pid") and alive(o["pid"]):
-            out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name")}
+            out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"]}
     return out
 
 
@@ -209,7 +209,8 @@ def scan(cache):
                 title = (run or {}).get("name") or hit.get("title") or hit.get("first") or os.path.basename(cwd or folder)
                 sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
-                                 "mtime": st.st_mtime, "status": (run or {}).get("status")})
+                                 "mtime": st.st_mtime, "status": (run or {}).get("status"),
+                                 "pid": (run or {}).get("pid"), "name": (run or {}).get("name")})
     for gone in [p for p in cache if p not in seen]:
         del cache[gone]
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
@@ -268,6 +269,62 @@ def open_session(s):
     else:
         subprocess.Popen(["cmd.exe", "/k", "title %s& %s" % (title, cmd)],
                          cwd=s["cwd"], creationflags=CREATE_NEW_CONSOLE, env=clean_env())
+
+
+# ---------- bringing an open session's window forward ----------
+kernel32.GetConsoleWindow.restype = wt.HWND
+user32.GetAncestor.restype = wt.HWND
+user32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+user32.GetForegroundWindow.restype = wt.HWND
+
+
+def window_title(hwnd):
+    buf = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, buf, 512)
+    return buf.value
+
+
+def window_of(pid):
+    """The top window showing a console process: the console itself, or the terminal
+    (Windows Terminal) that owns its pseudo console."""
+    kernel32.FreeConsole()
+    if not kernel32.AttachConsole(int(pid)):
+        return None
+    hwnd = kernel32.GetConsoleWindow()
+    kernel32.FreeConsole()
+    if not hwnd:
+        return None
+    return user32.GetAncestor(hwnd, 3) or hwnd  # GA_ROOTOWNER
+
+
+def press(*keys):
+    for k in keys:
+        user32.keybd_event(k, 0, 0, 0)
+    for k in reversed(keys):
+        user32.keybd_event(k, 0, 2, 0)
+
+
+def focus_session(s):
+    """Maximise and raise the window of an open session. In a terminal holding several tabs,
+    step through them until the one titled with the session's name is showing."""
+    hwnd = s.get("pid") and window_of(s["pid"])
+    if not hwnd:
+        return False
+    user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+    user32.SetForegroundWindow(hwnd)
+    if user32.GetForegroundWindow() != hwnd:
+        press(0x12)  # a lone Alt lets this process take the foreground
+        user32.SetForegroundWindow(hwnd)
+    name = s.get("name")
+    if name and name not in window_title(hwnd):
+        for _ in range(20):
+            if user32.GetForegroundWindow() != hwnd:
+                break
+            press(0x11, 0x09)  # Ctrl+Tab: next tab
+            time.sleep(0.15)
+            if name in window_title(hwnd):
+                break
+    return True
 
 
 # ---------- docking: reserve the right edge like the taskbar does ----------
@@ -613,7 +670,8 @@ class Panel:
             if not here:
                 self.flash("That folder no longer exists.")
             elif s["status"]:
-                self.flash("Already open in another window.")
+                if not focus_session(s):
+                    self.flash("Already open, but its window was not found.")
             else:
                 open_session(s)
                 self.flash("Opening " + s["title"][:40])
