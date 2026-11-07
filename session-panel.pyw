@@ -17,8 +17,9 @@ SCAN_EVERY = 15        # seconds
 CREATE_NEW_CONSOLE = 0x10
 CREATE_NO_WINDOW = 0x08000000
 
-C = {"bg": "#f4f6fb", "panel": "#ffffff", "line": "#e2e8f5", "text": "#0a1a40", "muted": "#697692",
-     "hover": "#eef2fb", "blue": "#1b4df5", "busy": "#f5a623", "idle": "#22a06b", "gone": "#b5bdd0"}
+# Afiniti Spark tokens (mindmap/design_themes/spark_theme). Gold is for rewards only, so "working" is blue.
+C = {"bg": "#f4f6fb", "panel": "#ffffff", "surface2": "#eef2fb", "line": "#e2e8f5", "text": "#0a1a40",
+     "muted": "#4b5672", "blue": "#1b4df5", "busy": "#1b4df5", "idle": "#16a34a", "gone": "#b5bdd0"}
 
 user32, kernel32, shell32 = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
 
@@ -314,17 +315,34 @@ def hotkey_loop(events):
             events.put("toggle")
 
 
+def logo_image(size):
+    """The Spark logo tile: a blue to cyan gradient at 135 degrees, white list mark."""
+    from PIL import Image, ImageDraw
+    big = 256
+    a, b = (0x1b, 0x4d, 0xf5), (0x33, 0xc6, 0xf4)
+    grad = Image.new("RGB", (big, big))
+    px = grad.load()
+    for y in range(big):
+        for x in range(big):
+            t = (x + y) / (2.0 * (big - 1))
+            px[x, y] = tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, big - 1, big - 1), radius=int(big * 0.28), fill=255)
+    tile = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    tile.paste(grad, (0, 0), mask)
+    d = ImageDraw.Draw(tile)
+    for i, y in enumerate((78, 128, 178)):
+        d.ellipse((62, y - 13, 88, y + 13), fill="white")
+        d.rounded_rectangle((104, y - 11, 196 - i * 18, y + 11), radius=11, fill="white")
+    return tile.resize((size, size), Image.LANCZOS)
+
+
 def tray(events):
     try:
         import pystray
-        from PIL import Image, ImageDraw
+        img = logo_image(64)
     except ImportError:
         return None
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((2, 2, 62, 62), radius=14, fill=C["blue"])
-    for y in (18, 32, 46):
-        d.rounded_rectangle((16, y - 3, 48, y + 3), radius=3, fill="white")
     menu = pystray.Menu(
         pystray.MenuItem("Show or hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
@@ -334,7 +352,7 @@ def tray(events):
     return icon
 
 
-# ---------- the window ----------
+# ---------- the window (Spark theme, drawn on canvases: Tk has no rounded widgets) ----------
 def ago(ts):
     d = time.time() - ts
     if d < 60:
@@ -350,18 +368,25 @@ def ago(ts):
     return datetime.datetime.fromtimestamp(ts).strftime("%d %b").lstrip("0")
 
 
+def rounded(canvas, x1, y1, x2, y2, r, **kw):
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+           x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, **kw)
+
+
 class Panel:
     def __init__(self):
         self.events = queue.Queue()
         self.cache = load_cache()
-        self.sessions, self.shown_key = [], None
+        self.sessions, self.shown_key, self.rows = [], None, []
         self.root = tk.Tk()
         self.scale = self.root.winfo_fpixels("1i") / 96.0
         self.root.overrideredirect(True)
         self.root.configure(bg=C["bg"])
-        self.f_title = tkfont.Font(family="Segoe UI", size=10, weight="bold")
-        self.f_small = tkfont.Font(family="Segoe UI", size=8)
-        self.f_head = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        self.f_head = tkfont.Font(family="Segoe UI Semibold", size=11)
+        self.f_title = tkfont.Font(family="Segoe UI Semibold", size=10)
+        self.f_meta = tkfont.Font(family="Segoe UI", size=8)
+        self.f_pill = tkfont.Font(family="Segoe UI Semibold", size=8)
         self.build()
         self.root.update_idletasks()
         self.dock = Dock(user32.GetParent(self.root.winfo_id()) or self.root.winfo_id())
@@ -378,41 +403,90 @@ class Panel:
     def px(self, n):
         return int(round(n * self.scale))
 
+    # ----- layout -----
     def build(self):
-        head = tk.Frame(self.root, bg=C["bg"])
-        head.pack(fill="x", padx=self.px(12), pady=(self.px(12), self.px(6)))
-        self.count = tk.Label(head, text="Sessions", font=self.f_head, fg=C["text"], bg=C["bg"])
-        self.count.pack(side="left")
-        x = tk.Label(head, text="✕", font=self.f_small, fg=C["muted"], bg=C["bg"], cursor="hand2")
-        x.pack(side="right")
-        x.bind("<Button-1>", lambda e: self.toggle())
-        self.query = tk.StringVar()
-        entry = tk.Entry(self.root, textvariable=self.query, font=self.f_small, relief="flat",
-                         bg=C["panel"], fg=C["text"], insertbackground=C["text"],
-                         highlightthickness=1, highlightbackground=C["line"], highlightcolor=C["blue"])
-        entry.pack(fill="x", padx=self.px(12), pady=(0, self.px(8)), ipady=self.px(4))
-        hint = tk.Label(entry, text="Search", font=self.f_small, fg=C["muted"], bg=C["panel"])
-        hint.place(x=self.px(4), rely=0.5, anchor="w")
-        hint.bind("<Button-1>", lambda e: entry.focus_set())
+        p = self.px
+        self.head = tk.Canvas(self.root, height=p(52), bg=C["bg"], highlightthickness=0, bd=0)
+        self.head.pack(fill="x")
+        try:
+            from PIL import ImageTk
+            self.logo = ImageTk.PhotoImage(logo_image(p(26)))
+        except ImportError:
+            self.logo = None
+        self.head.bind("<Configure>", lambda e: self.draw_head())
 
-        def changed(*a):
-            if self.query.get():
-                hint.place_forget()
-            else:
-                hint.place(x=self.px(4), rely=0.5, anchor="w")
-            self.render(force=True)
-        self.query.trace_add("write", changed)
-        self.note = tk.Label(self.root, text="", font=self.f_small, fg=C["muted"], bg=C["bg"], anchor="w")
-        self.note.pack(fill="x", padx=self.px(12))
-        body = tk.Frame(self.root, bg=C["bg"])
-        body.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(body, bg=C["bg"], highlightthickness=0, bd=0)
-        self.canvas.pack(fill="both", expand=True)
-        self.inner = tk.Frame(self.canvas, bg=C["bg"])
-        self.win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.win, width=e.width))
-        self.root.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120) * 3, "units"))
+        self.search = tk.Canvas(self.root, height=p(36), bg=C["bg"], highlightthickness=0, bd=0)
+        self.search.pack(fill="x")
+        self.query = tk.StringVar()
+        self.entry = tk.Entry(self.search, textvariable=self.query, font=self.f_meta, relief="flat", bd=0,
+                              bg=C["panel"], fg=C["text"], insertbackground=C["text"])
+        self.search_focus = False
+        self.entry.bind("<FocusIn>", lambda e: self.set_search_focus(True))
+        self.entry.bind("<FocusOut>", lambda e: self.set_search_focus(False))
+        self.search.bind("<Configure>", lambda e: self.draw_search())
+        self.search.bind("<Button-1>", lambda e: self.activate_search())
+        self.query.trace_add("write", lambda *a: (self.draw_search(), self.render(force=True)))
+
+        # messages show at the bottom, so the list starts right under the search box
+        self.note = tk.Label(self.root, text="", font=self.f_meta, fg=C["muted"], bg=C["bg"], anchor="w")
+        self.note.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(6)))
+        tk.Frame(self.root, height=p(8), bg=C["bg"]).pack(fill="x")
+
+        self.list = tk.Canvas(self.root, bg=C["bg"], highlightthickness=0, bd=0)
+        self.list.pack(fill="both", expand=True)
+        self.list.bind("<Configure>", lambda e: self.render(force=True))
+        self.root.bind_all("<MouseWheel>", lambda e: self.list.yview_scroll(int(-e.delta / 120) * 3, "units"))
+        self.list.configure(yscrollincrement=p(8))
+
+    def draw_head(self):
+        p, c = self.px, self.head
+        c.delete("all")
+        w = c.winfo_width()
+        x = p(16)
+        if self.logo:
+            c.create_image(x, p(26), image=self.logo, anchor="w")
+            x += p(26) + p(10)
+        c.create_text(x, p(26), text="Sessions", font=self.f_head, fill=C["text"], anchor="w")
+        x += self.f_head.measure("Sessions") + p(8)
+        n = str(len(self.sessions))
+        pw = self.f_pill.measure(n) + p(14)
+        rounded(c, x, p(17), x + pw, p(35), p(9), fill=C["surface2"], outline="")
+        c.create_text(x + pw / 2, p(26), text=n, font=self.f_pill, fill=C["muted"])
+        close = c.create_text(w - p(18), p(26), text="✕", font=self.f_meta, fill=C["muted"])
+        c.tag_bind(close, "<Button-1>", lambda e: self.toggle())
+        c.tag_bind(close, "<Enter>", lambda e: c.itemconfigure(close, fill=C["blue"]))
+        c.tag_bind(close, "<Leave>", lambda e: c.itemconfigure(close, fill=C["muted"]))
+
+    def activate_search(self):
+        self.search.itemconfigure(self.entry_win, state="normal")
+        self.entry.focus_force()
+        self.set_search_focus(True)
+
+    def set_search_focus(self, on):
+        self.search_focus = on
+        self.draw_search()
+
+    def draw_search(self):
+        p, c = self.px, self.search
+        c.delete("box")
+        w = c.winfo_width()
+        rounded(c, p(16), p(2), w - p(16), p(34), p(10), fill=C["panel"],
+                outline=C["blue"] if self.search_focus else C["line"], width=p(1.5) if self.search_focus else 1,
+                tags="box")
+        c.create_oval(p(28), p(12), p(37), p(21), outline=C["muted"], width=p(1.5), tags="box")
+        c.create_line(p(36), p(20), p(40), p(24), fill=C["muted"], width=p(1.5), capstyle="round", tags="box")
+        if not self.query.get():
+            c.create_text(p(48), p(18), text="Search sessions", font=self.f_meta, fill=C["muted"],
+                          anchor="w", tags="box")
+        if not getattr(self, "entry_win", None):
+            self.entry_win = c.create_window(p(46), p(18), window=self.entry, anchor="w")
+        c.itemconfigure(self.entry_win, width=w - p(46) - p(26), height=p(22))
+        c.tag_raise(self.entry_win)
+        self.entry.configure(width=1)
+        if not self.query.get() and not self.search_focus:
+            c.itemconfigure(self.entry_win, state="hidden")
+        else:
+            c.itemconfigure(self.entry_win, state="normal")
 
     def place(self):
         x, y, w, h = self.dock.place(self.px(WIDTH))
@@ -433,6 +507,7 @@ class Panel:
             self.place()
         self.visible = not self.visible
 
+    # ----- data -----
     def refresh(self):
         def work():
             try:
@@ -456,6 +531,7 @@ class Panel:
                     return
                 elif ev[0] == "sessions":
                     self.sessions = ev[1]
+                    self.draw_head()
                     self.render()
                 elif ev[0] == "error":
                     self.flash("Could not read sessions: " + ev[1])
@@ -481,52 +557,57 @@ class Panel:
             text = text[:-1]
         return text + "…"
 
+    # ----- the list -----
     def render(self, force=False):
         q = self.query.get().strip().lower()
         rows = [s for s in self.sessions
                 if not q or q in s["title"].lower() or q in (s["folder"] or "").lower()]
-        key = (q, tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60)) for s in rows))
+        width = self.list.winfo_width()
+        key = (q, width, tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60)) for s in rows))
         if key == self.shown_key and not force:
             return
         self.shown_key = key
-        self.count.configure(text="Sessions  %d" % len(self.sessions))
-        for w in self.inner.winfo_children():
-            w.destroy()
-        width = self.px(WIDTH - 24 - 22)
-        for s in rows:
-            self.row(s, width)
+        c, p = self.list, self.px
+        c.delete("all")
+        x1, x2, y, h, gap = p(16), width - p(16), p(4), p(54), p(8)
+        for i, s in enumerate(rows):
+            self.card(s, i, x1, y, x2, y + h)
+            y += h + gap
+        if not rows:
+            c.create_text(width / 2, p(40), text="No sessions match." if q else "No sessions yet.",
+                          font=self.f_meta, fill=C["muted"])
+        c.configure(scrollregion=(0, 0, width, y + p(8)))
 
-    def row(self, s, width):
+    def card(self, s, i, x1, y1, x2, y2):
+        c, p = self.list, self.px
         here = folder_exists(s)
-        card = tk.Frame(self.inner, bg=C["panel"], cursor="hand2" if here else "arrow",
-                        highlightthickness=1, highlightbackground=C["line"])
-        card.pack(fill="x", padx=self.px(12), pady=(0, self.px(6)))
-        dot = tk.Canvas(card, width=self.px(10), height=self.px(10), bg=C["panel"], highlightthickness=0)
-        dot.grid(row=0, column=0, rowspan=2, padx=(self.px(8), self.px(4)), sticky="n", pady=(self.px(10), 0))
+        tag = "card%d" % i
+        box = rounded(c, x1, y1, x2, y2, p(14), fill=C["panel"], outline=C["line"], width=1, tags=tag)
+        tx = x1 + p(14)
         if s["status"]:
             colour = C["busy"] if s["status"] == "busy" else C["idle"]
-            dot.create_oval(1, 1, self.px(9), self.px(9), fill=colour, outline=colour)
-        fg = C["text"] if here else C["gone"]
-        t = tk.Label(card, text=self.fit(s["title"], self.f_title, width), font=self.f_title,
-                     fg=fg, bg=C["panel"], anchor="w")
-        t.grid(row=0, column=1, sticky="we", padx=(0, self.px(8)), pady=(self.px(6), 0))
+            r = p(4)
+            c.create_oval(tx - r, y1 + p(18) - r, tx + r, y1 + p(18) + r, fill=colour, outline="", tags=tag)
+        tx += p(14)
+        room = x2 - p(14) - tx
+        c.create_text(tx, y1 + p(18), text=self.fit(s["title"], self.f_title, room), font=self.f_title,
+                      fill=C["text"] if here else C["gone"], anchor="w", tags=tag)
         where = s["folder"] + ("  (WSL)" if s["distro"] or (s["cwd"] or "").startswith("\\\\wsl") else "")
         if not here:
             where += "  · folder missing"
-        meta = "%s  ·  %s" % (self.fit(where, self.f_small, width - self.px(60)), ago(s["mtime"]))
-        m = tk.Label(card, text=meta, font=self.f_small, fg=C["muted"] if here else C["gone"],
-                     bg=C["panel"], anchor="w")
-        m.grid(row=1, column=1, sticky="we", padx=(0, self.px(8)), pady=(0, self.px(6)))
-        card.grid_columnconfigure(1, weight=1)
-        parts = (card, dot, t, m)
+        when = ago(s["mtime"])
+        c.create_text(x2 - p(14), y1 + p(38), text=when, font=self.f_meta,
+                      fill=C["muted"] if here else C["gone"], anchor="e", tags=tag)
+        c.create_text(tx, y1 + p(38), text=self.fit(where, self.f_meta, room - self.f_meta.measure(when) - p(10)),
+                      font=self.f_meta, fill=C["muted"] if here else C["gone"], anchor="w", tags=tag)
 
         def enter(e):
-            for p in parts:
-                p.configure(bg=C["hover"])
+            c.itemconfigure(box, outline=C["blue"], width=p(1.5))
+            c.configure(cursor="hand2" if here else "arrow")
 
         def leave(e):
-            for p in parts:
-                p.configure(bg=C["panel"])
+            c.itemconfigure(box, outline=C["line"], width=1)
+            c.configure(cursor="arrow")
 
         def click(e):
             if not here:
@@ -536,10 +617,9 @@ class Panel:
             else:
                 open_session(s)
                 self.flash("Opening " + s["title"][:40])
-        for p in parts:
-            p.bind("<Enter>", enter)
-            p.bind("<Leave>", leave)
-            p.bind("<Button-1>", click)
+        c.tag_bind(tag, "<Enter>", enter)
+        c.tag_bind(tag, "<Leave>", leave)
+        c.tag_bind(tag, "<Button-1>", click)
 
     def quit(self):
         self.dock.release()
