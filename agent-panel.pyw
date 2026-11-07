@@ -1,4 +1,4 @@
-# Session panel: every Claude Code session on this PC, in a narrow list docked to the right
+# Agent Panel: every Claude Code session on this PC, in a narrow list docked to the right
 # edge of the screen. Click a session to resume it in its own folder, in a new terminal.
 # Tray icon: click to show or hide; Ctrl+Alt+C does the same. Read-only: it never changes
 # or deletes a session.
@@ -8,8 +8,9 @@ from tkinter import font as tkfont
 
 HOME = os.path.expanduser("~")
 CLAUDE = os.path.join(HOME, ".claude")
-STATE_DIR = os.path.join(CLAUDE, "state", "session-panel")
+STATE_DIR = os.path.join(CLAUDE, "state", "agent-panel")
 CACHE_FILE = os.path.join(STATE_DIR, "cache.json")
+HIDDEN_FILE = os.path.join(STATE_DIR, "hidden.json")
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
@@ -25,11 +26,11 @@ user32, kernel32, shell32 = ctypes.windll.user32, ctypes.windll.kernel32, ctypes
 
 
 # ---------- one instance only ----------
-kernel32.CreateMutexW(None, False, "Local\\claude-plus-fa-session-panel")
+kernel32.CreateMutexW(None, False, "Local\\claude-plus-fa-agent-panel")
 if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
     sys.exit(0)
 # the installer sets this event to ask a running panel to quit and give its screen space back
-QUIT_EVENT = kernel32.CreateEventW(None, True, False, "Local\\claude-plus-fa-session-panel-quit")
+QUIT_EVENT = kernel32.CreateEventW(None, True, False, "Local\\claude-plus-fa-agent-panel-quit")
 kernel32.ResetEvent(QUIT_EVENT)
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -207,7 +208,7 @@ def scan(cache):
                 run = live.get(sid)
                 cwd = home_of(folder, hit.get("cwds") or [])
                 title = (run or {}).get("name") or hit.get("title") or hit.get("first") or os.path.basename(cwd or folder)
-                sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title,
+                sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title, "path": path,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
                                  "mtime": st.st_mtime, "status": (run or {}).get("status"),
                                  "pid": (run or {}).get("pid"), "name": (run or {}).get("name")})
@@ -328,6 +329,68 @@ def focus_session(s):
     return True
 
 
+# ---------- hide, delete, close ----------
+def load_hidden():
+    try:
+        return set(json.load(open(HIDDEN_FILE, encoding="utf-8")))
+    except Exception:
+        return set()
+
+
+def save_hidden(hidden):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        json.dump(sorted(hidden), open(HIDDEN_FILE, "w", encoding="utf-8"))
+    except Exception:
+        pass
+
+
+class SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [("hwnd", wt.HWND), ("wFunc", wt.UINT), ("pFrom", ctypes.c_void_p), ("pTo", ctypes.c_void_p),
+                ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wt.BOOL),
+                ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", ctypes.c_void_p)]
+
+
+def recycle(paths):
+    """Move files and folders to the Recycle Bin, so a deletion can be undone."""
+    buf = ctypes.create_unicode_buffer("\0".join(paths) + "\0\0")
+    op = SHFILEOPSTRUCTW(None, 3, ctypes.cast(buf, ctypes.c_void_p), None,
+                         0x40 | 0x10 | 0x04 | 0x400, False, None, None)  # FO_DELETE; ALLOWUNDO, NOCONFIRMATION, SILENT, NOERRORUI
+    return shell32.SHFileOperationW(ctypes.byref(op)) == 0 and not op.fAnyOperationsAborted
+
+
+def session_files(s):
+    """What makes up the session in ~/.claude: the transcript, its folder (subagents, large tool
+    results) and its file-history snapshots. Nothing in the project folder."""
+    out = [s["path"]]
+    side = s["path"][:-len(".jsonl")]
+    if os.path.isdir(side):
+        out.append(side)
+    history = os.path.join(CLAUDE, "file-history", s["id"])
+    if os.path.isdir(history):
+        out.append(history)
+    return out
+
+
+def close_session(s):
+    """Close an open session: its window when it shows nothing else, otherwise end the process."""
+    pid = s.get("pid")
+    if not pid:
+        return False
+    hwnd = window_of(pid)
+    others = [o for o in running().values() if o.get("pid") != pid]
+    shared = hwnd and any(window_of(o["pid"]) == hwnd for o in others)
+    if hwnd and not shared:
+        user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+        return True
+    h = kernel32.OpenProcess(0x0001, False, int(pid))  # PROCESS_TERMINATE
+    if not h:
+        return False
+    ok = kernel32.TerminateProcess(h, 1)
+    kernel32.CloseHandle(h)
+    return bool(ok)
+
+
 # ---------- docking: reserve the right edge like the taskbar does ----------
 class APPBARDATA(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("hWnd", wt.HWND), ("uCallbackMessage", wt.UINT),
@@ -405,7 +468,7 @@ def tray(events):
         pystray.MenuItem("Show or hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
         pystray.MenuItem("Quit", lambda: events.put("quit")))
-    icon = pystray.Icon("claude-sessions", img, "Claude sessions", menu)
+    icon = pystray.Icon("agent-panel", img, "Agent Panel", menu)
     icon.run_detached()
     return icon
 
@@ -437,6 +500,7 @@ class Panel:
         self.events = queue.Queue()
         self.cache = load_cache()
         self.sessions, self.shown_key, self.rows = [], None, []
+        self.hidden, self.show_hidden = load_hidden(), False
         self.root = tk.Tk()
         self.scale = self.root.winfo_fpixels("1i") / 96.0
         self.root.overrideredirect(True)
@@ -445,6 +509,7 @@ class Panel:
         self.f_title = tkfont.Font(family="Segoe UI Semibold", size=10)
         self.f_meta = tkfont.Font(family="Segoe UI", size=8)
         self.f_pill = tkfont.Font(family="Segoe UI Semibold", size=8)
+        self.f_body = tkfont.Font(family="Segoe UI", size=9)
         self.build()
         self.root.update_idletasks()
         self.dock = Dock(user32.GetParent(self.root.winfo_id()) or self.root.winfo_id())
@@ -487,7 +552,11 @@ class Panel:
 
         # messages show at the bottom, so the list starts right under the search box
         self.note = tk.Label(self.root, text="", font=self.f_meta, fg=C["muted"], bg=C["bg"], anchor="w")
-        self.note.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(6)))
+        self.footer = tk.Label(self.root, text="", font=self.f_meta, fg=C["blue"], bg=C["bg"],
+                               anchor="w", cursor="hand2")
+        self.footer.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(10)))
+        self.footer.bind("<Button-1>", lambda e: self.toggle_hidden())
+        self.note.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(4)))
         tk.Frame(self.root, height=p(8), bg=C["bg"]).pack(fill="x")
 
         self.list = tk.Canvas(self.root, bg=C["bg"], highlightthickness=0, bd=0)
@@ -504,9 +573,9 @@ class Panel:
         if self.logo:
             c.create_image(x, p(26), image=self.logo, anchor="w")
             x += p(26) + p(10)
-        c.create_text(x, p(26), text="Sessions", font=self.f_head, fill=C["text"], anchor="w")
-        x += self.f_head.measure("Sessions") + p(8)
-        n = str(len(self.sessions))
+        c.create_text(x, p(26), text="Agent Panel", font=self.f_head, fill=C["text"], anchor="w")
+        x += self.f_head.measure("Agent Panel") + p(8)
+        n = str(sum(1 for s in self.sessions if s["id"] not in self.hidden))
         pw = self.f_pill.measure(n) + p(14)
         rounded(c, x, p(17), x + pw, p(35), p(9), fill=C["surface2"], outline="")
         c.create_text(x + pw / 2, p(26), text=n, font=self.f_pill, fill=C["muted"])
@@ -618,10 +687,15 @@ class Panel:
     # ----- the list -----
     def render(self, force=False):
         q = self.query.get().strip().lower()
+        n_hidden = sum(1 for s in self.sessions if s["id"] in self.hidden)
+        self.footer.configure(text=("Hide the hidden sessions" if self.show_hidden else
+                                    "Show hidden sessions (%d)" % n_hidden) if n_hidden else "")
         rows = [s for s in self.sessions
-                if not q or q in s["title"].lower() or q in (s["folder"] or "").lower()]
+                if (self.show_hidden or s["id"] not in self.hidden)
+                and (not q or q in s["title"].lower() or q in (s["folder"] or "").lower())]
         width = self.list.winfo_width()
-        key = (q, width, tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60)) for s in rows))
+        key = (q, width, self.show_hidden, tuple(sorted(self.hidden)),
+               tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60)) for s in rows))
         if key == self.shown_key and not force:
             return
         self.shown_key = key
@@ -639,6 +713,7 @@ class Panel:
     def card(self, s, i, x1, y1, x2, y2):
         c, p = self.list, self.px
         here = folder_exists(s)
+        hidden = s["id"] in self.hidden
         tag = "card%d" % i
         box = rounded(c, x1, y1, x2, y2, p(14), fill=C["panel"], outline=C["line"], width=1, tags=tag)
         tx = x1 + p(14)
@@ -649,10 +724,12 @@ class Panel:
         tx += p(14)
         room = x2 - p(14) - tx
         c.create_text(tx, y1 + p(18), text=self.fit(s["title"], self.f_title, room), font=self.f_title,
-                      fill=C["text"] if here else C["gone"], anchor="w", tags=tag)
+                      fill=C["text"] if here and not hidden else C["gone"], anchor="w", tags=tag)
         where = s["folder"] + ("  (WSL)" if s["distro"] or (s["cwd"] or "").startswith("\\\\wsl") else "")
         if not here:
             where += "  · folder missing"
+        if hidden:
+            where = "hidden  · " + where
         when = ago(s["mtime"])
         c.create_text(x2 - p(14), y1 + p(38), text=when, font=self.f_meta,
                       fill=C["muted"] if here else C["gone"], anchor="e", tags=tag)
@@ -679,6 +756,115 @@ class Panel:
         c.tag_bind(tag, "<Enter>", enter)
         c.tag_bind(tag, "<Leave>", leave)
         c.tag_bind(tag, "<Button-1>", click)
+        c.tag_bind(tag, "<Button-3>", lambda e: self.menu(e, s))
+
+    # ----- right-click menu -----
+    def menu(self, e, s):
+        m = tk.Menu(self.root, tearoff=0, font=self.f_body, bg=C["panel"], fg=C["text"],
+                    activebackground=C["surface2"], activeforeground=C["text"], bd=0)
+        if s["id"] in self.hidden:
+            m.add_command(label="Unhide", command=lambda: self.set_hidden(s, False))
+        else:
+            m.add_command(label="Hide", command=lambda: self.set_hidden(s, True))
+        if s["status"]:
+            m.add_command(label="Close", command=lambda: self.close(s))
+        m.add_separator()
+        m.add_command(label="Delete", foreground="#e11d48", activeforeground="#e11d48",
+                      command=lambda: self.delete(s))
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def set_hidden(self, s, on):
+        (self.hidden.add if on else self.hidden.discard)(s["id"])
+        save_hidden(self.hidden)
+        if not any(x["id"] in self.hidden for x in self.sessions):
+            self.show_hidden = False
+        self.draw_head()
+        self.render(force=True)
+
+    def toggle_hidden(self):
+        self.show_hidden = not self.show_hidden
+        self.render(force=True)
+
+    def close(self, s):
+        if not self.confirm("Close this session?",
+                            "Its window closes. Anything Claude is doing in it right now stops; "
+                            "the conversation so far is kept and can be resumed.", "Close"):
+            return
+        if close_session(s):
+            self.flash("Closed " + s["title"][:40])
+            self.root.after(1500, self.refresh)
+        else:
+            self.flash("Could not close it.")
+
+    def delete(self, s):
+        if s["status"]:
+            self.flash("Close the session first, then delete it.")
+            return
+        if s["distro"]:
+            self.flash("A session stored inside WSL cannot go to the Recycle Bin.")
+            return
+        if not self.confirm("Delete this session?",
+                            "This session will be deleted: its conversation is moved to the Recycle Bin. "
+                            "Files in the project folder (CLAUDE.md, memory.md and the rest) are not touched.",
+                            "Delete", danger=True):
+            return
+        if not self.confirm("Are you sure?",
+                            "\"%s\" will no longer be in this list and cannot be resumed, "
+                            "unless you restore it from the Recycle Bin." % s["title"][:60],
+                            "Yes, delete", danger=True):
+            return
+        if recycle(session_files(s)) and not os.path.exists(s["path"]):
+            self.hidden.discard(s["id"])
+            save_hidden(self.hidden)
+            self.sessions = [x for x in self.sessions if x["id"] != s["id"]]
+            self.draw_head()
+            self.render(force=True)
+            self.flash("Moved to the Recycle Bin.")
+        else:
+            self.flash("Could not delete it.")
+
+    def button(self, parent, text, colour, fg, command):
+        p = self.px
+        w = self.f_title.measure(text) + p(28)
+        b = tk.Canvas(parent, width=w, height=p(34), bg=C["panel"], highlightthickness=0, bd=0, cursor="hand2")
+        rounded(b, 1, 1, w - 1, p(34) - 1, p(10), fill=colour, outline=C["line"] if colour == C["panel"] else colour)
+        b.create_text(w / 2, p(17), text=text, font=self.f_title, fill=fg)
+        b.bind("<Button-1>", lambda e: command())
+        return b
+
+    def confirm(self, title, text, ok_label, danger=False):
+        """A Spark-styled yes/no dialog in the middle of the screen. Cancel is the default."""
+        p = self.px
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        top.configure(bg=C["line"])
+        box = tk.Frame(top, bg=C["panel"])
+        box.pack(padx=1, pady=1)
+        tk.Label(box, text=title, font=self.f_head, fg=C["text"], bg=C["panel"], anchor="w").pack(
+            fill="x", padx=p(22), pady=(p(20), p(6)))
+        tk.Label(box, text=text, font=self.f_body, fg=C["muted"], bg=C["panel"], justify="left",
+                 wraplength=p(320), anchor="w").pack(fill="x", padx=p(22), pady=(0, p(18)))
+        row = tk.Frame(box, bg=C["panel"])
+        row.pack(fill="x", padx=p(22), pady=(0, p(20)))
+        result = {"ok": False}
+
+        def done(ok):
+            result["ok"] = ok
+            top.destroy()
+        self.button(row, ok_label, "#e11d48" if danger else C["blue"], "#ffffff", lambda: done(True)).pack(side="right")
+        self.button(row, "Cancel", C["panel"], C["text"], lambda: done(False)).pack(side="right", padx=(0, p(8)))
+        top.bind("<Escape>", lambda e: done(False))
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        top.geometry("+%d+%d" % ((top.winfo_screenwidth() - w) // 2, (top.winfo_screenheight() - h) // 3))
+        top.grab_set()
+        top.focus_force()
+        self.root.wait_window(top)
+        return result["ok"]
 
     def quit(self):
         self.dock.release()

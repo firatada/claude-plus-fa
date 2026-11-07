@@ -9,7 +9,7 @@ Add-ons for Claude Code on Windows, so a session and its context are never lost.
 5. Compaction: extra summary instructions before, `handoff.md` + `memory.md` read back after.
 6. New sessions start from `handoff.md` when the project has one.
 7. Prompt recall: the status line's second line shows your last prompt, so you never scroll up to find it.
-8. Session panel: every session on the PC in a list docked to the right edge; a click resumes it in its own folder.
+8. Agent Panel: every session on the PC in a list docked to the right edge; a click resumes it in its own folder; right-click hides, closes or deletes one.
 
 Install or reinstall: double-click `install.cmd` (or `python install.py`). Remove: `uninstall.cmd`. Both are safe to rerun.
 

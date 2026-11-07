@@ -14,12 +14,13 @@ SETTINGS = os.path.join(CLAUDE_DIR, "settings.json")
 SCRIPTS = ("glm-fallback.py", "context-guard.py", "prompt-recall.py")
 FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "statusline.py"),
+    os.path.join(CLAUDE_DIR, "agent-panel.pyw"),
     os.path.join(CLAUDE_DIR, "session-panel.pyw"),
     os.path.join(HOME, ".local", "bin", "glm.cmd"),
 ]
 STATE = os.path.join(CLAUDE_DIR, "state", "context")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_NAME = "ClaudePlusFA session panel"
+RUN_NAME = "ClaudePlusFA agent panel"
 KEPT = [os.path.join(HOME, ".claudex", "profiles", "glm", ".env"),
         os.path.join(CLAUDE_DIR, "claude-plus.local.json")]
 
@@ -76,33 +77,53 @@ def remove_files():
 
 
 def stop_panel():
-    """Ask a running panel to quit, so it gives its screen space back; force it after 3 s."""
+    """Ask a running panel to quit, so it gives its screen space back; force it after 3 s.
+    Also stops the earlier "session panel", the same program under its old name."""
     k = ctypes.windll.kernel32
-    h = k.OpenEventW(0x0002, False, "Local\\claude-plus-fa-session-panel-quit")  # EVENT_MODIFY_STATE
-    if h:
-        k.SetEvent(h)
-        k.CloseHandle(h)
+    asked = False
+    for name in ("Local\\claude-plus-fa-agent-panel-quit", "Local\\claude-plus-fa-session-panel-quit"):
+        h = k.OpenEventW(0x0002, False, name)  # EVENT_MODIFY_STATE
+        if h:
+            k.SetEvent(h)
+            k.CloseHandle(h)
+            asked = True
+    if asked:
         time.sleep(3)
     subprocess.run(["powershell.exe", "-NoProfile", "-Command",
                     "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
-                    "Where-Object { $_.CommandLine -like '*session-panel.pyw*' } | "
+                    "Where-Object { $_.CommandLine -like '*agent-panel.pyw*' -or $_.CommandLine -like '*session-panel.pyw*' } | "
                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
                    capture_output=True)
 
 
+def remove_old_name():
+    """The panel was called "session panel" before 2026-11-07: drop that copy and its sign-in entry."""
+    old = os.path.join(CLAUDE_DIR, "session-panel.pyw")
+    if os.path.exists(old):
+        os.remove(old)
+    shutil.rmtree(os.path.join(CLAUDE_DIR, "state", "session-panel"), ignore_errors=True)
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, "ClaudePlusFA session panel")
+    except FileNotFoundError:
+        pass
+
+
 def remove_panel():
-    """Stop the session panel, remove its sign-in entry; remove_files() deletes the script."""
+    """Stop the Agent Panel, remove its sign-in entry; remove_files() deletes the script."""
     stop_panel()
+    remove_old_name()
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
             winreg.DeleteValue(k, RUN_NAME)
-        print("removed the session panel from sign-in")
+        print("removed the Agent Panel from sign-in")
     except FileNotFoundError:
         pass
-    panel_state = os.path.join(CLAUDE_DIR, "state", "session-panel")
-    if os.path.isdir(panel_state):
-        shutil.rmtree(panel_state, ignore_errors=True)
-        print("deleted %s" % panel_state)
+    for name in ("agent-panel", "session-panel"):
+        panel_state = os.path.join(CLAUDE_DIR, "state", name)
+        if os.path.isdir(panel_state):
+            shutil.rmtree(panel_state, ignore_errors=True)
+            print("deleted %s" % panel_state)
 
 
 def main():
