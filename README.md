@@ -39,10 +39,10 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - The switch requires a free z.ai API key; without one, the dialog never appears.
 
 **Agent Panel**
-- Every Claude Code session on your PC, old and current, in a narrow list docked to the right edge of the screen, newest first, with a search box.
+- Every Claude Code session on your PC, old and current, in a narrow list over the right edge of the screen, newest first, with a search box. It takes no screen space: desktop icons and maximised windows keep their place, and the window you are working in simply covers it.
 - Click a session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
 - A green dot marks a session that is open and waiting, a blue one a session that is working. Clicking an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
-- It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon hides and shows it; while hidden, it gives the screen space back.
+- It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon brings it to the front when it is covered, and hides or shows it otherwise.
 - Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions come back from *Show hidden sessions* at the bottom of the panel.
 - Delete asks twice, then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session has to be closed first.
 

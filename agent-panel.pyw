@@ -1,4 +1,4 @@
-# Agent Panel: every Claude Code session on this PC, in a narrow list docked to the right
+# Agent Panel: every Claude Code session on this PC, in a narrow list over the right
 # edge of the screen. Click a session to resume it in its own folder, in a new terminal.
 # Tray icon: click to show or hide; Ctrl+Alt+C does the same. Read-only: it never changes
 # or deletes a session.
@@ -391,39 +391,30 @@ def close_session(s):
     return bool(ok)
 
 
-# ---------- docking: reserve the right edge like the taskbar does ----------
+# ---------- placement: over the right edge, without taking any screen space ----------
 class APPBARDATA(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("hWnd", wt.HWND), ("uCallbackMessage", wt.UINT),
                 ("uEdge", wt.UINT), ("rc", wt.RECT), ("lParam", wt.LPARAM)]
 
 
-class Dock:
+class Edge:
+    """The panel sits over the right edge of the work area like any other window: desktop
+    icons and maximised windows keep their place, and an active window simply covers it.
+    It used to reserve the edge as an AppBar; registering and removing one once at start
+    makes Windows drop any edge an older, killed copy of the panel left reserved."""
+
     def __init__(self, hwnd):
-        self.abd = APPBARDATA(cbSize=ctypes.sizeof(APPBARDATA), hWnd=hwnd, uCallbackMessage=0x0400 + 77, uEdge=2)
-        self.on = False
+        abd = APPBARDATA(cbSize=ctypes.sizeof(APPBARDATA), hWnd=hwnd, uEdge=2)
+        shell32.SHAppBarMessage(0, ctypes.byref(abd))  # ABM_NEW
+        shell32.SHAppBarMessage(1, ctypes.byref(abd))  # ABM_REMOVE
 
     def place(self, width):
-        if not self.on:
-            # NEW, REMOVE, NEW: the remove makes Windows drop space still held by a panel
-            # that was killed without releasing it
-            shell32.SHAppBarMessage(0, ctypes.byref(self.abd))  # ABM_NEW
-            shell32.SHAppBarMessage(1, ctypes.byref(self.abd))  # ABM_REMOVE
-            shell32.SHAppBarMessage(0, ctypes.byref(self.abd))
-            self.on = True
         work = wt.RECT()
         user32.SystemParametersInfoW(0x30, 0, ctypes.byref(work), 0)  # SPI_GETWORKAREA
-        sw = user32.GetSystemMetrics(0)
-        self.abd.rc = wt.RECT(sw - width, work.top, sw, work.bottom)
-        shell32.SHAppBarMessage(2, ctypes.byref(self.abd))  # ABM_QUERYPOS
-        self.abd.rc.left = self.abd.rc.right - width
-        shell32.SHAppBarMessage(3, ctypes.byref(self.abd))  # ABM_SETPOS
-        r = self.abd.rc
-        return r.left, r.top, r.right - r.left, r.bottom - r.top
+        return work.right - width, work.top, width, work.bottom - work.top
 
     def release(self):
-        if self.on:
-            shell32.SHAppBarMessage(1, ctypes.byref(self.abd))  # ABM_REMOVE
-            self.on = False
+        pass
 
 
 # ---------- hotkey and tray, each on its own thread ----------
@@ -512,14 +503,12 @@ class Panel:
         self.f_body = tkfont.Font(family="Segoe UI", size=9)
         self.build()
         self.root.update_idletasks()
-        self.dock = Dock(user32.GetParent(self.root.winfo_id()) or self.root.winfo_id())
+        self.hwnd = user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+        self.dock = Edge(self.hwnd)
         self.visible = True
         self.place()
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
         self.icon = tray(self.events)
-        # Windows sometimes keeps space held by a panel that was killed; docking again a
-        # moment later makes it recount and drop it
-        self.root.after(2500, self.redock)
         self.refresh()
         self.root.after(200, self.poll)
 
@@ -619,20 +608,26 @@ class Panel:
         x, y, w, h = self.dock.place(self.px(WIDTH))
         self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
 
-    def redock(self):
-        if self.visible:
-            self.dock.release()
-            self.place()
-
     def toggle(self):
+        """Ctrl+Alt+C and the tray: a panel covered by another window comes to the front;
+        a panel already in front hides; a hidden one shows."""
+        if self.visible and user32.GetForegroundWindow() != self.hwnd:
+            self.raise_panel()
+            return
         if self.visible:
-            self.dock.release()
             self.root.withdraw()
         else:
             self.root.deiconify()
             self.root.update_idletasks()
             self.place()
+            self.raise_panel()
         self.visible = not self.visible
+
+    def raise_panel(self):
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-topmost", False)
+        user32.SetForegroundWindow(self.hwnd)
 
     # ----- data -----
     def refresh(self):
