@@ -5,7 +5,7 @@
 # The question is asked inside the hook, so settings.json gives this hook a long
 # timeout; StopFailure output is ignored, so blocking costs nothing.
 #
-# Part of claude-plus. Edit the copy in the claude-plus folder and rerun install.cmd.
+# Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
 import ctypes, json, os, subprocess, sys
 
 MB_YESNO, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, IDYES = 0x4, 0x20, 0x10000, 0x40000, 6

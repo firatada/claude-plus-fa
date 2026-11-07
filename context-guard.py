@@ -15,7 +15,7 @@
 # The usage figure comes from statusline.py, which writes it per session; Claude
 # itself never sees the gauge.
 #
-# Part of claude-plus. Edit the copy in the claude-plus folder and rerun install.cmd.
+# Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
 import json, os, sys, time
 
 WARN_AT = 90      # auto-compaction measured at about 96.7 % of a 1M window
@@ -122,9 +122,9 @@ def resumed(data):
     read = ("read %s (handoff.md %s), because the summary is short and the documents are the "
             "full record, then " % docs[:2]) if docs else ""
     if docs:
-        to_user = "claude-plus: after compaction Claude reads " + ", ".join(docs[2])
+        to_user = "claude-plus-fa: after compaction Claude reads " + ", ".join(docs[2])
     else:
-        to_user = ("claude-plus: after compaction no handoff.md was found above %s; Claude runs the "
+        to_user = ("claude-plus-fa: after compaction no handoff.md was found above %s; Claude runs the "
                    "resume steps only" % (data.get("cwd") or os.getcwd()))
     rule = own_rule()
     steps = ("run the \"on resuming a session that opens with a summary\" steps in %s" % rule
@@ -137,7 +137,7 @@ def resumed(data):
 def started(data):
     docs = project_docs(data)
     if docs:
-        answer("claude-plus: this project has a handoff.md (%s); Claude reads %s first"
+        answer("claude-plus-fa: this project has a handoff.md (%s); Claude reads %s first"
                % (docs[1], ", ".join(docs[2])),
                "This project has a handoff.md, %s. Before the first task, read %s to see where the "
                "previous session stopped. Check git log for commits made after it.%s"

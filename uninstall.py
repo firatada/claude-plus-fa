@@ -1,11 +1,11 @@
-# Removes claude-plus from the current Windows user profile. Safe to rerun.
-#   settings.json    -> the claude-plus hook entries, and the statusLine if it is ours
+# Removes claude-plus-fa from the current Windows user profile. Safe to rerun.
+#   settings.json    -> the claude-plus-fa hook entries, and the statusLine if it is ours
 #                       (backed up first as settings.json.before-claude-plus-uninstall)
 #   ~/.claude        -> statusline.py, the three hook scripts, the state folder
 #   ~/.local/bin     -> glm.cmd
 # Kept on purpose: your z.ai key file and ~/.claude/claude-plus.local.json (yours,
 # not ours), the install backup, and ~/.local/bin on PATH (other tools live there).
-import json, os, shutil
+import ctypes, json, os, shutil, subprocess, time, winreg
 
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
@@ -14,9 +14,12 @@ SETTINGS = os.path.join(CLAUDE_DIR, "settings.json")
 SCRIPTS = ("glm-fallback.py", "context-guard.py", "prompt-recall.py")
 FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "statusline.py"),
+    os.path.join(CLAUDE_DIR, "session-panel.pyw"),
     os.path.join(HOME, ".local", "bin", "glm.cmd"),
 ]
 STATE = os.path.join(CLAUDE_DIR, "state", "context")
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_NAME = "ClaudePlusFA session panel"
 KEPT = [os.path.join(HOME, ".claudex", "profiles", "glm", ".env"),
         os.path.join(CLAUDE_DIR, "claude-plus.local.json")]
 
@@ -51,7 +54,7 @@ def clean_settings():
     if status_removed:
         del settings["statusLine"]
     if not removed and not status_removed:
-        print("ok      nothing of claude-plus in %s" % SETTINGS)
+        print("ok      nothing of claude-plus-fa in %s" % SETTINGS)
         return
     shutil.copy2(SETTINGS, SETTINGS + ".before-claude-plus-uninstall")
     nl = "\r\n" if "\r\n" in raw else "\n"
@@ -72,8 +75,39 @@ def remove_files():
         print("deleted %s" % STATE)
 
 
+def stop_panel():
+    """Ask a running panel to quit, so it gives its screen space back; force it after 3 s."""
+    k = ctypes.windll.kernel32
+    h = k.OpenEventW(0x0002, False, "Local\\claude-plus-fa-session-panel-quit")  # EVENT_MODIFY_STATE
+    if h:
+        k.SetEvent(h)
+        k.CloseHandle(h)
+        time.sleep(3)
+    subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+                    "Where-Object { $_.CommandLine -like '*session-panel.pyw*' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                   capture_output=True)
+
+
+def remove_panel():
+    """Stop the session panel, remove its sign-in entry; remove_files() deletes the script."""
+    stop_panel()
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, RUN_NAME)
+        print("removed the session panel from sign-in")
+    except FileNotFoundError:
+        pass
+    panel_state = os.path.join(CLAUDE_DIR, "state", "session-panel")
+    if os.path.isdir(panel_state):
+        shutil.rmtree(panel_state, ignore_errors=True)
+        print("deleted %s" % panel_state)
+
+
 def main():
     clean_settings()
+    remove_panel()
     remove_files()
     for path in KEPT:
         if os.path.exists(path):
