@@ -305,12 +305,13 @@ def press(*keys):
 
 
 def focus_session(s):
-    """Maximise and raise the window of an open session. In a terminal holding several tabs,
+    """Raise the window of an open session where it was (restored if minimised). In a terminal holding several tabs,
     step through them until the one titled with the session's name is showing."""
     hwnd = s.get("pid") and window_of(s["pid"])
     if not hwnd:
         return False
-    user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE: back to the size and place it had before
     user32.SetForegroundWindow(hwnd)
     if user32.GetForegroundWindow() != hwnd:
         press(0x12)  # a lone Alt lets this process take the foreground
