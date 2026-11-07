@@ -491,7 +491,7 @@ class Panel:
         self.events = queue.Queue()
         self.cache = load_cache()
         self.sessions, self.shown_key, self.rows = [], None, []
-        self.hidden, self.show_hidden = load_hidden(), False
+        self.hidden, self.show_hidden, self.scroll_to_aside = load_hidden(), False, False
         self.root = tk.Tk()
         self.scale = self.root.winfo_fpixels("1i") / 96.0
         self.root.overrideredirect(True)
@@ -541,10 +541,13 @@ class Panel:
 
         # messages show at the bottom, so the list starts right under the search box
         self.note = tk.Label(self.root, text="", font=self.f_meta, fg=C["muted"], bg=C["bg"], anchor="w")
-        self.footer = tk.Label(self.root, text="", font=self.f_meta, fg=C["blue"], bg=C["bg"],
+        # the link to the set-aside list sits greyed out in the strip under the list
+        self.footer = tk.Label(self.root, text="", font=self.f_meta, fg=C["gone"], bg=C["bg"],
                                anchor="w", cursor="hand2")
         self.footer.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(10)))
         self.footer.bind("<Button-1>", lambda e: self.toggle_hidden())
+        self.footer.bind("<Enter>", lambda e: self.footer.configure(fg=C["blue"]))
+        self.footer.bind("<Leave>", lambda e: self.footer.configure(fg=C["gone"]))
         self.note.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(4)))
         tk.Frame(self.root, height=p(8), bg=C["bg"]).pack(fill="x")
 
@@ -564,7 +567,7 @@ class Panel:
             x += p(26) + p(10)
         c.create_text(x, p(26), text="Agent Panel", font=self.f_head, fill=C["text"], anchor="w")
         x += self.f_head.measure("Agent Panel") + p(8)
-        n = str(sum(1 for s in self.sessions if s["id"] not in self.hidden))
+        n = str(sum(1 for s in self.sessions if not self.aside(s)))
         pw = self.f_pill.measure(n) + p(14)
         rounded(c, x, p(17), x + pw, p(35), p(9), fill=C["surface2"], outline="")
         c.create_text(x + pw / 2, p(26), text=n, font=self.f_pill, fill=C["muted"])
@@ -680,17 +683,24 @@ class Panel:
         return text + "…"
 
     # ----- the list -----
+    def aside(self, s):
+        """Hidden by the user, or its folder is gone: kept out of the main list."""
+        return s["id"] in self.hidden or not folder_exists(s)
+
     def render(self, force=False):
         q = self.query.get().strip().lower()
-        n_hidden = sum(1 for s in self.sessions if s["id"] in self.hidden)
-        self.footer.configure(text=("Hide the hidden sessions" if self.show_hidden else
-                                    "Show hidden sessions (%d)" % n_hidden) if n_hidden else "")
-        rows = [s for s in self.sessions
-                if (self.show_hidden or s["id"] not in self.hidden)
-                and (not q or q in s["title"].lower() or q in (s["folder"] or "").lower())]
+        n_aside = sum(1 for s in self.sessions if self.aside(s))
+        if not n_aside:
+            self.show_hidden = False
+        self.footer.configure(text=("Close hidden and missing" if self.show_hidden else
+                                    "Show hidden and missing (%d)" % n_aside) if n_aside else "")
+        found = [s for s in self.sessions
+                 if not q or q in s["title"].lower() or q in (s["folder"] or "").lower()]
+        rows = [s for s in found if not self.aside(s)]
+        rest = [s for s in found if self.aside(s)] if self.show_hidden else []
         width = self.list.winfo_width()
         key = (q, width, self.show_hidden, tuple(sorted(self.hidden)),
-               tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60)) for s in rows))
+               tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60)) for s in rows + rest))
         if key == self.shown_key and not force:
             return
         self.shown_key = key
@@ -700,10 +710,23 @@ class Panel:
         for i, s in enumerate(rows):
             self.card(s, i, x1, y, x2, y + h)
             y += h + gap
-        if not rows:
+        if rest:
+            y += p(10)
+            section = y
+            c.create_text(x1 + p(2), y + p(8), text="HIDDEN AND MISSING", font=self.f_pill,
+                          fill=C["muted"], anchor="w")
+            y += p(24)
+            for i, s in enumerate(rest, len(rows)):
+                self.card(s, i, x1, y, x2, y + h)
+                y += h + gap
+        if not rows and not rest:
             c.create_text(width / 2, p(40), text="No sessions match." if q else "No sessions yet.",
                           font=self.f_meta, fill=C["muted"])
         c.configure(scrollregion=(0, 0, width, y + p(8)))
+        if rest and self.scroll_to_aside:
+            self.scroll_to_aside = False
+            c.update_idletasks()
+            c.yview_moveto(max(0, section - p(4)) / float(y + p(8)))
 
     def card(self, s, i, x1, y1, x2, y2):
         c, p = self.list, self.px
@@ -719,7 +742,7 @@ class Panel:
         tx += p(14)
         room = x2 - p(14) - tx
         c.create_text(tx, y1 + p(18), text=self.fit(s["title"], self.f_title, room), font=self.f_title,
-                      fill=C["text"] if here and not hidden else C["gone"], anchor="w", tags=tag)
+                      fill=C["text"], anchor="w", tags=tag)
         where = s["folder"] + ("  (WSL)" if s["distro"] or (s["cwd"] or "").startswith("\\\\wsl") else "")
         if not here:
             where += "  · folder missing"
@@ -727,9 +750,9 @@ class Panel:
             where = "hidden  · " + where
         when = ago(s["mtime"])
         c.create_text(x2 - p(14), y1 + p(38), text=when, font=self.f_meta,
-                      fill=C["muted"] if here else C["gone"], anchor="e", tags=tag)
+                      fill=C["muted"], anchor="e", tags=tag)
         c.create_text(tx, y1 + p(38), text=self.fit(where, self.f_meta, room - self.f_meta.measure(when) - p(10)),
-                      font=self.f_meta, fill=C["muted"] if here else C["gone"], anchor="w", tags=tag)
+                      font=self.f_meta, fill=C["muted"], anchor="w", tags=tag)
 
         def enter(e):
             c.itemconfigure(box, outline=C["blue"], width=p(1.5))
@@ -781,13 +804,12 @@ class Panel:
     def set_hidden(self, s, on):
         (self.hidden.add if on else self.hidden.discard)(s["id"])
         save_hidden(self.hidden)
-        if not any(x["id"] in self.hidden for x in self.sessions):
-            self.show_hidden = False
         self.draw_head()
         self.render(force=True)
 
     def toggle_hidden(self):
         self.show_hidden = not self.show_hidden
+        self.scroll_to_aside = self.show_hidden
         self.render(force=True)
 
     def close(self, s):
