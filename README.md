@@ -38,12 +38,13 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - **It is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai.
 - The switch requires a free z.ai API key; without one, the dialog never appears.
 
-**Session panel**
+**Agent Panel**
 - Every Claude Code session on your PC, old and current, in a narrow list docked to the right edge of the screen, newest first, with a search box.
 - Click a session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
 - A green dot marks a session that is open and waiting, a blue one a session that is working. Clicking an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
 - It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon hides and shows it; while hidden, it gives the screen space back.
-- It only reads your sessions; it never changes or deletes one.
+- Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions come back from *Show hidden sessions* at the bottom of the panel.
+- Delete asks twice, then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session has to be closed first.
 
 **Get your free z.ai API key**
 
@@ -95,7 +96,7 @@ The installer:
 - registers the hooks in `~/.claude/settings.json`, after saving a backup as `settings.json.before-claude-plus`;
 - sets up the status line only if you do not already have one;
 - creates `~/.claudex/profiles/glm/.env`, where you can store the optional z.ai key;
-- installs the session panel's tray library (`pystray`), starts the panel and adds it to Windows sign-in.
+- installs the Agent Panel's tray library (`pystray`), starts the panel and adds it to Windows sign-in.
 
 ## Use your own steps
 
@@ -112,7 +113,7 @@ The installer:
 Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer the terminal, run `.\uninstall.cmd` inside that folder instead.
 
 - It removes the claude-plus-fa hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus-fa one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
-- It closes the session panel, removes it from Windows sign-in, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
+- It closes the Agent Panel, removes it from Windows sign-in, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
 - Your own hooks and your own status line are left untouched.
 - Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them.
 - Restart any open Claude Code session afterwards.
@@ -130,7 +131,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `context-guard.py` | Handles the 90 % auto save, the compaction notes and the read-back |
 | `glm-fallback.py` | Shows the free-model switch dialog when the usage limit is reached |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
-| `session-panel.pyw` | The session panel on the right edge of the screen |
+| `agent-panel.pyw` | The Agent Panel on the right edge of the screen |
 | `install.cmd`, `install.py` | The installer |
 | `uninstall.cmd`, `uninstall.py` | Removes claude-plus-fa in one step |
 
