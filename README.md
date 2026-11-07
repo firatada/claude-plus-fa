@@ -41,7 +41,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 **Session panel**
 - Every Claude Code session on your PC, old and current, in a narrow list docked to the right edge of the screen, newest first, with a search box.
 - Click a session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
-- A green dot marks a session that is open and waiting, a blue one a session that is working. Clicking an open session does not start a second copy.
+- A green dot marks a session that is open and waiting, a blue one a session that is working. Clicking an open session does not start a second copy: it brings that session's window to the front, maximised.
 - It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon hides and shows it; while hidden, it gives the screen space back.
 - It only reads your sessions; it never changes or deletes one.
 
