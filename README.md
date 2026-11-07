@@ -1,4 +1,4 @@
-# claude-plus
+# claude-plus-fa
 
 A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows safer and more pleasant to work with over long sessions.
 
@@ -7,7 +7,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 ## What you get
 
-![The claude-plus status line: model, context, 5-hour and weekly usage, and the last prompt](docs/status-line-v2.png)
+![The claude-plus-fa status line: model, context, 5-hour and weekly usage, and the last prompt](docs/status-line-v2.png)
 
 **Status line**
 - Shows the active model, how much of the context window is in use, and your 5-hour and weekly usage together with their reset times.
@@ -18,7 +18,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - There is no need to scroll back through a long answer to recall what you asked.
 
 **Context Tracker**
-- The status line lets you watch the context yourself, while claude-plus keeps track of it for you in the background at all times.
+- The status line lets you watch the context yourself, while claude-plus-fa keeps track of it for you in the background at all times.
 
 **Auto Save Before /compact, at 90 %**
 - When the context reaches 90 %, well before Claude Code's own auto-compaction at about 97 %, Claude **automatically**:
@@ -38,6 +38,13 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - **It is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai.
 - The switch requires a free z.ai API key; without one, the dialog never appears.
 
+**Session panel**
+- Every Claude Code session on your PC, old and current, in a narrow list docked to the right edge of the screen, newest first, with a search box.
+- Click a session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
+- A green dot marks a session that is open and waiting, an amber one a session that is working. Clicking an open session does not start a second copy.
+- It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon hides and shows it; while hidden, it gives the screen space back.
+- It only reads your sessions; it never changes or deletes one.
+
 **Get your free z.ai API key**
 
 It is completely free!
@@ -48,12 +55,12 @@ It is completely free!
 4. Ask Claude Code to open the key file, which the installer created:
 
 ```
-Open the claude-plus z.ai key file ~/.claudex/profiles/glm/.env in Notepad.
+Open the claude-plus-fa z.ai key file ~/.claudex/profiles/glm/.env in Notepad.
 ```
 
 5. Replace `PASTE_YOUR_KEY_HERE` with your key and save the file. Never paste the key into a chat.
 
-The key is optional: without it, everything else in claude-plus works as usual.
+The key is optional: without it, everything else in claude-plus-fa works as usual.
 
 ## Requirements
 
@@ -66,13 +73,13 @@ The key is optional: without it, everything else in claude-plus works as usual.
 The easiest way is to ask Claude Code:
 
 ```
-Install claude-plus from github.com/firatada-ctrl/claude-plus.
+Install claude-plus-fa from github.com/firatada-ctrl/claude-plus.
 ```
 
 By hand instead:
 
 1. Download the ZIP from this page (Code, Download ZIP) and extract it.
-2. Open the extracted claude-plus folder and double-click `install.cmd`.
+2. Open the extracted claude-plus-fa folder and double-click `install.cmd`.
 
 - If you prefer git, clone the repository instead and double-click `install.cmd` in the cloned folder:
 
@@ -87,11 +94,12 @@ The installer:
 - copies the scripts into `~/.claude`, and `glm.cmd` into `~/.local/bin`, which it adds to your `PATH`;
 - registers the hooks in `~/.claude/settings.json`, after saving a backup as `settings.json.before-claude-plus`;
 - sets up the status line only if you do not already have one;
-- creates `~/.claudex/profiles/glm/.env`, where you can store the optional z.ai key.
+- creates `~/.claudex/profiles/glm/.env`, where you can store the optional z.ai key;
+- installs the session panel's tray library (`pystray`), starts the panel and adds it to Windows sign-in.
 
 ## Use your own steps
 
-- If you already keep your own procedure for saving work, for example in your `CLAUDE.md`, you can point claude-plus to it in `~/.claude/claude-plus.local.json`:
+- If you already keep your own procedure for saving work, for example in your `CLAUDE.md`, you can point claude-plus-fa to it in `~/.claude/claude-plus.local.json`:
 
 ```json
 { "rule": "the global CLAUDE.md, section \"Saving work before compaction\"" }
@@ -101,17 +109,17 @@ The installer:
 
 ## Uninstall
 
-Open the claude-plus folder and double-click `uninstall.cmd`. If you prefer the terminal, run `.\uninstall.cmd` inside that folder instead.
+Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer the terminal, run `.\uninstall.cmd` inside that folder instead.
 
-- It removes the claude-plus hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
-- It deletes the installed scripts, `glm.cmd` and the state files claude-plus keeps.
+- It removes the claude-plus-fa hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus-fa one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
+- It closes the session panel, removes it from Windows sign-in, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
 - Your own hooks and your own status line are left untouched.
 - Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them.
 - Restart any open Claude Code session afterwards.
 
 ## Limits
 
-- claude-plus runs on Windows only.
+- claude-plus-fa runs on Windows only.
 
 ## Files
 
@@ -122,8 +130,9 @@ Open the claude-plus folder and double-click `uninstall.cmd`. If you prefer the 
 | `context-guard.py` | Handles the 90 % auto save, the compaction notes and the read-back |
 | `glm-fallback.py` | Shows the free-model switch dialog when the usage limit is reached |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
+| `session-panel.pyw` | The session panel on the right edge of the screen |
 | `install.cmd`, `install.py` | The installer |
-| `uninstall.cmd`, `uninstall.py` | Removes claude-plus in one step |
+| `uninstall.cmd`, `uninstall.py` | Removes claude-plus-fa in one step |
 
 ## License
 

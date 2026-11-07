@@ -4,7 +4,7 @@
 # rate_limits only exists for a claude.ai subscription, so a GLM session shows
 # the context bar alone.
 #
-# Part of claude-plus. Edit the copy in the claude-plus folder and rerun install.cmd.
+# Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
 #
 # It also records the context figure per session for context-guard.py.
 import json, os, shutil, sys, textwrap, time

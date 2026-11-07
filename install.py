@@ -4,9 +4,10 @@
 #   context-guard.py -> ~/.claude/hooks     (Stop at 90 % context, PreCompact, SessionStart compact + startup)
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
+#   session-panel.pyw -> ~/.claude          (every session in a list on the right edge; starts at sign-in)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
-import ctypes, json, os, shutil, sys, time, winreg
+import ctypes, json, os, shutil, subprocess, sys, time, winreg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -17,6 +18,9 @@ SETTINGS = os.path.join(CLAUDE_DIR, "settings.json")
 KEY_FILE = os.path.join(HOME, ".claudex", "profiles", "glm", ".env")
 PLACEHOLDER = "PASTE_YOUR_KEY_HERE"
 HOOK_TIMEOUT = 3600  # the Yes/No dialog waits inside the hook
+PANEL = os.path.join(CLAUDE_DIR, "session-panel.pyw")
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_NAME = "ClaudePlusFA session panel"
 
 
 def copy_files():
@@ -111,12 +115,52 @@ def ensure_key():
     return False
 
 
+def install_panel():
+    """The session panel: copied, its tray library installed, started now and at every sign-in."""
+    os.makedirs(CLAUDE_DIR, exist_ok=True)
+    shutil.copy2(os.path.join(HERE, "session-panel.pyw"), PANEL)
+    print("copied  session-panel.pyw -> %s" % CLAUDE_DIR)
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pystray", "pillow"],
+                       capture_output=True, text=True)
+    print("ok      pystray and pillow installed" if r.returncode == 0 else
+          "WARNING could not install pystray (%s); the panel runs without a tray icon" % r.stderr.strip()[-200:])
+    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    command = '"%s" "%s"' % (pythonw, PANEL)
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, RUN_NAME, 0, winreg.REG_SZ, command)
+    print("ok      session panel starts at sign-in (HKCU\\%s\\%s)" % (RUN_KEY, RUN_NAME))
+    stop_panel()
+    # without the markers of a Claude session that may be running this installer: the panel
+    # passes its environment to every session it opens, and an inherited
+    # CLAUDE_CODE_CHILD_SESSION stops a resumed session from saving its transcript
+    env = {k: v for k, v in os.environ.items()
+           if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
+    subprocess.Popen([pythonw, PANEL], creationflags=0x00000008, env=env)  # DETACHED_PROCESS
+    print("started the session panel on the right edge of the screen (Ctrl+Alt+C shows or hides it)")
+
+
+def stop_panel():
+    """Ask a running panel to quit, so it gives its screen space back; force it after 3 s."""
+    k = ctypes.windll.kernel32
+    h = k.OpenEventW(0x0002, False, "Local\\claude-plus-fa-session-panel-quit")  # EVENT_MODIFY_STATE
+    if h:
+        k.SetEvent(h)
+        k.CloseHandle(h)
+        time.sleep(3)
+    subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+                    "Where-Object { $_.CommandLine -like '*session-panel.pyw*' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                   capture_output=True)
+
+
 def main():
     if shutil.which("claude") is None:
         print("WARNING Claude Code (claude) is not on PATH; install it first")
     copy_files()
     ensure_on_path()
     register_hook()
+    install_panel()
     has_key = ensure_key()
     print()
     print("Done. New Claude Code sessions pick up the hook; already open ones need a restart.")

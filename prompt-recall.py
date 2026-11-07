@@ -2,7 +2,7 @@
 # show it on a second line and nobody has to scroll up to find what they asked.
 # Prints nothing: whatever a UserPromptSubmit hook prints is added to Claude's context.
 #
-# Part of claude-plus. Edit the copy in the claude-plus folder and rerun install.cmd.
+# Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
 import json, os, sys, time
 
 STATE = os.path.join(os.path.expanduser("~"), ".claude", "state", "context")
