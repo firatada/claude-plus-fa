@@ -15,6 +15,7 @@ SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
 SCAN_EVERY = 15        # seconds
+LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
 CREATE_NEW_CONSOLE = 0x10
 CREATE_NO_WINDOW = 0x08000000
 
@@ -667,9 +668,20 @@ class Panel:
             return
         now = time.time()
         if now - getattr(self, "last_scan", 0) > SCAN_EVERY:
-            self.last_scan = now
+            self.last_scan = self.last_live = now
             self.refresh()
+        elif now - getattr(self, "last_live", 0) > LIVE_EVERY:
+            self.last_live = now
+            self.update_live()
         self.root.after(200, self.poll)
+
+    def update_live(self):
+        """Refresh only which sessions are open and what they are doing, between full scans."""
+        live = running()
+        for s in self.sessions:
+            run = live.get(s["id"]) or {}
+            s["status"], s["pid"] = run.get("status"), run.get("pid")
+        self.render()
 
     def flash(self, text):
         self.note.configure(text=text)
@@ -692,8 +704,8 @@ class Panel:
         n_aside = sum(1 for s in self.sessions if self.aside(s))
         if not n_aside:
             self.show_hidden = False
-        self.footer.configure(text=("Close hidden and missing" if self.show_hidden else
-                                    "Show hidden and missing (%d)" % n_aside) if n_aside else "")
+        self.footer.configure(text=("Close hidden and deleted" if self.show_hidden else
+                                    "Show hidden and deleted (%d)" % n_aside) if n_aside else "")
         found = [s for s in self.sessions
                  if not q or q in s["title"].lower() or q in (s["folder"] or "").lower()]
         rows = [s for s in found if not self.aside(s)]
@@ -713,7 +725,7 @@ class Panel:
         if rest:
             y += p(10)
             section = y
-            c.create_text(x1 + p(2), y + p(8), text="HIDDEN AND MISSING", font=self.f_pill,
+            c.create_text(x1 + p(2), y + p(8), text="HIDDEN AND DELETED", font=self.f_pill,
                           fill=C["muted"], anchor="w")
             y += p(24)
             for i, s in enumerate(rest, len(rows)):
@@ -745,7 +757,7 @@ class Panel:
                       fill=C["text"], anchor="w", tags=tag)
         where = s["folder"] + ("  (WSL)" if s["distro"] or (s["cwd"] or "").startswith("\\\\wsl") else "")
         if not here:
-            where += "  · folder missing"
+            where += "  · folder deleted"
         if hidden:
             where = "hidden  · " + where
         when = ago(s["mtime"])
@@ -766,7 +778,7 @@ class Panel:
         # double click, so a stray click never starts a session.
         def click(e):
             if not here:
-                self.flash("That folder no longer exists.")
+                self.flash("Its folder was deleted.")
             elif s["status"]:
                 if not focus_session(s):
                     self.flash("Already open, but its window was not found.")
