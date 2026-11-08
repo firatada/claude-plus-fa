@@ -80,7 +80,7 @@ def parse(path):
         head = f.read(262144)
         f.seek(max(0, size - 1048576))
         tail = f.read()
-    info = {"cwds": [], "title": None, "first": None}
+    info = {"cwds": [], "title": None, "first": None, "entry": None}
     for line in head.split(b"\n"):
         if b'"cwd"' not in line and b'"type":"user"' not in line:
             continue
@@ -88,6 +88,7 @@ def parse(path):
             o = json.loads(line)
         except ValueError:
             continue
+        info["entry"] = info["entry"] or o.get("entrypoint")  # "sdk-cli" for a headless `claude -p` run
         if o.get("cwd") and o["cwd"] not in info["cwds"]:
             info["cwds"].append(o["cwd"])
         if not info["first"] and o.get("type") == "user" and not o.get("isMeta") and not o.get("isSidechain"):
@@ -230,7 +231,7 @@ def scan(cache):
                     continue
                 key = "%s|%s" % (st.st_mtime, st.st_size)
                 hit = cache.get(path)
-                if not hit or hit.get("key") != key:
+                if not hit or hit.get("key") != key or "entry" not in hit:
                     try:
                         hit = dict(parse(path), key=key)
                     except Exception:
@@ -245,7 +246,7 @@ def scan(cache):
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
                                  "mtime": st.st_mtime, "status": (run or {}).get("status"),
                                  "pid": (run or {}).get("pid"), "name": (run or {}).get("name"),
-                                 "ctx": read_ctx(sid)})
+                                 "ctx": read_ctx(sid), "headless": hit.get("entry") == "sdk-cli"})
     for gone in [p for p in cache if p not in seen]:
         del cache[gone]
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
@@ -676,7 +677,8 @@ class Panel:
             return None
         return {"sessions": [{"id": s["id"], "title": s["title"], "folder": s["folder"], "path": where_of(s),
                               "status": s["status"], "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden,
-                              "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"])}
+                              "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
+                              "headless": s.get("headless", False)}
                              for s in self.sessions],
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
                            "seven_day": usage(lim.get("seven_day"), "%a %H:%M")}}

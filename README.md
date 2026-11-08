@@ -44,7 +44,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - Double-click a closed session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
 - A green dot marks a session that is open and waiting, a blue one a session that is working. A single click on an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
 - It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon brings it to the front when it is covered, and hides or shows it otherwise.
-- Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, and sessions whose folder no longer exists, leave the main list; *Show hidden and deleted* at the bottom of the panel lists them in a section of their own.
+- Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Show hidden, deleted and headless* at the bottom of the panel lists them in a section of their own.
 - Delete asks once more on the spot (*Yes, delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session has to be closed first.
 
 **Get your free z.ai API key**
