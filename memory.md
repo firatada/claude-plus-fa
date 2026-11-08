@@ -67,6 +67,7 @@ Key file: `~/.claudex/profiles/glm/.env`, line `CLAUDEX_KEY="..."`. Never in thi
 ## Decisions
 - 2026-11-07, Agent Panel built as a Tk window, not a web view: about 25 MB against 100 MB or more for an always-open panel, no .NET bridge to install. Rejected: pywebview with WebView2.
 - 2026-11-08, ported to pywebview + WebView2 (Fırat agreed the boundary: behaviour 1:1; drawing, menu and the two-step confirm replaced). Tk could not draw the Spark look: jagged corners, no shadow, a native menu, every fix hand drawing. Cost measured on 2026-11-08: about 210 MB private memory (pythonw with .NET 68 MB, five WebView2 processes 142 MB). The general rule is `mindmap/desktop-apps.md`.
+- 2026-11-08, headless runs are not nested under the session that started them (Fırat agreed): the transcript does not record its parent, so linking needs a search of the parent's transcript (tech news's is 278 MB) or a folder-and-time guess, and the runs are rarely opened. They stay in the set-aside section.
 - 2026-11-07, a click on an open session restores its window (`SW_RESTORE` only if minimised) and raises it. Maximising was tried first and rejected by Fırat: he wants the window back where it was.
 - 2026-11-07, Delete goes to the Recycle Bin, never a permanent delete, so a slip can be undone (Fırat's choice).
 - 2026-11-07, package display name `claude-plus-fa` (FA for Fırat Ada); file names such as `claude-plus.local.json` and the backup suffixes keep the old name so existing installs do not break.
