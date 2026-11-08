@@ -44,6 +44,22 @@ def record(sid, pct):
         pass  # the bar matters more than the record
 
 
+def record_limits(limits):
+    """The latest 5-hour and weekly figures, for the Agent Panel. Written whole, then swapped in,
+    so a reader never sees half a file."""
+    if not limits:
+        return
+    state = os.path.join(os.path.expanduser("~"), ".claude", "state", "context")
+    path = os.path.join(state, "rate_limits.json")
+    try:
+        os.makedirs(state, exist_ok=True)
+        with open(path + ".tmp", "w") as f:
+            json.dump(dict(limits, at=time.time()), f)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        pass
+
+
 def columns():
     """Terminal width: Claude Code does not pass it and stdout is a pipe, so ask the console."""
     try:
@@ -87,6 +103,7 @@ parts = [(data.get("model") or {}).get("display_name") or "Claude"]
 parts.append(bar("ctx", ctx))
 
 limits = data.get("rate_limits") or {}
+record_limits(limits)
 if "five_hour" in limits:
     h = limits["five_hour"]
     parts.append(bar("5h", h.get("used_percentage"), resets(h.get("resets_at"), "%H:%M")))
