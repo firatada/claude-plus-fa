@@ -540,7 +540,7 @@ def ok(t):
 
 
 def err(t):
-    """A failure: it stays on screen until the next click, and says what to do about it."""
+    """A failure: it stays on screen until the next click or Esc, and says what to do about it."""
     return {"t": t, "err": True}
 
 
@@ -706,7 +706,7 @@ class Panel:
                              for s in self.sessions],
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
                            "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
-                "scanned": self.scanned, "error": self.error}
+                "scanned": self.scanned, "error": self.error, "dbl": user32.GetDoubleClickTime()}
 
     def push(self, force=False):
         if not self.page_ready:
@@ -764,7 +764,7 @@ class Panel:
             save_hidden(self.hidden)
             self.sessions = [x for x in self.sessions if x["id"] != sid]
             self.push()
-            return ok("Moved to the Recycle Bin.")
+            return ok("Moved " + short(s["title"]) + " to the Recycle Bin.")
         return err("Could not delete it. A file in it may be in use; try again in a moment.")
 
     def close_delete(self, sid):
