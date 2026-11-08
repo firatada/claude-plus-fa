@@ -56,8 +56,11 @@ h1 { font-size: 15px; font-weight: 600; }
 .card:hover { border-color: var(--blue); box-shadow: var(--shadow), 0 0 0 .5px var(--blue); }
 .card.here { cursor: pointer; }
 .t { display: flex; align-items: center; gap: 6px; height: 18px; }
-.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.dot.busy { background: var(--blue); }
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gone); }
+/* working: red and blinking for as long as Claude reports the session busy */
+.dot.busy { background: var(--red); animation: blink 1s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
 .dot.idle { background: var(--green); }
 .name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .path, .meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
