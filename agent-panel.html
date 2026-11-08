@@ -63,7 +63,8 @@ h1 { font-size: 15px; font-weight: 600; }
 .path, .meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
 .path { white-space: nowrap; overflow: hidden; }
 .meta { display: flex; align-items: center; gap: 6px; }
-.flags { margin-left: auto; white-space: pre; }
+.meta > span { flex: none; }
+.meta > .flags { flex: 0 1 auto; min-width: 0; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar { flex: none; width: 56px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: 3px; }
 
@@ -171,8 +172,10 @@ function fill(el, s) {
   el.querySelector(".name").textContent = s.title;
   el.querySelector(".path").dataset.full = s.path;
   const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"],
-                                                     [s.age]).join("  ·  ");
-  const meta = `ctx ${bar(s.ctx)}<span>${pct(s.ctx)}</span><span class="flags">${esc(flags)}</span>`;
+                                                     [s.age]).join(" · ");
+  // a session with no context reading shows no ctx bar at all, rather than an empty bar and "--"
+  const ctx = s.ctx == null ? "" : `ctx ${bar(s.ctx)}<span>${pct(s.ctx)}</span>`;
+  const meta = `${ctx}<span class="flags" data-full="${esc(flags)}">${esc(flags)}</span>`;
   const m = el.querySelector(".meta");
   if (m.dataset.html !== meta) { m.innerHTML = meta; m.dataset.html = meta; }
 }
@@ -248,6 +251,8 @@ function fitPaths() {
     if (el.textContent !== shown) el.textContent = shown;
     el.classList.toggle("cut", shown !== full);
   });
+  // flags that do not fit end in "…" and show in full in the tooltip
+  document.querySelectorAll(".flags").forEach(el => el.classList.toggle("cut", el.scrollWidth > el.clientWidth));
 }
 addEventListener("resize", fitPaths);
 
@@ -357,7 +362,7 @@ addEventListener("contextmenu", e => {
   if (s) openMenu(s, e.clientX, e.clientY); else closeMenu();
 });
 list.addEventListener("mousemove", e => {
-  const p = e.target.closest(".path.cut");
+  const p = e.target.closest(".cut");
   if (p) { if (tipTarget && tipTarget !== p) tipHide(); tipArm(p); }
   else if (tipTarget) tipHide();
 });
