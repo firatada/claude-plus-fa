@@ -18,7 +18,7 @@ WIDTH = 10  # cells per bar
 def bar(label, pct, note=""):
     if pct is None:
         return "%s %s--%s" % (label, DIM, RESET)
-    pct = max(0, min(100, round(pct)))
+    pct = max(0, min(100, int(pct + 0.5)))  # halves round up, as in the Agent Panel
     color = GREEN if pct < 50 else YELLOW if pct < 80 else RED
     filled = round(pct * WIDTH / 100)
     text = "%s %s%s%s%s %d%%" % (label, color, "█" * filled, DIM + "░" * (WIDTH - filled), RESET, pct)
