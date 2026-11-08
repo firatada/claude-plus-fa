@@ -98,12 +98,14 @@ h1 { font-size: 15px; font-weight: 600; }
 .path { white-space: nowrap; overflow: hidden; }
 .meta { display: flex; align-items: center; gap: 6px; }
 .meta > span { flex: none; }
+.meta > [hidden] { display: none; }
 .meta > .flags { flex: 0 1 auto; min-width: 0; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar { flex: none; width: 56px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: 3px; }
 mark { background: var(--hit); color: inherit; border-radius: 2px; }
 
 .card.sk { pointer-events: none; }
+.bar.sk { animation: sk 1.4s ease-in-out infinite; }
 .sk i { display: block; height: 9px; margin: 4px 0; border-radius: 4px; background: var(--surface2);
         animation: sk 1.4s ease-in-out infinite; }
 @keyframes sk { 50% { opacity: .45; } }
@@ -112,6 +114,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 .empty { padding: 30px 14px 0; color: var(--muted); }
 .empty button { display: block; margin-top: 6px; padding: 0; border: 0; background: none; color: var(--blue); font-size: 12px; }
 .empty button:hover { text-decoration: underline; }
+.empty button, .item, #hide, #qx { transition: transform .16s ease-out; }
 
 /* a message about one card, just under it; it scrolls with its card */
 .say {
@@ -124,17 +127,19 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   content: ""; position: absolute; left: 22px; top: -5px; width: 8px; height: 8px; background: inherit;
   border: inherit; border-right: 0; border-bottom: 0; transform: rotate(45deg);
 }
+.say.up { animation-name: rise; }
 .say.up::before { top: auto; bottom: -5px; transform: rotate(225deg); }
 
 /* the set-aside section fades down into place when it is shown */
 .enter { animation: drop .16s var(--ease); }
 
-#bottom { position: relative; flex: none; }
-/* a message about the whole panel; it floats above the link so nothing below the list moves */
+#bottom { flex: none; }
+/* a message about the whole panel, at the foot of the list: the list gives up the room, so it covers no card
+   and the link and usage rows below it stay where they are */
 #note {
-  position: absolute; left: var(--edge); right: var(--edge); bottom: 100%; padding: 6px 10px; border-radius: var(--r-ctl);
+  margin: 8px var(--edge) 0; padding: 6px 10px; border-radius: var(--r-ctl);
   background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow-pop); font-size: 11px;
-  animation: drop .16s var(--ease);
+  animation: rise .16s var(--ease);
 }
 #note:empty { display: none; }
 #note.err { color: var(--red); border-color: var(--red-tint); }
@@ -159,6 +164,8 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 }
 .pop { transform-origin: top left; }
 .pop.up { animation-name: rise; transform-origin: bottom left; }
+/* opened from the keyboard: there, at once */
+.pop.now { animation: none; }
 @keyframes drop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 @keyframes rise { from { opacity: 0; transform: translateY(4px) scale(.98); } }
 .item {
@@ -185,7 +192,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 .btn.go { background: var(--blue); border-color: var(--blue); color: var(--on-accent); box-shadow: var(--glow); }
 .btn.danger { background: var(--red); border-color: var(--red); color: var(--on-accent); box-shadow: var(--glow-red); }
 .btn.go:hover, .btn.danger:hover { filter: brightness(1.08); }
-.btn:active, .item:active, #hide:active, #qx:active, #footer:active { transform: scale(.97); }
+.btn:active, .item:active, #hide:active, #qx:active, #footer:active, .empty button:active { transform: scale(.97); }
 #footer { transition: transform .16s ease-out; }
 
 .tip {
@@ -233,7 +240,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   <input id="q" type="search" name="agent-panel-search" aria-label="Search sessions"
     placeholder="Search titles and folders…" spellcheck="false" autocomplete="off" autocorrect="off"
     autocapitalize="off" data-1p-ignore data-lpignore="true" data-form-type="other">
-  <button id="qx" type="button" aria-label="Clear search" data-tip data-full="Clear the search (Esc)" hidden>
+  <button id="qx" type="button" tabindex="-1" aria-label="Clear search" data-tip data-full="Clear the search (Esc)" hidden>
     <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"
       stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
   </button>
@@ -301,13 +308,22 @@ function fill(el, s, q) {
   const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"]).join(" · ");
   el.setAttribute("aria-label", [s.title, STATUS[st].toLowerCase(), s.path, s.age,
     s.ctx == null ? "" : "context " + pct(s.ctx), flags].filter(Boolean).join(", "));
+  // the meta row is built once and patched, so a tooltip on it survives the 2 s refresh;
   // a session with no context reading shows no ctx bar at all
-  const ctx = s.ctx == null ? "" :
-    `<span data-tip data-full="Context used: ${pct(s.ctx)} of the window">ctx</span>${bar(s.ctx)}` +
-    `<span data-k="ctx:${esc(s.id)}">${pct(s.ctx)}</span>`;
-  const meta = `${ctx}<span class="flags" data-full="${esc(flags)}">${esc(flags)}</span>`;
   const m = el.querySelector(".meta");
-  if (m.dataset.html !== meta) { m.innerHTML = meta; m.dataset.html = meta; }
+  if (!m.firstChild) m.innerHTML = '<span class="cx" data-tip>ctx</span><span class="bar"><i></i></span>' +
+                                   '<span class="pc"></span><span class="flags"></span>';
+  const [cx, b, pc, fl] = m.children, has = s.ctx != null;
+  [cx, b, pc].forEach(x => { x.hidden = !has; });
+  if (has) {
+    const v = Math.round(Math.max(0, Math.min(100, s.ctx)));
+    cx.dataset.full = `Context used: ${v}% of the window`;
+    b.firstChild.style.width = v ? `max(6px, ${v}%)` : "0";
+    b.firstChild.style.background = v < 50 ? "var(--green)" : v < 80 ? "var(--gold)" : "var(--red)";
+    pc.textContent = v + "%";
+    pc.dataset.k = "ctx:" + s.id;
+  }
+  if (fl.textContent !== flags) { fl.textContent = flags; fl.dataset.full = flags; }
 }
 function cardEl(s, old, q) {
   let el = old.get(s.id);
@@ -342,7 +358,8 @@ function skeleton() {
 let hovering = false;
 function holdOrder(els, list) {
   const now = [...list.children];
-  if (!hovering || els.length !== now.length || !els.every(e => now.includes(e))) return els;
+  const held = hovering || menu || list.contains(document.activeElement);
+  if (!held || els.length !== now.length || !els.every(e => now.includes(e))) return els;
   return now;
 }
 
@@ -356,6 +373,7 @@ function render() {
   $("count").textContent = !state.ready ? "" : q ? `${rows.length}/${nMain}` : nMain;
   $("count").dataset.full = q ? "Matches in the main list / sessions in it" : "Sessions in the main list";
   $("footer").setAttribute("aria-expanded", showHidden);
+  $("footer").dataset.full = showHidden ? "Takes those sessions out of the list again" : "Lists the sessions kept out of the main list";
   const nShown = q ? hits.length : nAside;
   // while a search finds nothing set aside, the link would only open an empty section
   $("footer").textContent = !nAside || (q && !hits.length && !showHidden) ? "" : showHidden ? "Fold Hidden, Deleted and Headless"
@@ -370,18 +388,28 @@ function render() {
     if (!state.ready) els = [skeleton(), skeleton(), skeleton()];
     else if (!els.length) {
       const offAside = !showHidden && (q ? hits.length : nAside);
-      const e = note("empty", q ? (offAside ? `Nothing in the main list matches; ${hits.length} hidden, deleted or headless sessions do.`
+      const e = note("empty", q ? (offAside ? (hits.length === 1 ? "Nothing in the main list matches; 1 hidden, deleted or headless session does."
+                                                         : `Nothing in the main list matches; ${hits.length} hidden, deleted or headless sessions do.`)
                                             : "No sessions match.")
+                                : nAside === 1 ? "The only session is hidden, deleted or headless."
                                 : nAside ? `All ${nAside} sessions are hidden, deleted or headless.` : "No sessions yet.");
       // the way out of the empty list is offered right where the reader is looking
-      if (offAside) e.insertAdjacentHTML("beforeend", '<button type="button" data-a="aside">Show them</button>');
+      if (offAside) e.insertAdjacentHTML("beforeend", '<button type="button" data-a="aside">Show Them</button>');
       els.push(e);
     }
     els = holdOrder(els, list);
     const same = els.length === list.children.length && els.every((e, i) => e === list.children[i]);
     if (!same) {
       const bubble = list.querySelector(".say"), before = new Set(list.children);
+      const had = list.contains(document.activeElement) && document.activeElement.closest(".card[data-id]");
+      const at = had ? [...list.querySelectorAll(".card[data-id]")].indexOf(had) : -1;
       list.replaceChildren(...els);
+      if (had) {
+        // the card that had the keyboard keeps it; if it left the list, the card now in its place takes it
+        const cards = [...list.querySelectorAll(".card[data-id]")];
+        const back = cards.find(c => c.dataset.id === had.dataset.id) || cards[Math.min(at, cards.length - 1)];
+        if (back) back.focus({preventScroll: true});
+      }
       if (bubble) {
         const card = [...list.querySelectorAll(".card[data-id]")].find(c => c.dataset.id === bubble.dataset.for);
         if (card) { list.append(bubble); placeSay(bubble, card); } else sayGone();
@@ -396,27 +424,36 @@ function render() {
     scrollToAside = false;
     const r = $("sect").getBoundingClientRect(), l = list.getBoundingClientRect();
     if (r.top < l.top || r.bottom > l.bottom) $("sect").scrollIntoView({block: "start"});
+    // the control that revealed the section may be gone; the keyboard goes to the section
+    if (!document.body.contains(document.activeElement) || document.activeElement === document.body) {
+      $("sect").tabIndex = -1;
+      $("sect").focus({preventScroll: true});
+    }
   }
   const L = state.limits || {};
   $("usage").innerHTML = [["5h", L.five_hour], ["Week", L.seven_day]].map(([n, v]) => {
+    if (!state.ready) return `<div class="u"><span>${n}</span><span class="bar sk"></span><span></span></div>`;
     const val = v && v.pct != null ? pct(v.pct) + (v.note ? "  ·  " + esc(v.note) : "") : "no figure yet";
     const tipText = v && v.pct != null ? "" : ' data-tip data-full="Claude Code reports it with its next reply"';
     return `<div class="u"><span>${n}</span>${bar(v && v.pct)}<span data-k="u:${n}"${tipText}>${val}</span></div>`;
   }).join("");
-  if (state.error !== standing) { standing = state.error || null; showNote(); }
-  fadeChanged();
+  if (state.error !== standing) { standing = state.error || null; showNote(); if (standing) announce(standing); }
+  fadeChanged(q !== lastQ);
+  lastQ = q;
 }
 
 // a figure whose text changed since it was last drawn fades in; one that did not stays still
+// (the count does not fade while it follows the reader's typing: that is too frequent to animate)
 const shown = new Map();
-function fadeChanged() {
+let lastQ = "";
+function fadeChanged(typed) {
   const k = $("count");
   document.querySelectorAll("[data-k]").forEach(el => mark(el.dataset.k, el));
-  mark("count", k);
-  function mark(key, el) {
+  mark("count", k, typed);
+  function mark(key, el, still) {
     const t = el.textContent, was = shown.get(key);
     shown.set(key, t);
-    if (was !== undefined && was !== t) { el.classList.remove("chg"); void el.offsetWidth; el.classList.add("chg"); }
+    if (!still && was !== undefined && was !== t) { el.classList.remove("chg"); void el.offsetWidth; el.classList.add("chg"); }
   }
 }
 
@@ -466,13 +503,12 @@ addEventListener("resize", () => { fitPaths(); closeMenu(); });
 
 // ----- messages: one about a card sits under that card; one about the whole panel floats above the link -----
 // The bottom line shows a passing message when there is one, else the standing one (a failed
-// read), so neither wipes the other; while it shows, the list gets room so it covers no card.
+// read), so neither wipes the other.
 let sayJob = null, passing = null, standing = null;
 function showNote() {
   const n = $("note"), m = passing || (standing && {t: standing, cls: "warn"});
   n.textContent = m ? m.t : "";
   n.className = m ? m.cls : "";
-  $("list").style.paddingBottom = m ? n.offsetHeight + 12 + "px" : "";
 }
 function announce(text) { $("live").textContent = ""; requestAnimationFrame(() => { $("live").textContent = text; }); }
 function sayGone() {
@@ -490,7 +526,8 @@ function placeSay(b, card) {
   b.style.top = (fits ? below : card.offsetTop - b.offsetHeight - 6) + "px";
   b.classList.toggle("up", !fits);
 }
-function say(card, text, err) {
+// `wait` marks a message that stands until the answer replaces it ("Deleting…")
+function say(card, text, err, wait) {
   if (!text) return;
   announce(text);
   sayGone();
@@ -506,8 +543,8 @@ function say(card, text, err) {
     passing = {t: text, cls: err ? "err" : ""};
     showNote();
   }
-  // a success leaves by itself; an error stays until the next click, key or scroll
-  if (!err) sayJob = setTimeout(sayGone, 5000);
+  // a success leaves by itself; an error stays until the next click or Esc
+  if (!err && !wait) sayJob = setTimeout(sayGone, 5000);
 }
 const reply = card => r => r && say(card, r.t, r.err);
 
@@ -558,11 +595,11 @@ addEventListener("pointermove", e => {
 });
 document.documentElement.addEventListener("mouseleave", tipHide);
 // anything the reader does with the keyboard dismisses it
-addEventListener("keydown", () => tipHide(), true);
+addEventListener("keydown", e => { if (e.key !== "Escape") tipHide(); }, true);
 addEventListener("focusin", () => tipHide());
 
 // ----- right-click menu, and the two-step confirm it turns into -----
-let menu = null, menuFor = null, menuCard = null, swallow = false, quiet = false;
+let menu = null, menuFor = null, menuCard = null, swallow = false, quiet = false, byKey = false;
 function setTarget(id) {
   menuFor = id;
   document.querySelectorAll(".card[data-id]").forEach(c => c.classList.toggle("target", c.dataset.id === id));
@@ -591,8 +628,9 @@ function placeBy(m, card) {
   const w = m.offsetWidth, h = m.offsetHeight;
   if (r.bottom + 6 + h > innerHeight - 8 && r.top - 6 - h < 8) {
     // room on neither side: bring the card to the top of the list first
-    quiet = true;
+    const top = $("list").scrollTop;
     card.scrollIntoView({block: "start"});
+    quiet = $("list").scrollTop !== top;  // only a scroll that happened sends an event to skip
     r = card.getBoundingClientRect();
   }
   const up = !(r.bottom + 6 + h <= innerHeight - 8) && r.top - 6 - h >= 8;
@@ -605,27 +643,29 @@ function openMenu(s, card, x, y) {
   setTarget(s.id);
   menuCard = card;
   const m = menu = document.createElement("div");
-  m.className = "pop";
+  m.className = "pop" + (byKey ? " now" : "");
+  byKey = false;
   m.setAttribute("role", "menu");
+  m.setAttribute("aria-label", `Actions for “${s.title}”`);
   const items = [];
   // a headless run is set aside already, so Hide would change nothing
   if (!(s.headless && !s.hidden)) items.push(s.hidden
-    ? ["Unhide", "Moves it back to the main list", () => { closeMenu(); api().set_hidden(s.id, false); }]
-    : ["Hide", "Moves it to the hidden section; Unhide brings it back", () => { closeMenu(); api().set_hidden(s.id, true); }]);
+    ? ["Unhide", "Moves it back to the main list", () => { closeMenu(); api().set_hidden(s.id, false); announce("Moved back to the main list."); }]
+    : ["Hide", "Moves it to the hidden section; Unhide brings it back", () => { closeMenu(); api().set_hidden(s.id, true); announce("Hidden."); }]);
   if (s.status) items.push(["Close", "Closes its window; the conversation is kept", () => confirmIn(m, card,
     `Close “${s.title}”?`,
     "Its window closes and anything Claude is doing in it stops; the conversation is kept and can be resumed.",
-    "Yes, Close", false, () => api().close(s.id).then(reply(card)))]);
+    "Yes, Close", false, () => { say(card, "Closing…", false, true); api().close(s.id).then(reply(card)); })]);
   if (items.length) items.push(null);
   if (s.distro) items.push(["Delete", "", null, true, "Stored inside WSL, so it cannot go to the Recycle Bin."]);
   else if (s.status) items.push(["Delete", "Closes it, then moves its conversation to the Recycle Bin", () => confirmIn(m, card,
     `Delete “${s.title}”?`,
     "Its window closes first, then its conversation moves to the Recycle Bin; files in the project folder are not touched.",
-    "Yes, Delete", true, () => api().close_delete(s.id).then(reply(card))), true]);
+    "Yes, Delete", true, () => { say(card, "Closing it, then deleting…", false, true); api().close_delete(s.id).then(reply(card)); }), true]);
   else items.push(["Delete", "Moves its conversation to the Recycle Bin", () => confirmIn(m, card,
     `Delete “${s.title}”?`,
     "Its conversation moves to the Recycle Bin; files in the project folder are not touched.",
-    "Yes, Delete", true, () => api().delete(s.id).then(reply(card))), true]);
+    "Yes, Delete", true, () => { say(card, "Deleting…", false, true); api().delete(s.id).then(reply(card)); }), true]);
   for (const it of items) {
     if (!it) { m.insertAdjacentHTML("beforeend", '<div class="sep" role="separator"></div>'); continue; }
     const [label, outcome, act, danger, blocked] = it;
@@ -662,7 +702,9 @@ function openMenu(s, card, x, y) {
 function confirmIn(m, card, title, text, ok, danger, act) {
   m.setAttribute("role", "dialog");
   m.setAttribute("aria-labelledby", "cq");
-  m.innerHTML = `<div class="confirm"><h2 id="cq">${esc(title)}</h2><p>${esc(text)}</p><div class="actions">
+  m.setAttribute("aria-describedby", "cd");
+  m.removeAttribute("aria-label");
+  m.innerHTML = `<div class="confirm"><h2 id="cq">${esc(title)}</h2><p id="cd">${esc(text)}</p><div class="actions">
     <button class="btn" data-a="no" data-tip data-full="Nothing changes">Cancel</button>
     <button class="btn ${danger ? "danger" : "go"}" data-a="yes" data-tip data-full="${esc(m.dataset.outcome || "")}">${esc(ok)}</button></div></div>`;
   m.querySelector('[data-a="no"]').onclick = closeMenu;
@@ -678,8 +720,10 @@ const cardOf = e => e.target.closest(".card[data-id]");
 const find = id => state.sessions.find(s => s.id === id);
 // a click outside an open menu only closes it, as a menu does
 addEventListener("mousedown", e => {
+  swallow = false;
   if (menu && !menu.contains(e.target)) { closeMenu(); swallow = e.button === 0; e.stopPropagation(); }
-  if (!e.target.closest(".say")) sayGone();
+  const onBar = e.target === list && e.offsetX >= list.clientWidth;
+  if (!e.target.closest(".say") && !onBar) sayGone();
   tipHide();
 }, true);
 addEventListener("click", e => { if (swallow) { swallow = false; e.stopPropagation(); } }, true);
@@ -690,16 +734,20 @@ let dblAt = 0;
 list.addEventListener("click", e => {
   const c = cardOf(e);
   if (!c) return;
-  api().click(c.dataset.id).then(r => setTimeout(() => { if (Date.now() - dblAt > 600) reply(c)(r); }, 450));
+  api().click(c.dataset.id).then(r => setTimeout(() => { if (Date.now() - dblAt > (state.dbl || 500) + 100) reply(c)(r); }, (state.dbl || 500) + 50));
 });
 list.addEventListener("dblclick", e => {
   const c = cardOf(e);
   if (!c) return;
   dblAt = Date.now();
-  api().open(c.dataset.id).then(reply(c));
+  // nothing to open (its folder is gone, or it is open already): the single click's answer stands
+  api().open(c.dataset.id).then(r => r ? reply(c)(r) : api().click(c.dataset.id).then(reply(c)));
 });
 addEventListener("contextmenu", e => {
+  if (e.target.closest && e.target.closest("input")) return;  // the search box keeps its own Cut/Copy/Paste
   e.preventDefault();
+  // the menu key fires this on key-up, after its menu is already open
+  if (menu && menu.contains(e.target)) return;
   const c = cardOf(e), s = c && find(c.dataset.id);
   if (s) openMenu(s, c, e.clientX, e.clientY); else closeMenu();
 });
@@ -710,6 +758,7 @@ list.addEventListener("keydown", e => {
   else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
     e.preventDefault();
     const r = c.getBoundingClientRect();
+    byKey = true;
     openMenu(s, c, r.left + 16, r.bottom);
   }
 });
@@ -717,6 +766,14 @@ list.addEventListener("pointerenter", () => { hovering = true; });
 list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
 list.addEventListener("scroll", () => { tipHide(); if (quiet) quiet = false; else closeMenu(); });
 addEventListener("blur", () => { tipHide(); closeMenu(); });
+// Tab closes the menu and gives the keyboard back to its card; inside the confirm it stays on the two buttons
+addEventListener("keydown", e => {
+  if (!menu || e.key !== "Tab") return;
+  if (menu.getAttribute("role") === "menu") { e.preventDefault(); closeMenu(); return; }
+  const bs = [...menu.querySelectorAll(".btn")], i = bs.indexOf(document.activeElement);
+  e.preventDefault();
+  bs[(i + (e.shiftKey ? -1 : 1) + bs.length) % bs.length].focus({preventScroll: true});
+});
 // the menu is walked with the arrow keys, Home and End
 addEventListener("keydown", e => {
   if (!menu || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
@@ -730,24 +787,22 @@ addEventListener("keydown", e => {
 });
 addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
-  if (menu || tip || document.querySelector(".say")) { tipHide(); closeMenu(); sayGone(); return; }
-  if (passing) { sayGone(); return; }
+  if (menu || tip || document.querySelector(".say")) { e.preventDefault(); tipHide(); closeMenu(); sayGone(); return; }
+  if (passing) { e.preventDefault(); sayGone(); return; }
   if (document.activeElement === $("q") && $("q").value) { e.preventDefault(); setQ(""); }
 });
 // the search clears in one step: its × or Escape
-function setQ(v) { $("q").value = v; $("qx").hidden = !v; render(); }
+function setQ(v) { $("q").value = v; $("qx").hidden = !v; $("q").focus(); render(); }
 $("q").addEventListener("input", () => { $("qx").hidden = !$("q").value; render(); });
 $("qx").addEventListener("mousedown", e => e.preventDefault());
 $("qx").onclick = () => setQ("");
-function toggleAside() { showHidden = !showHidden; scrollToAside = revealing = showHidden; render(); }
+// a click with the mouse lets the section fade in; Enter or Space shows it at once
+function toggleAside(e) { showHidden = !showHidden; scrollToAside = showHidden; revealing = showHidden && e.detail > 0; render(); }
 $("footer").onclick = toggleAside;
-list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(); });
+list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(e); });
 $("hide").onclick = () => api().hide();
 
-window.app = {
-  update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); },
-  flash(t) { say(null, t, false); },
-};
+window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); } };
 render();
 addEventListener("pywebviewready", () => api().ready());
 </script>
