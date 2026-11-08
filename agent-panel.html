@@ -356,8 +356,9 @@ function skeleton() {
 // While the pointer is over the list the cards keep their order, so a click lands on the card that
 // was under it; the newest-first order comes back when the pointer leaves.
 let hovering = false;
+const rowsOf = list => [...list.children].filter(e => !e.classList.contains("say"));
 function holdOrder(els, list) {
-  const now = [...list.children];
+  const now = rowsOf(list);
   const held = hovering || menu || list.contains(document.activeElement);
   if (!held || els.length !== now.length || !els.every(e => now.includes(e))) return els;
   return now;
@@ -392,13 +393,15 @@ function render() {
                                                          : `Nothing in the main list matches; ${hits.length} hidden, deleted or headless sessions do.`)
                                             : "No sessions match.")
                                 : nAside === 1 ? "The only session is hidden, deleted or headless."
-                                : nAside ? `All ${nAside} sessions are hidden, deleted or headless.` : "No sessions yet.");
+                                : nAside ? `All ${nAside} sessions are hidden, deleted or headless.`
+                                : state.error ? "Could not read the sessions yet." : "No sessions yet.");
       // the way out of the empty list is offered right where the reader is looking
       if (offAside) e.insertAdjacentHTML("beforeend", '<button type="button" data-a="aside">Show Them</button>');
       els.push(e);
     }
     els = holdOrder(els, list);
-    const same = els.length === list.children.length && els.every((e, i) => e === list.children[i]);
+    const kids = rowsOf(list);
+    const same = els.length === kids.length && els.every((e, i) => e === kids[i]);
     if (!same) {
       const bubble = list.querySelector(".say"), before = new Set(list.children);
       const had = list.contains(document.activeElement) && document.activeElement.closest(".card[data-id]");
@@ -407,12 +410,13 @@ function render() {
       if (had) {
         // the card that had the keyboard keeps it; if it left the list, the card now in its place takes it
         const cards = [...list.querySelectorAll(".card[data-id]")];
-        const back = cards.find(c => c.dataset.id === had.dataset.id) || cards[Math.min(at, cards.length - 1)];
+        const back = cards.find(c => c.dataset.id === had.dataset.id) || cards[Math.min(at, cards.length - 1)]
+                     || list.querySelector(".empty button") || $("q");
         if (back) back.focus({preventScroll: true});
       }
       if (bubble) {
         const card = [...list.querySelectorAll(".card[data-id]")].find(c => c.dataset.id === bubble.dataset.for);
-        if (card) { list.append(bubble); placeSay(bubble, card); } else sayGone();
+        if (card) { bubble.style.animation = "none"; list.append(bubble); placeSay(bubble, card); } else sayGone();
       }
       if (revealing) els.forEach(e => { if (!before.has(e)) { e.classList.remove("enter"); void e.offsetWidth; e.classList.add("enter"); } });
     }
@@ -431,12 +435,13 @@ function render() {
     }
   }
   const L = state.limits || {};
-  $("usage").innerHTML = [["5h", L.five_hour], ["Week", L.seven_day]].map(([n, v]) => {
+  const usage = [["5h", L.five_hour], ["Week", L.seven_day]].map(([n, v]) => {
     if (!state.ready) return `<div class="u"><span>${n}</span><span class="bar sk"></span><span></span></div>`;
     const val = v && v.pct != null ? pct(v.pct) + (v.note ? "  ·  " + esc(v.note) : "") : "no figure yet";
     const tipText = v && v.pct != null ? "" : ' data-tip data-full="Claude Code reports it with its next reply"';
     return `<div class="u"><span>${n}</span>${bar(v && v.pct)}<span data-k="u:${n}"${tipText}>${val}</span></div>`;
   }).join("");
+  if ($("usage").dataset.html !== usage) { $("usage").innerHTML = usage; $("usage").dataset.html = usage; }
   if (state.error !== standing) { standing = state.error || null; showNote(); if (standing) announce(standing); }
   fadeChanged(q !== lastQ);
   lastQ = q;
@@ -499,7 +504,7 @@ function fitPaths() {
   });
   cut.forEach(([el, c]) => el.classList.toggle("cut", c));
 }
-addEventListener("resize", () => { fitPaths(); closeMenu(); });
+addEventListener("resize", () => { fitPaths(); closeMenu(); sayGone(); });
 
 // ----- messages: one about a card sits under that card; one about the whole panel floats above the link -----
 // The bottom line shows a passing message when there is one, else the standing one (a failed
@@ -800,7 +805,7 @@ $("qx").onclick = () => setQ("");
 function toggleAside(e) { showHidden = !showHidden; scrollToAside = showHidden; revealing = showHidden && e.detail > 0; render(); }
 $("footer").onclick = toggleAside;
 list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(e); });
-$("hide").onclick = () => api().hide();
+$("hide").onclick = () => window.pywebview && api().hide();
 
 window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); } };
 render();
