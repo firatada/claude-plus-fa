@@ -150,8 +150,9 @@ const api = () => window.pywebview.api;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = false, lastKey = null;
 
-// hidden by the user, or its folder is gone: kept out of the main list
-const aside = s => s.hidden || !s.here;
+// hidden by the user, its folder is gone, or a headless `claude -p` run another session started:
+// kept out of the main list
+const aside = s => s.hidden || !s.here || s.headless;
 const pct = p => p == null ? "--" : Math.round(p) + "%";
 
 // green under 50 %, gold under 80 %, red above, as on the status line
@@ -169,7 +170,8 @@ function fill(el, s) {
   el.querySelector(".dot").className = "dot " + (s.status ? (s.status === "busy" ? "busy" : "idle") : "");
   el.querySelector(".name").textContent = s.title;
   el.querySelector(".path").dataset.full = s.path;
-  const flags = (s.hidden ? ["hidden"] : []).concat(s.here ? [] : ["folder deleted"], [s.age]).join("  ·  ");
+  const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"],
+                                                     [s.age]).join("  ·  ");
   const meta = `ctx ${bar(s.ctx)}<span>${pct(s.ctx)}</span><span class="flags">${esc(flags)}</span>`;
   const m = el.querySelector(".meta");
   if (m.dataset.html !== meta) { m.innerHTML = meta; m.dataset.html = meta; }
@@ -198,7 +200,8 @@ function render() {
   const all = state.sessions, nAside = all.filter(aside).length;
   if (!nAside) showHidden = false;
   $("count").textContent = all.length - nAside;
-  $("footer").textContent = !nAside ? "" : showHidden ? "Close hidden and deleted" : `Show hidden and deleted (${nAside})`;
+  $("footer").textContent = !nAside ? "" : showHidden ? "Close hidden, deleted and headless"
+                                                      : `Show hidden, deleted and headless (${nAside})`;
   const found = all.filter(s => !q || s.title.toLowerCase().includes(q) || (s.folder || "").toLowerCase().includes(q));
   const rows = found.filter(s => !aside(s)), rest = showHidden ? found.filter(aside) : [];
   const key = JSON.stringify([q, rows, rest]);
@@ -206,7 +209,7 @@ function render() {
     lastKey = key;
     const list = $("list"), old = new Map([...list.querySelectorAll(".card")].map(e => [e.dataset.id, e]));
     const els = rows.map(s => cardEl(s, old));
-    if (rest.length) els.push($("sect") || note("sect", "HIDDEN AND DELETED", "sect"), ...rest.map(s => cardEl(s, old)));
+    if (rest.length) els.push($("sect") || note("sect", "HIDDEN, DELETED AND HEADLESS", "sect"), ...rest.map(s => cardEl(s, old)));
     if (!els.length && state.ready) els.push(note("empty", q ? "No sessions match." : "No sessions yet."));
     const same = els.length === list.children.length && els.every((e, i) => e === list.children[i]);
     if (!same) list.replaceChildren(...els);
@@ -297,11 +300,14 @@ function openMenu(s, x, y) {
   tipHide(); closeMenu();
   const m = menu = document.createElement("div");
   m.className = "pop";
-  const items = [[s.hidden ? "Unhide" : "Hide", () => { closeMenu(); api().set_hidden(s.id, !s.hidden); }]];
+  // a headless run is set aside already, so Hide would change nothing
+  const items = s.headless && !s.hidden ? [] :
+    [[s.hidden ? "Unhide" : "Hide", () => { closeMenu(); api().set_hidden(s.id, !s.hidden); }]];
   if (s.status) items.push(["Close", () => confirmIn(m, "Close this session?",
     "Its window closes and anything Claude is doing in it stops; the conversation is kept and can be resumed.",
     "Yes, close", false, () => api().close(s.id).then(flash))]);
-  items.push(null, ["Delete", () => {
+  if (items.length) items.push(null);
+  items.push(["Delete", () => {
     const why = s.status ? "Close the session first, then delete it."
       : s.distro ? "A session stored inside WSL cannot go to the Recycle Bin." : "";
     if (why) { closeMenu(); flash(why); return; }
