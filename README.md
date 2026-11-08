@@ -40,12 +40,12 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 **Agent Panel**
 - Every Claude Code session on your PC, old and current, in a narrow list over the right edge of the screen, newest first, with a search box. It takes no screen space: desktop icons and maximised windows keep their place, and the window you are working in covers it.
-- Each session shows its full folder path (cut in the middle when it is too long; point at it to see it whole) and a `ctx` bar with how much of its context is used, as on the status line. The bottom of the panel shows your `5h` and `week` usage and when each resets. Both come from the claude-plus-fa status line, so a session that never ran with it shows `--`.
+- Each session shows its full folder path (cut in the middle when it is too long; point at it to see it whole) and a `ctx` bar with how much of its context is used, as on the status line. The bottom of the panel shows your `5h` and `week` usage and when each resets. Both come from the claude-plus-fa status line, so a session that never ran with it shows no bar, and a usage figure not reported yet says *no figure yet*.
 - Double-click a closed session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
 - A green dot marks a session that is open and waiting, a blinking red one a session that is working, a grey one a closed session. A single click on an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
 - It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon brings it to the front when it is covered, and hides or shows it otherwise.
-- Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Show hidden, deleted and headless* at the bottom of the panel lists them in a section of their own.
-- Delete asks once more on the spot (*Yes, delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session has to be closed first.
+- Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Show Hidden, Deleted and Headless* at the bottom of the panel lists them in a section of their own.
+- Delete asks once more on the spot (*Yes, Delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session is closed first; a session stored inside WSL cannot be deleted from the panel.
 
 **Get your free z.ai API key**
 

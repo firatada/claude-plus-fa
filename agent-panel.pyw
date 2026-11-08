@@ -491,7 +491,7 @@ def tray(events):
     except ImportError:
         return None
     menu = pystray.Menu(
-        pystray.MenuItem("Show or hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
+        pystray.MenuItem("Show or Hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
         pystray.MenuItem("Quit", lambda: events.put("quit")))
     icon = pystray.Icon("agent-panel", img, "Agent Panel", menu)
@@ -512,7 +512,8 @@ def ago(ts):
         return "yesterday"
     if d < 7 * 86400:
         return "%dd" % (d // 86400)
-    return datetime.datetime.fromtimestamp(ts).strftime("%d %b").lstrip("0")
+    d = datetime.datetime.fromtimestamp(ts)
+    return d.strftime("%d %b" if d.year == datetime.datetime.now().year else "%d %b %Y").lstrip("0")
 
 
 
@@ -534,8 +535,23 @@ def own_window(title):
     return found[0] if found else None
 
 
+def ok(t):
+    return {"t": t, "err": False}
+
+
+def err(t):
+    """A failure: it stays on screen until the next click, and says what to do about it."""
+    return {"t": t, "err": True}
+
+
+def short(title, n=40, end=""):
+    """A title cut to n characters; a cut one ends in "…" and takes no further ending."""
+    return title + end if len(title) <= n else title[:n].rstrip() + "…"
+
+
 class Api:
-    """What the page may call, as window.pywebview.api.<name>; each returns a message for the bottom line."""
+    """What the page may call, as window.pywebview.api.<name>; each returns {"t": message, "err": bool}
+    or None, shown under the card it was about."""
 
     def __init__(self, panel):
         self._p = panel
@@ -559,6 +575,9 @@ class Api:
     def delete(self, sid):
         return self._p.delete(sid)
 
+    def close_delete(self, sid):
+        return self._p.close_delete(sid)
+
     def hide(self):
         self._p.events.put("toggle")
 
@@ -570,6 +589,7 @@ class Panel:
         self.sessions, self.hidden = [], load_hidden()
         self.hwnd, self.icon, self.visible, self.page_ready = None, None, True, False
         self.pushed, self.lock = None, threading.Lock()
+        self.scanned, self.error = False, None  # the first scan has finished; the last scan's failure
         with open(HTML, encoding="utf-8") as f:
             html = f.read()
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
@@ -617,9 +637,13 @@ class Panel:
                 try:
                     self.sessions = scan(self.cache)
                     save_cache(self.cache)
-                    self.push()
+                    self.scanned, self.error = True, None
                 except Exception as e:
-                    self.say("Could not read sessions: %s" % e)
+                    # stays on screen until a scan succeeds, so an old list is never taken for a current one
+                    self.scanned = True
+                    self.error = ("Could not read sessions at %s: %s. The list is from the last good read; "
+                                  "it tries again every %d s." % (time.strftime("%H:%M"), e, SCAN_EVERY))
+                self.push()
             elif now - self.last_live > LIVE_EVERY:
                 self.last_live = now
                 self.update_live()
@@ -681,7 +705,8 @@ class Panel:
                               "headless": s.get("headless", False)}
                              for s in self.sessions],
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
-                           "seven_day": usage(lim.get("seven_day"), "%a %H:%M")}}
+                           "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
+                "scanned": self.scanned, "error": self.error}
 
     def push(self, force=False):
         if not self.page_ready:
@@ -693,10 +718,6 @@ class Panel:
             self.pushed = data
             self.window.evaluate_js("app.update(%s)" % data)
 
-    def say(self, text):
-        if self.page_ready:
-            self.window.evaluate_js("app.flash(%s)" % json.dumps(text))
-
     def find(self, sid):
         return next((s for s in self.sessions if s["id"] == sid), None)
 
@@ -704,19 +725,19 @@ class Panel:
     def click(self, sid):
         s = self.find(sid)
         if not s:
-            return ""
+            return None
         if not folder_exists(s):
-            return "Its folder was deleted."
+            return err("Its folder was deleted. Hide or delete it from its menu.")
         if s["status"]:
-            return "" if focus_session(s) else "Already open, but its window was not found."
-        return "Double-click to open it."
+            return None if focus_session(s) else err("Already open, but its window was not found. Look for it on the taskbar.")
+        return ok("Double-click to open it.")
 
     def open(self, sid):
         s = self.find(sid)
         if s and folder_exists(s) and not s["status"]:
             open_session(s)
-            return "Opening " + s["title"][:40]
-        return ""
+            return ok("Opening " + short(s["title"], end="…"))
+        return None
 
     def set_hidden(self, sid, on):
         (self.hidden.add if on else self.hidden.discard)(sid)
@@ -727,24 +748,36 @@ class Panel:
         s = self.find(sid)
         if s and close_session(s):
             threading.Timer(1.5, lambda: self.events.put("refresh")).start()
-            return "Closed " + s["title"][:40]
-        return "Could not close it."
+            return ok("Closed " + short(s["title"], end="."))
+        return err("Could not close it. Close its window yourself.")
 
     def delete(self, sid):
         s = self.find(sid)
         if not s:
-            return ""
+            return None
         if s["status"]:
-            return "Close the session first, then delete it."
+            return err("It is still open. Use Delete again; it closes the session first.")
         if s["distro"]:
-            return "A session stored inside WSL cannot go to the Recycle Bin."
+            return err("Stored inside WSL, so it cannot go to the Recycle Bin.")
         if recycle(session_files(s)) and not os.path.exists(s["path"]):
             self.hidden.discard(sid)
             save_hidden(self.hidden)
             self.sessions = [x for x in self.sessions if x["id"] != sid]
             self.push()
-            return "Moved to the Recycle Bin."
-        return "Could not delete it."
+            return ok("Moved to the Recycle Bin.")
+        return err("Could not delete it. A file in it may be in use; try again in a moment.")
+
+    def close_delete(self, sid):
+        """Delete on an open session: close it, wait for its process to end, then delete it."""
+        s = self.find(sid)
+        if not s or not close_session(s):
+            return err("Could not close it, so it was not deleted. Close its window yourself, then delete it.")
+        for _ in range(40):  # up to 10 s
+            time.sleep(0.25)
+            if sid not in running():
+                s["status"] = s["pid"] = None
+                return self.delete(sid)
+        return err("It did not close in time, so it was not deleted. Try again once its window is gone.")
 
     def quit(self):
         if getattr(self, "dock", None):

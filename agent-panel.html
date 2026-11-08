@@ -4,65 +4,96 @@
 <meta charset="utf-8">
 <title>Agent Panel</title>
 <!-- The Agent Panel's face, shown by agent-panel.pyw in a WebView2 window. Afiniti Spark tokens
-     (mindmap/design_themes/spark_theme); gold is for rewards only, so "working" is blue. -->
+     (mindmap/design_themes/spark_theme). Dots: working is red and blinks, open and waiting is green,
+     closed is grey (Fırat, 2026-11-08). The bars' 50-80 % band is gold to match the status line,
+     an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
+     one shape": the header's logo (26), count pill (18, pill radius) and hide button (26) differ, the
+     pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
+     16 px edge; card text sits inside its card. -->
 <style>
 :root {
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
-  --blue: #1b4df5; --green: #16a34a; --gold: #f5a623; --red: #e11d48; --gone: #b5bdd0;
+  --faint: #687189;          /* quiet text, still 4.5:1 on --bg */
+  --gone: #8a93a8;           /* the closed dot, 3:1 on white */
+  --blue: #1b4df5; --green: #16a34a; --gold: #f5a623; --red: #e11d48; --on-accent: #ffffff;
+  --red-deep: #be123c; --red-tint: #fde8ec; --amber-tint: #fff7e6; --amber-line: #f5d9a8; --hit: #dbe4ff; --thumb: #d5dcea; --thumb-hover: #b5bdd0;
+  --ring: 0 0 0 3px rgba(27, 77, 245, .12);
   --shadow: 0 10px 30px rgba(10, 26, 64, .08);
+  --shadow-pop: 0 10px 30px rgba(10, 26, 64, .16); --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2);
   --glow: 0 4px 14px rgba(27, 77, 245, .35); --glow-red: 0 4px 14px rgba(225, 29, 72, .35);
+  --tip-bg: rgba(10, 26, 64, .88);
+  --r-card: 14px; --r-ctl: 10px; --r-pill: 20px; --r-small: 6px;
+  --edge: 16px;              /* every box and every heading starts here */
+  --ease: cubic-bezier(.23, 1, .32, 1);
 }
-* { box-sizing: border-box; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
 body {
   background: var(--bg); color: var(--text); font: 400 12px/1.35 "Segoe UI", system-ui, sans-serif;
   display: flex; flex-direction: column; overflow: hidden; user-select: none; cursor: default;
+  font-variant-numeric: tabular-nums;
 }
 button { font: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
-header { flex: none; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 16px; }
+header { flex: none; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 var(--edge); }
 .logo { flex: none; width: 26px; height: 26px; }
 h1 { font-size: 15px; font-weight: 600; }
 #count {
-  min-width: 22px; height: 18px; padding: 0 7px; border-radius: 20px; background: var(--surface2);
+  min-width: 22px; height: 18px; padding: 0 7px; border-radius: var(--r-pill); background: var(--surface2);
   color: var(--muted); font-size: 11px; font-weight: 600; display: grid; place-items: center;
 }
+#count:empty { visibility: hidden; }
 #hide {
-  margin-left: auto; width: 26px; height: 26px; border: 0; border-radius: 8px; background: none;
-  color: var(--muted); display: grid; place-items: center;
+  margin-left: auto; min-width: 26px; min-height: 26px; padding: 0; border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--muted); display: grid; place-items: center;
 }
 #hide:hover { color: var(--blue); background: var(--surface2); }
 
 .search {
-  flex: none; margin: 2px 16px 12px; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; cursor: text;
-  transition: border-color .15s, box-shadow .15s;
+  flex: none; margin: 2px var(--edge) 12px; min-height: 32px; display: flex; align-items: center; gap: 8px;
+  padding: 0 6px 0 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-ctl);
+  cursor: text;
 }
-.search:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(27, 77, 245, .12); }
-.search svg { flex: none; color: var(--muted); }
+.search:focus-within { border-color: var(--blue); box-shadow: var(--ring); }
+.search > svg { flex: none; color: var(--muted); }
 #q { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; color: var(--text); }
-#q::placeholder { color: var(--muted); }
+#q::placeholder { color: var(--faint); }
+#q::-webkit-search-cancel-button, #q::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+#qx {
+  flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--r-small); background: none;
+  color: var(--muted); display: grid; place-items: center;
+}
+#qx[hidden] { display: none; }
+#qx:hover { color: var(--blue); background: var(--surface2); }
 
-#list { flex: 1; overflow-y: auto; padding: 4px 8px 8px 16px; scrollbar-gutter: stable; }
+#list {
+  position: relative; flex: 1; overflow-y: auto; padding: 4px 8px 8px var(--edge); scrollbar-gutter: stable;
+}
 #list::-webkit-scrollbar { width: 8px; }
-#list::-webkit-scrollbar-thumb { background: #d5dcea; border-radius: 4px; border: 2px solid var(--bg); }
-#list::-webkit-scrollbar-thumb:hover { background: #b5bdd0; }
+#list::-webkit-scrollbar-thumb { background: var(--thumb); border-radius: 4px; border: 2px solid var(--bg); }
+#list::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover); }
 
 .card {
   height: 72px; margin-bottom: 8px; padding: 9px 14px; display: flex; flex-direction: column; gap: 2px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
-  transition: border-color .12s, box-shadow .12s;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow);
+  transition: transform .16s ease-out;
 }
-.card:hover { border-color: var(--blue); box-shadow: var(--shadow), 0 0 0 .5px var(--blue); }
+/* only a card that does something on a click reacts to the pointer */
 .card.here { cursor: pointer; }
+.card.here:hover, .card.target { border-color: var(--blue); box-shadow: var(--shadow), 0 0 0 .5px var(--blue); }
+.card.here:active { transform: scale(.98); }
+.card:focus-visible { outline-offset: 1px; }
 .t { display: flex; align-items: center; gap: 6px; height: 18px; }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gone); }
 /* working: red and blinking for as long as Claude reports the session busy */
 .dot.busy { background: var(--red); animation: blink 1s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .2; } }
-@media (prefers-reduced-motion: reduce) { .dot.busy { animation: none; } }
 .dot.idle { background: var(--green); }
-.name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.name { min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.arrow { flex: none; visibility: hidden; color: var(--blue); font-size: 12px; }
+.card.here:hover .arrow { visibility: visible; }
+.age { flex: none; margin-left: auto; font-size: 11px; color: var(--muted); }
 .path, .meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
 .path { white-space: nowrap; overflow: hidden; }
 .meta { display: flex; align-items: center; gap: 6px; }
@@ -70,16 +101,52 @@ h1 { font-size: 15px; font-weight: 600; }
 .meta > .flags { flex: 0 1 auto; min-width: 0; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar { flex: none; width: 56px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: 3px; }
+mark { background: var(--hit); color: inherit; border-radius: 2px; }
 
-.sect { margin: 18px 2px 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); }
-.empty { padding-top: 30px; text-align: center; color: var(--muted); }
+.card.sk { pointer-events: none; }
+.sk i { display: block; height: 9px; margin: 4px 0; border-radius: 4px; background: var(--surface2);
+        animation: sk 1.4s ease-in-out infinite; }
+@keyframes sk { 50% { opacity: .45; } }
 
-#note { flex: none; padding: 0 16px; min-height: 0; font-size: 11px; color: var(--muted); }
-#note:not(:empty) { padding-bottom: 4px; }
-#footer { flex: none; align-self: flex-start; margin: 10px 16px; font-size: 11px; color: var(--gone); cursor: pointer; }
-#footer:hover { color: var(--blue); }
-#footer:empty { display: none; }
-#usage { flex: none; margin: 0 16px; padding: 8px 0 10px; border-top: 1px solid var(--line); }
+.sect { margin: 18px 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); }
+.empty { padding: 30px 14px 0; color: var(--muted); }
+.empty button { display: block; margin-top: 6px; padding: 0; border: 0; background: none; color: var(--blue); font-size: 12px; }
+.empty button:hover { text-decoration: underline; }
+
+/* a message about one card, just under it; it scrolls with its card */
+.say {
+  position: absolute; z-index: 5; padding: 6px 10px; border-radius: var(--r-ctl); background: var(--panel);
+  border: 1px solid var(--line); box-shadow: var(--shadow-pop); font-size: 11px; color: var(--text);
+  animation: drop .16s var(--ease);
+}
+.say.err { color: var(--red); border-color: var(--red-tint); }
+.say::before {
+  content: ""; position: absolute; left: 22px; top: -5px; width: 8px; height: 8px; background: inherit;
+  border: inherit; border-right: 0; border-bottom: 0; transform: rotate(45deg);
+}
+.say.up::before { top: auto; bottom: -5px; transform: rotate(225deg); }
+
+/* the set-aside section fades down into place when it is shown */
+.enter { animation: drop .16s var(--ease); }
+
+#bottom { position: relative; flex: none; }
+/* a message about the whole panel; it floats above the link so nothing below the list moves */
+#note {
+  position: absolute; left: var(--edge); right: var(--edge); bottom: 100%; padding: 6px 10px; border-radius: var(--r-ctl);
+  background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow-pop); font-size: 11px;
+  animation: drop .16s var(--ease);
+}
+#note:empty { display: none; }
+#note.err { color: var(--red); border-color: var(--red-tint); }
+/* a standing fact about the whole panel, not a failure of something the reader did */
+#note.warn { color: var(--text); background: var(--amber-tint); border-color: var(--amber-line); }
+#footer {
+  display: block; min-height: 15px; margin: 10px var(--edge); padding: 0; border: 0; background: none;
+  font-size: 11px; color: var(--faint); text-align: left;
+}
+#footer:hover { color: var(--blue); text-decoration: underline; }
+#footer:empty { visibility: hidden; }
+#usage { margin: 0 var(--edge); padding: 8px 0 10px; border-top: 1px solid var(--line); }
 .u { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; height: 22px;
      font-size: 11px; color: var(--muted); }
 .u .bar { width: auto; }
@@ -87,35 +154,57 @@ h1 { font-size: 15px; font-weight: 600; }
 
 .pop {
   position: fixed; z-index: 10; padding: 6px; min-width: 150px; background: var(--panel);
-  border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(10, 26, 64, .16);
-  animation: pop .12s ease-out;
+  border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow-pop);
+  animation: drop .16s var(--ease);
 }
-@keyframes pop { from { opacity: 0; transform: scale(.97); } }
+.pop { transform-origin: top left; }
+.pop.up { animation-name: rise; transform-origin: bottom left; }
+@keyframes drop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+@keyframes rise { from { opacity: 0; transform: translateY(4px) scale(.98); } }
 .item {
-  display: block; width: 100%; height: 32px; padding: 0 10px; text-align: left; border: 0; border-radius: 8px;
-  background: none; color: var(--text);
+  display: block; width: 100%; min-height: 32px; padding: 4px 10px; text-align: left; border: 0;
+  border-radius: var(--r-ctl); background: none; color: var(--text);
 }
 .item:hover { background: var(--surface2); }
+.item:focus-visible { outline: 0; box-shadow: inset 0 0 0 2px var(--blue); }
 .item.danger { color: var(--red); }
-.item.danger:hover { background: #fde8ec; }
+.item.danger:hover { background: var(--red-tint); color: var(--red-deep); }
+.item[aria-disabled="true"] { color: var(--faint); cursor: default; }
+.item[aria-disabled="true"]:hover { background: none; }
+.why { padding: 2px 10px 6px; font-size: 11px; color: var(--red); animation: drop .16s var(--ease); }
 .sep { height: 1px; margin: 4px 6px; background: var(--line); }
 .confirm { width: 232px; padding: 8px 8px 4px; }
-.confirm h2 { margin-bottom: 4px; font-size: 13px; font-weight: 600; }
+.confirm h2 { margin-bottom: 4px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .confirm p { margin-bottom: 12px; color: var(--muted); }
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .btn {
-  height: 30px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
-  color: var(--text); font-weight: 600;
+  min-height: 30px; padding: 4px 14px; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  background: var(--panel); color: var(--text); font-weight: 600; transition: transform .16s ease-out;
 }
 .btn:hover { background: var(--surface2); }
-.btn.go { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: var(--glow); }
-.btn.danger { background: var(--red); border-color: var(--red); color: #fff; box-shadow: var(--glow-red); }
-.btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.btn.go { background: var(--blue); border-color: var(--blue); color: var(--on-accent); box-shadow: var(--glow); }
+.btn.danger { background: var(--red); border-color: var(--red); color: var(--on-accent); box-shadow: var(--glow-red); }
+.btn.go:hover, .btn.danger:hover { filter: brightness(1.08); }
+.btn:active, .item:active, #hide:active, #qx:active, #footer:active { transform: scale(.97); }
+#footer { transition: transform .16s ease-out; }
 
 .tip {
-  position: fixed; z-index: 20; max-width: calc(100vw - 16px); padding: 5px 8px; border-radius: 6px;
-  background: var(--text); color: #fff; font-size: 11px; word-break: break-all; pointer-events: none;
-  box-shadow: 0 6px 16px rgba(10, 26, 64, .2);
+  position: fixed; z-index: 20; max-width: calc(100vw - 16px); padding: 5px 8px; border-radius: var(--r-small);
+  background: var(--tip-bg); color: var(--on-accent); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere;
+  pointer-events: none; box-shadow: var(--shadow-tip); animation: fade .12s ease-out;
+}
+@keyframes fade { from { opacity: 0; } }
+/* a figure that changed fades in rather than snapping */
+.chg { animation: chg .2s ease-out; }
+@keyframes chg { from { opacity: 0; filter: blur(3px); } }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .card.here:active, .btn:active, .item:active, #hide:active, #qx:active, #footer:active { transform: none; }
+  /* without the blink, working still differs from waiting by shape, not by colour alone */
+  .dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--red); }
 }
 </style>
 </head>
@@ -132,103 +221,203 @@ h1 { font-size: 15px; font-weight: 600; }
     </g>
   </svg>
   <h1>Agent Panel</h1>
-  <span id="count">0</span>
-  <button id="hide" title="Hide (Ctrl+Alt+C)" aria-label="Hide">
-    <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor"
-      stroke-width="1.5" stroke-linecap="round"/></svg>
+  <span id="count" data-tip data-full="Sessions in the main list"></span>
+  <button id="hide" aria-label="Hide the panel (Ctrl+Alt+C)" data-tip data-full="Hide the panel (Ctrl+Alt+C)">
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"
+      stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
   </button>
 </header>
 <label class="search">
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
-    stroke-linecap="round"><circle cx="6.5" cy="6.5" r="4.6"/><path d="M10 10l3.8 3.8"/></svg>
-  <input id="q" placeholder="Search sessions" spellcheck="false" autocomplete="off">
+    stroke-linecap="round" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.6"/><path d="M10 10l3.8 3.8"/></svg>
+  <input id="q" type="search" name="agent-panel-search" aria-label="Search sessions"
+    placeholder="Search titles and folders…" spellcheck="false" autocomplete="off" autocorrect="off"
+    autocapitalize="off" data-1p-ignore data-lpignore="true" data-form-type="other">
+  <button id="qx" type="button" aria-label="Clear search" data-tip data-full="Clear the search (Esc)" hidden>
+    <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"
+      stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
 </label>
 <div id="list"></div>
-<div id="note"></div>
-<div id="footer"></div>
-<div id="usage"></div>
+<div id="bottom">
+  <div id="note"></div>
+  <button id="footer" type="button" data-tip data-full="Lists the sessions kept out of the main list"></button>
+  <div id="usage"></div>
+</div>
+<div id="live" class="sr" role="status" aria-live="polite"></div>
 
 <script>
 const $ = id => document.getElementById(id);
 const api = () => window.pywebview.api;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
-let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = false, lastKey = null;
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = false, revealing = false, lastKey = null;
 
 // hidden by the user, its folder is gone, or a headless `claude -p` run another session started:
 // kept out of the main list
 const aside = s => s.hidden || !s.here || s.headless;
-const pct = p => p == null ? "--" : Math.round(p) + "%";
+const STATUS = {busy: "Working", idle: "Open, waiting for you", "": "Closed"};
 
-// green under 50 %, gold under 80 %, red above, as on the status line
+// green under 50 %, gold under 80 %, red above, as on the status line; colour and figure both
+// come from the same rounded value, so the two can never disagree
 function bar(p) {
   if (p == null) return '<span class="bar"></span>';
-  const v = Math.max(0, Math.min(100, p));
+  const v = Math.round(Math.max(0, Math.min(100, p)));
   const c = v < 50 ? "var(--green)" : v < 80 ? "var(--gold)" : "var(--red)";
   return `<span class="bar"><i style="width:${v ? `max(6px, ${v}%)` : 0};background:${c}"></i></span>`;
+}
+const pct = p => Math.round(Math.max(0, Math.min(100, p))) + "%";
+
+// the search hits marked inside a text; left unmarked if lowercasing changed its length
+function hit(t, q) {
+  const low = t.toLowerCase();
+  if (!q || low.length !== t.length) return esc(t);
+  let out = "", i = 0, k;
+  while ((k = low.indexOf(q, i)) >= 0) {
+    out += esc(t.slice(i, k)) + "<mark>" + esc(t.slice(k, k + q.length)) + "</mark>";
+    i = k + q.length;
+  }
+  return out + esc(t.slice(i));
 }
 
 // Cards are kept and patched, never redrawn wholesale: open sessions change every 2 s, and a
 // redrawn card would drop the pointer's hover and the tooltip on its path.
-function fill(el, s) {
-  el.className = "card" + (s.here ? " here" : "");
-  el.querySelector(".dot").className = "dot " + (s.status ? (s.status === "busy" ? "busy" : "idle") : "");
-  el.querySelector(".name").textContent = s.title;
-  el.querySelector(".path").dataset.full = s.path;
-  const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"],
-                                                     [s.age]).join(" · ");
-  // a session with no context reading shows no ctx bar at all, rather than an empty bar and "--"
-  const ctx = s.ctx == null ? "" : `ctx ${bar(s.ctx)}<span>${pct(s.ctx)}</span>`;
+function fill(el, s, q) {
+  const st = s.status ? (s.status === "busy" ? "busy" : "idle") : "";
+  el.className = "card" + (s.here ? " here" : "") + (menuFor === s.id ? " target" : "");
+  const d = el.querySelector(".dot");
+  d.className = "dot " + st;
+  d.dataset.full = STATUS[st];
+  d.setAttribute("aria-label", STATUS[st]);
+  const n = el.querySelector(".name"), nh = hit(s.title, q);
+  if (n.dataset.html !== nh) { n.innerHTML = nh; n.dataset.html = nh; }
+  n.dataset.full = s.title;
+  const a = el.querySelector(".age");
+  a.textContent = s.age;
+  a.dataset.k = "age:" + s.id;
+  const p = el.querySelector(".path");
+  p.dataset.full = s.path;
+  p.dataset.q = q;
+  const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"]).join(" · ");
+  el.setAttribute("aria-label", [s.title, STATUS[st].toLowerCase(), s.path, s.age,
+    s.ctx == null ? "" : "context " + pct(s.ctx), flags].filter(Boolean).join(", "));
+  // a session with no context reading shows no ctx bar at all
+  const ctx = s.ctx == null ? "" :
+    `<span data-tip data-full="Context used: ${pct(s.ctx)} of the window">ctx</span>${bar(s.ctx)}` +
+    `<span data-k="ctx:${esc(s.id)}">${pct(s.ctx)}</span>`;
   const meta = `${ctx}<span class="flags" data-full="${esc(flags)}">${esc(flags)}</span>`;
   const m = el.querySelector(".meta");
   if (m.dataset.html !== meta) { m.innerHTML = meta; m.dataset.html = meta; }
 }
-function cardEl(s, old) {
+function cardEl(s, old, q) {
   let el = old.get(s.id);
   if (!el) {
     el = document.createElement("div");
     el.dataset.id = s.id;
-    el.innerHTML = '<div class="t"><span class="dot"></span><span class="name"></span></div>' +
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.innerHTML = '<div class="t"><span class="dot" role="img" data-tip></span><span class="name"></span>' +
+                   '<span class="arrow" aria-hidden="true">↗</span><span class="age"></span></div>' +
                    '<div class="path"></div><div class="meta"></div>';
   }
-  fill(el, s);
+  fill(el, s, q);
   return el;
 }
-function note(cls, text, id) {
-  const el = document.createElement("div");
+function note(cls, text, id, tag) {
+  const el = document.createElement(tag || "div");
   el.className = cls;
   el.textContent = text;
   if (id) el.id = id;
   return el;
 }
+function skeleton() {
+  const el = document.createElement("div");
+  el.className = "card sk";
+  el.innerHTML = '<i style="width:60%"></i><i style="width:85%"></i><i style="width:40%"></i>';
+  return el;
+}
+
+// While the pointer is over the list the cards keep their order, so a click lands on the card that
+// was under it; the newest-first order comes back when the pointer leaves.
+let hovering = false;
+function holdOrder(els, list) {
+  const now = [...list.children];
+  if (!hovering || els.length !== now.length || !els.every(e => now.includes(e))) return els;
+  return now;
+}
 
 function render() {
   const q = $("q").value.trim().toLowerCase();
-  const all = state.sessions, nAside = all.filter(aside).length;
+  const all = state.sessions, nAside = all.filter(aside).length, nMain = all.length - nAside;
+  const found = all.filter(s => !q || (s.title + "\n" + s.path).toLowerCase().includes(q));
+  const rows = found.filter(s => !aside(s)), hits = found.filter(aside);
   if (!nAside) showHidden = false;
-  $("count").textContent = all.length - nAside;
-  $("footer").textContent = !nAside ? "" : showHidden ? "Close hidden, deleted and headless"
-                                                      : `Show hidden, deleted and headless (${nAside})`;
-  const found = all.filter(s => !q || s.title.toLowerCase().includes(q) || (s.folder || "").toLowerCase().includes(q));
-  const rows = found.filter(s => !aside(s)), rest = showHidden ? found.filter(aside) : [];
-  const key = JSON.stringify([q, rows, rest]);
+  const rest = showHidden ? hits : [];
+  $("count").textContent = !state.ready ? "" : q ? `${rows.length}/${nMain}` : nMain;
+  $("count").dataset.full = q ? "Matches in the main list / sessions in it" : "Sessions in the main list";
+  $("footer").setAttribute("aria-expanded", showHidden);
+  const nShown = q ? hits.length : nAside;
+  // while a search finds nothing set aside, the link would only open an empty section
+  $("footer").textContent = !nAside || (q && !hits.length && !showHidden) ? "" : showHidden ? "Fold Hidden, Deleted and Headless"
+                                                      : `Show Hidden, Deleted and Headless (${nShown})`;
+  const key = JSON.stringify([q, rows, rest, state.ready, menuFor]);
+  const list = $("list");
   if (key !== lastKey) {
     lastKey = key;
-    const list = $("list"), old = new Map([...list.querySelectorAll(".card")].map(e => [e.dataset.id, e]));
-    const els = rows.map(s => cardEl(s, old));
-    if (rest.length) els.push($("sect") || note("sect", "HIDDEN, DELETED AND HEADLESS", "sect"), ...rest.map(s => cardEl(s, old)));
-    if (!els.length && state.ready) els.push(note("empty", q ? "No sessions match." : "No sessions yet."));
+    const old = new Map([...list.querySelectorAll(".card[data-id]")].map(e => [e.dataset.id, e]));
+    let els = rows.map(s => cardEl(s, old, q));
+    if (rest.length) els.push($("sect") || note("sect", "HIDDEN, DELETED AND HEADLESS", "sect", "h2"), ...rest.map(s => cardEl(s, old, q)));
+    if (!state.ready) els = [skeleton(), skeleton(), skeleton()];
+    else if (!els.length) {
+      const offAside = !showHidden && (q ? hits.length : nAside);
+      const e = note("empty", q ? (offAside ? `Nothing in the main list matches; ${hits.length} hidden, deleted or headless sessions do.`
+                                            : "No sessions match.")
+                                : nAside ? `All ${nAside} sessions are hidden, deleted or headless.` : "No sessions yet.");
+      // the way out of the empty list is offered right where the reader is looking
+      if (offAside) e.insertAdjacentHTML("beforeend", '<button type="button" data-a="aside">Show them</button>');
+      els.push(e);
+    }
+    els = holdOrder(els, list);
     const same = els.length === list.children.length && els.every((e, i) => e === list.children[i]);
-    if (!same) list.replaceChildren(...els);
+    if (!same) {
+      const bubble = list.querySelector(".say"), before = new Set(list.children);
+      list.replaceChildren(...els);
+      if (bubble) {
+        const card = [...list.querySelectorAll(".card[data-id]")].find(c => c.dataset.id === bubble.dataset.for);
+        if (card) { list.append(bubble); placeSay(bubble, card); } else sayGone();
+      }
+      if (revealing) els.forEach(e => { if (!before.has(e)) { e.classList.remove("enter"); void e.offsetWidth; e.classList.add("enter"); } });
+    }
+    revealing = false;
     if (tip && !document.body.contains(tipTarget)) tipHide();
     fitPaths();
   }
   if (scrollToAside && rest.length) {
     scrollToAside = false;
-    $("sect").scrollIntoView({block: "start", behavior: "smooth"});
+    const r = $("sect").getBoundingClientRect(), l = list.getBoundingClientRect();
+    if (r.top < l.top || r.bottom > l.bottom) $("sect").scrollIntoView({block: "start"});
   }
   const L = state.limits || {};
-  $("usage").innerHTML = [["5h", L.five_hour], ["week", L.seven_day]].map(([n, v]) =>
-    `<div class="u"><span>${n}</span>${bar(v && v.pct)}<span>${pct(v && v.pct)}${v && v.note ? "  ·  " + esc(v.note) : ""}</span></div>`).join("");
+  $("usage").innerHTML = [["5h", L.five_hour], ["Week", L.seven_day]].map(([n, v]) => {
+    const val = v && v.pct != null ? pct(v.pct) + (v.note ? "  ·  " + esc(v.note) : "") : "no figure yet";
+    const tipText = v && v.pct != null ? "" : ' data-tip data-full="Claude Code reports it with its next reply"';
+    return `<div class="u"><span>${n}</span>${bar(v && v.pct)}<span data-k="u:${n}"${tipText}>${val}</span></div>`;
+  }).join("");
+  if (state.error !== standing) { standing = state.error || null; showNote(); }
+  fadeChanged();
+}
+
+// a figure whose text changed since it was last drawn fades in; one that did not stays still
+const shown = new Map();
+function fadeChanged() {
+  const k = $("count");
+  document.querySelectorAll("[data-k]").forEach(el => mark(el.dataset.k, el));
+  mark("count", k);
+  function mark(key, el) {
+    const t = el.textContent, was = shown.get(key);
+    shown.set(key, t);
+    if (was !== undefined && was !== t) { el.classList.remove("chg"); void el.offsetWidth; el.classList.add("chg"); }
+  }
 }
 
 // a path too long for its row is cut in the middle, so its start and its last folder both stay readable
@@ -246,38 +435,92 @@ function fitPath(t, w) {
   while (s && m(s + "…") > w) s = s.slice(0, -1);
   return s + "…";
 }
+// a cut path that would lose the search hit is cut around the hit instead
+function fitAround(t, w, k) {
+  const m = x => ruler.measureText(x).width;
+  let a = k, b = t.length;
+  while (b > a && m((a > 0 ? "…" : "") + t.slice(a, b) + (b < t.length ? "…" : "")) > w) b--;
+  while (a > 0 && m("…" + t.slice(a - 1, b) + (b < t.length ? "…" : "")) <= w) a--;
+  return (a > 0 ? "…" : "") + t.slice(a, b) + (b < t.length ? "…" : "");
+}
 function fitPaths() {
-  document.querySelectorAll(".path").forEach(el => {
-    ruler.font = getComputedStyle(el).font;
-    const full = el.dataset.full, w = el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft);
-    const shown = fitPath(full, w);
-    if (el.textContent !== shown) el.textContent = shown;
-    el.classList.toggle("cut", shown !== full);
+  // every measurement first, every change after, so the page lays out once
+  const paths = [...document.querySelectorAll(".path")];
+  const font = paths.length ? getComputedStyle(paths[0]).font : "";
+  const widths = paths.map(el => el.clientWidth - 14);
+  // a title or flags that do not fit end in "…" and show in full in the tooltip
+  const cut = [...document.querySelectorAll(".name, .flags")].map(el => [el, el.scrollWidth > el.clientWidth]);
+  ruler.font = font;
+  paths.forEach((el, i) => {
+    const full = el.dataset.full, q = el.dataset.q;
+    let shownText = fitPath(full, widths[i]);
+    const k = q ? full.toLowerCase().indexOf(q) : -1;
+    if (k >= 0 && !shownText.toLowerCase().includes(q)) shownText = fitAround(full, widths[i], k);
+    const html = hit(shownText, q);
+    if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+    el.classList.toggle("cut", shownText !== full);
   });
-  // flags that do not fit end in "…" and show in full in the tooltip
-  document.querySelectorAll(".flags").forEach(el => el.classList.toggle("cut", el.scrollWidth > el.clientWidth));
+  cut.forEach(([el, c]) => el.classList.toggle("cut", c));
 }
-addEventListener("resize", fitPaths);
+addEventListener("resize", () => { fitPaths(); closeMenu(); });
 
-// ----- messages at the bottom -----
-let noteJob = null;
-function flash(t) {
-  if (!t) return;
-  $("note").textContent = t;
-  clearTimeout(noteJob);
-  noteJob = setTimeout(() => $("note").textContent = "", 4000);
+// ----- messages: one about a card sits under that card; one about the whole panel floats above the link -----
+// The bottom line shows a passing message when there is one, else the standing one (a failed
+// read), so neither wipes the other; while it shows, the list gets room so it covers no card.
+let sayJob = null, passing = null, standing = null;
+function showNote() {
+  const n = $("note"), m = passing || (standing && {t: standing, cls: "warn"});
+  n.textContent = m ? m.t : "";
+  n.className = m ? m.cls : "";
+  $("list").style.paddingBottom = m ? n.offsetHeight + 12 + "px" : "";
 }
+function announce(text) { $("live").textContent = ""; requestAnimationFrame(() => { $("live").textContent = text; }); }
+function sayGone() {
+  clearTimeout(sayJob);
+  document.querySelectorAll(".say").forEach(e => e.remove());
+  if (passing) { passing = null; showNote(); }
+}
+// under the card, or above it when under would fall out of the visible list
+function placeSay(b, card) {
+  const list = $("list");
+  b.style.left = card.offsetLeft + "px";
+  b.style.width = card.offsetWidth + "px";
+  const below = card.offsetTop + card.offsetHeight + 6;
+  const fits = below + b.offsetHeight <= list.scrollTop + list.clientHeight;
+  b.style.top = (fits ? below : card.offsetTop - b.offsetHeight - 6) + "px";
+  b.classList.toggle("up", !fits);
+}
+function say(card, text, err) {
+  if (!text) return;
+  announce(text);
+  sayGone();
+  const list = $("list");
+  if (card && list.contains(card)) {
+    const b = document.createElement("div");
+    b.className = "say" + (err ? " err" : "");
+    b.textContent = text;
+    b.dataset.for = card.dataset.id;
+    list.append(b);
+    placeSay(b, card);
+  } else {
+    passing = {t: text, cls: err ? "err" : ""};
+    showNote();
+  }
+  // a success leaves by itself; an error stays until the next click, key or scroll
+  if (!err) sayJob = setTimeout(sayGone, 5000);
+}
+const reply = card => r => r && say(card, r.t, r.err);
 
 // ----- tooltip (mindmap tooltip.md: opens on movement after ~400 ms, leaves by itself after ~3 s) -----
-let tip = null, tipTarget = null, tipJob = null, tipEnd = null;
+let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
 function tipArm(el) {
-  if (tip || tipJob) return;
+  if (el === tipDone || tip || tipJob) return;
   tipTarget = el;
   tipJob = setTimeout(() => tipShow(el), 400);
 }
 function tipShow(el) {
   tipJob = null;
-  if (!document.body.contains(el)) return;
+  if (!document.body.contains(el) || !el.dataset.full) return;
   const r = el.getBoundingClientRect();
   tip = document.createElement("div");
   tip.className = "tip";
@@ -285,99 +528,227 @@ function tipShow(el) {
   document.body.append(tip);
   const w = tip.offsetWidth, h = tip.offsetHeight;
   let x = (r.left + r.right) / 2 - w / 2, y = r.bottom + 6;
+  const pop = el.closest(".pop");
+  if (pop) {
+    const p = pop.getBoundingClientRect();
+    if (p.left - 6 - w >= 8) { x = p.left - 6 - w; y = r.top; }
+    else if (p.right + 6 + w <= innerWidth - 8) { x = p.right + 6; y = r.top; }
+    else { y = p.bottom + 6 + h <= innerHeight - 8 ? p.bottom + 6 : p.top - 6 - h; }
+  } else if (y + h > innerHeight - 8) y = r.top - 6 - h;
   x = Math.max(8, Math.min(x, innerWidth - w - 8));
-  if (y + h > innerHeight - 8) y = r.top - 6 - h;
+  y = Math.max(8, Math.min(y, innerHeight - h - 8));
   tip.style.left = x + "px";
   tip.style.top = y + "px";
-  tipEnd = setTimeout(tipHide, 3000);
+  tipEnd = setTimeout(() => { tipDone = tipTarget; tipHide(); }, 3000);
 }
 function tipHide() {
   clearTimeout(tipJob); clearTimeout(tipEnd);
   tipJob = tipEnd = tipTarget = null;
   if (tip) { tip.remove(); tip = null; }
 }
+// only a real mouse that really moved opens a tooltip: not a touch, not a card sliding under a still pointer
+addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse" || (e.clientX === lx && e.clientY === ly)) return;
+  lx = e.clientX; ly = e.clientY;
+  let p = e.target.closest(".cut, [data-tip]");
+  if (menu && p && !menu.contains(p)) p = null;
+  if (p !== tipDone) tipDone = null;
+  if (p) { if (tipTarget && tipTarget !== p) tipHide(); tipArm(p); }
+  else if (tipTarget) tipHide();
+});
+document.documentElement.addEventListener("mouseleave", tipHide);
+// anything the reader does with the keyboard dismisses it
+addEventListener("keydown", () => tipHide(), true);
+addEventListener("focusin", () => tipHide());
 
 // ----- right-click menu, and the two-step confirm it turns into -----
-let menu = null, swallow = false;
-function closeMenu() { if (menu) { menu.remove(); menu = null; } }
-function placePop(m, x, y) {
-  m.style.left = Math.max(8, Math.min(x, innerWidth - m.offsetWidth - 8)) + "px";
-  m.style.top = Math.max(8, Math.min(y, innerHeight - m.offsetHeight - 8)) + "px";
+let menu = null, menuFor = null, menuCard = null, swallow = false, quiet = false;
+function setTarget(id) {
+  menuFor = id;
+  document.querySelectorAll(".card[data-id]").forEach(c => c.classList.toggle("target", c.dataset.id === id));
 }
-function openMenu(s, x, y) {
-  tipHide(); closeMenu();
+// focus that was in the menu goes back to its card, so the keyboard is never dropped onto the page
+function closeMenu() {
+  if (menu) {
+    const back = menu.contains(document.activeElement) && menuCard && document.body.contains(menuCard);
+    menu.remove(); menu = null;
+    if (back) menuCard.focus({preventScroll: true});
+  }
+  menuCard = null;
+  setTarget(null);
+}
+// opens below the pointer when it fits, above when it does not, and grows out of the pointer
+function placePop(m, x, y) {
+  const w = m.offsetWidth, h = m.offsetHeight;
+  const up = y + h > innerHeight - 8 && y - h >= 8;
+  m.classList.toggle("up", up);
+  m.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + "px";
+  m.style.top = Math.max(8, Math.min(up ? y - h : y, innerHeight - h - 8)) + "px";
+}
+// the confirm sits under the card it asks about, or above it, never on it
+function placeBy(m, card) {
+  let r = card.getBoundingClientRect();
+  const w = m.offsetWidth, h = m.offsetHeight;
+  if (r.bottom + 6 + h > innerHeight - 8 && r.top - 6 - h < 8) {
+    // room on neither side: bring the card to the top of the list first
+    quiet = true;
+    card.scrollIntoView({block: "start"});
+    r = card.getBoundingClientRect();
+  }
+  const up = !(r.bottom + 6 + h <= innerHeight - 8) && r.top - 6 - h >= 8;
+  m.classList.toggle("up", up);
+  m.style.left = Math.max(8, Math.min(r.left + (r.width - w) / 2, innerWidth - w - 8)) + "px";
+  m.style.top = (up ? r.top - 6 - h : Math.min(r.bottom + 6, innerHeight - h - 8)) + "px";
+}
+function openMenu(s, card, x, y) {
+  tipHide(); closeMenu(); sayGone();
+  setTarget(s.id);
+  menuCard = card;
   const m = menu = document.createElement("div");
   m.className = "pop";
+  m.setAttribute("role", "menu");
+  const items = [];
   // a headless run is set aside already, so Hide would change nothing
-  const items = s.headless && !s.hidden ? [] :
-    [[s.hidden ? "Unhide" : "Hide", () => { closeMenu(); api().set_hidden(s.id, !s.hidden); }]];
-  if (s.status) items.push(["Close", () => confirmIn(m, "Close this session?",
+  if (!(s.headless && !s.hidden)) items.push(s.hidden
+    ? ["Unhide", "Moves it back to the main list", () => { closeMenu(); api().set_hidden(s.id, false); }]
+    : ["Hide", "Moves it to the hidden section; Unhide brings it back", () => { closeMenu(); api().set_hidden(s.id, true); }]);
+  if (s.status) items.push(["Close", "Closes its window; the conversation is kept", () => confirmIn(m, card,
+    `Close “${s.title}”?`,
     "Its window closes and anything Claude is doing in it stops; the conversation is kept and can be resumed.",
-    "Yes, close", false, () => api().close(s.id).then(flash))]);
+    "Yes, Close", false, () => api().close(s.id).then(reply(card)))]);
   if (items.length) items.push(null);
-  items.push(["Delete", () => {
-    const why = s.status ? "Close the session first, then delete it."
-      : s.distro ? "A session stored inside WSL cannot go to the Recycle Bin." : "";
-    if (why) { closeMenu(); flash(why); return; }
-    confirmIn(m, "Delete this session?",
-      "Its conversation moves to the Recycle Bin; files in the project folder are not touched.",
-      "Yes, delete", true, () => api().delete(s.id).then(flash));
-  }, true]);
+  if (s.distro) items.push(["Delete", "", null, true, "Stored inside WSL, so it cannot go to the Recycle Bin."]);
+  else if (s.status) items.push(["Delete", "Closes it, then moves its conversation to the Recycle Bin", () => confirmIn(m, card,
+    `Delete “${s.title}”?`,
+    "Its window closes first, then its conversation moves to the Recycle Bin; files in the project folder are not touched.",
+    "Yes, Delete", true, () => api().close_delete(s.id).then(reply(card))), true]);
+  else items.push(["Delete", "Moves its conversation to the Recycle Bin", () => confirmIn(m, card,
+    `Delete “${s.title}”?`,
+    "Its conversation moves to the Recycle Bin; files in the project folder are not touched.",
+    "Yes, Delete", true, () => api().delete(s.id).then(reply(card))), true]);
   for (const it of items) {
-    if (!it) { m.insertAdjacentHTML("beforeend", '<div class="sep"></div>'); continue; }
+    if (!it) { m.insertAdjacentHTML("beforeend", '<div class="sep" role="separator"></div>'); continue; }
+    const [label, outcome, act, danger, blocked] = it;
     const b = document.createElement("button");
-    b.className = "item" + (it[2] ? " danger" : "");
-    b.textContent = it[0];
-    b.onclick = it[1];
+    b.className = "item" + (danger && !blocked ? " danger" : "");
+    b.setAttribute("role", "menuitem");
+    b.textContent = label;
+    // what the item does, for the keyboard and a screen reader as well as for the pointer's tooltip
+    const o = document.createElement("span");
+    o.className = "sr"; o.id = "o" + items.indexOf(it); o.textContent = blocked || outcome;
+    m.append(o);
+    b.setAttribute("aria-describedby", o.id);
+    if (blocked) {
+      // a blocked action stays in place and says why, right under itself
+      b.setAttribute("aria-disabled", "true");
+      b.dataset.tip = "";
+      b.dataset.full = blocked;
+      b.onclick = () => {
+        if (m.querySelector(".why")) return;
+        b.insertAdjacentHTML("afterend", `<div class="why" role="alert">${esc(blocked)}</div>`);
+        placePop(m, x, y);  // the menu grew, so it is placed again
+      };
+    } else {
+      b.dataset.tip = "";
+      b.dataset.full = outcome;
+      b.onclick = () => { m.dataset.outcome = outcome; act(); };
+    }
     m.append(b);
   }
   document.body.append(m);
   placePop(m, x, y);
+  m.querySelector(".item").focus({preventScroll: true});
 }
-function confirmIn(m, title, text, ok, danger, act) {
-  const x = parseFloat(m.style.left), y = parseFloat(m.style.top);
-  m.innerHTML = `<div class="confirm"><h2>${esc(title)}</h2><p>${esc(text)}</p><div class="actions">
-    <button class="btn" data-a="no">Cancel</button>
-    <button class="btn ${danger ? "danger" : "go"}" data-a="yes">${esc(ok)}</button></div></div>`;
+function confirmIn(m, card, title, text, ok, danger, act) {
+  m.setAttribute("role", "dialog");
+  m.setAttribute("aria-labelledby", "cq");
+  m.innerHTML = `<div class="confirm"><h2 id="cq">${esc(title)}</h2><p>${esc(text)}</p><div class="actions">
+    <button class="btn" data-a="no" data-tip data-full="Nothing changes">Cancel</button>
+    <button class="btn ${danger ? "danger" : "go"}" data-a="yes" data-tip data-full="${esc(m.dataset.outcome || "")}">${esc(ok)}</button></div></div>`;
   m.querySelector('[data-a="no"]').onclick = closeMenu;
   m.querySelector('[data-a="yes"]').onclick = () => { closeMenu(); act(); };
-  placePop(m, x, y);
-  m.querySelector('[data-a="no"]').focus();  // Cancel is the default
+  m.style.animation = "none"; void m.offsetWidth; m.style.animation = "";
+  placeBy(m, card);
+  m.querySelector('[data-a="no"]').focus({preventScroll: true});  // Cancel is the default
 }
 
 // ----- input -----
 const list = $("list");
-const cardOf = e => e.target.closest(".card");
+const cardOf = e => e.target.closest(".card[data-id]");
 const find = id => state.sessions.find(s => s.id === id);
 // a click outside an open menu only closes it, as a menu does
 addEventListener("mousedown", e => {
   if (menu && !menu.contains(e.target)) { closeMenu(); swallow = e.button === 0; e.stopPropagation(); }
+  if (!e.target.closest(".say")) sayGone();
   tipHide();
 }, true);
 addEventListener("click", e => { if (swallow) { swallow = false; e.stopPropagation(); } }, true);
 // An open session comes forward on a single click; a closed one opens only on a double click,
 // so a stray click never starts a session.
-list.addEventListener("click", e => { const c = cardOf(e); if (c) api().click(c.dataset.id).then(flash); });
-list.addEventListener("dblclick", e => { const c = cardOf(e); if (c) api().open(c.dataset.id).then(flash); });
+// the answer to a single click waits a moment, so a double click never flashes "Double-click to open it." first
+let dblAt = 0;
+list.addEventListener("click", e => {
+  const c = cardOf(e);
+  if (!c) return;
+  api().click(c.dataset.id).then(r => setTimeout(() => { if (Date.now() - dblAt > 600) reply(c)(r); }, 450));
+});
+list.addEventListener("dblclick", e => {
+  const c = cardOf(e);
+  if (!c) return;
+  dblAt = Date.now();
+  api().open(c.dataset.id).then(reply(c));
+});
 addEventListener("contextmenu", e => {
   e.preventDefault();
   const c = cardOf(e), s = c && find(c.dataset.id);
-  if (s) openMenu(s, e.clientX, e.clientY); else closeMenu();
+  if (s) openMenu(s, c, e.clientX, e.clientY); else closeMenu();
 });
-list.addEventListener("mousemove", e => {
-  const p = e.target.closest(".cut");
-  if (p) { if (tipTarget && tipTarget !== p) tipHide(); tipArm(p); }
-  else if (tipTarget) tipHide();
+list.addEventListener("keydown", e => {
+  const c = e.target.closest && e.target.closest(".card[data-id]"), s = c && find(c.dataset.id);
+  if (!s) return;
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (s.status || !s.here ? api().click(s.id) : api().open(s.id)).then(reply(c)); }
+  else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+    e.preventDefault();
+    const r = c.getBoundingClientRect();
+    openMenu(s, c, r.left + 16, r.bottom);
+  }
 });
-list.addEventListener("mouseleave", tipHide);
-list.addEventListener("scroll", () => { tipHide(); closeMenu(); });
+list.addEventListener("pointerenter", () => { hovering = true; });
+list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
+list.addEventListener("scroll", () => { tipHide(); if (quiet) quiet = false; else closeMenu(); });
 addEventListener("blur", () => { tipHide(); closeMenu(); });
-addEventListener("keydown", e => { if (e.key === "Escape") { tipHide(); closeMenu(); } });
-$("q").addEventListener("input", render);
-$("footer").onclick = () => { showHidden = !showHidden; scrollToAside = showHidden; render(); };
+// the menu is walked with the arrow keys, Home and End
+addEventListener("keydown", e => {
+  if (!menu || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+  const its = [...menu.querySelectorAll(".item, .btn")];
+  if (!its.length) return;
+  e.preventDefault();
+  const i = its.indexOf(document.activeElement);
+  const j = e.key === "Home" ? 0 : e.key === "End" ? its.length - 1
+          : (i + (e.key === "ArrowDown" ? 1 : -1) + its.length) % its.length;
+  its[j].focus({preventScroll: true});
+});
+addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (menu || tip || document.querySelector(".say")) { tipHide(); closeMenu(); sayGone(); return; }
+  if (passing) { sayGone(); return; }
+  if (document.activeElement === $("q") && $("q").value) { e.preventDefault(); setQ(""); }
+});
+// the search clears in one step: its × or Escape
+function setQ(v) { $("q").value = v; $("qx").hidden = !v; render(); }
+$("q").addEventListener("input", () => { $("qx").hidden = !$("q").value; render(); });
+$("qx").addEventListener("mousedown", e => e.preventDefault());
+$("qx").onclick = () => setQ("");
+function toggleAside() { showHidden = !showHidden; scrollToAside = revealing = showHidden; render(); }
+$("footer").onclick = toggleAside;
+list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(); });
 $("hide").onclick = () => api().hide();
 
-window.app = { update(st) { state = Object.assign(st, {ready: true}); render(); }, flash };
+window.app = {
+  update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); },
+  flash(t) { say(null, t, false); },
+};
+render();
 addEventListener("pywebviewready", () => api().ready());
 </script>
 </body>
