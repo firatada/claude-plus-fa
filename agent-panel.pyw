@@ -1,10 +1,9 @@
 # Agent Panel: every Claude Code session on this PC, in a narrow list over the right
-# edge of the screen. Click a session to resume it in its own folder, in a new terminal.
-# Tray icon: click to show or hide; Ctrl+Alt+C does the same. Read-only: it never changes
-# or deletes a session.
+# edge of the screen. Double-click a closed session to resume it in its own folder, in a new
+# terminal; click an open one to bring its window forward. Tray icon: click to show or hide;
+# Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 import ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, threading, time
-import tkinter as tk
-from tkinter import font as tkfont
+import webview
 
 HOME = os.path.expanduser("~")
 CLAUDE = os.path.join(HOME, ".claude")
@@ -13,6 +12,8 @@ CACHE_FILE = os.path.join(STATE_DIR, "cache.json")
 HIDDEN_FILE = os.path.join(STATE_DIR, "hidden.json")
 CTX_DIR = os.path.join(CLAUDE, "state", "context")      # written by claude-plus statusline.py
 LIMITS_FILE = os.path.join(CTX_DIR, "rate_limits.json")
+HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel.html")
+TITLE = "Agent Panel"
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
@@ -21,12 +22,11 @@ LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed s
 CREATE_NEW_CONSOLE = 0x10
 CREATE_NO_WINDOW = 0x08000000
 
-# Afiniti Spark tokens (mindmap/design_themes/spark_theme). Gold is for rewards only, so "working" is blue.
-C = {"bg": "#f4f6fb", "panel": "#ffffff", "surface2": "#eef2fb", "line": "#e2e8f5", "text": "#0a1a40",
-     "muted": "#4b5672", "blue": "#1b4df5", "busy": "#1b4df5", "idle": "#16a34a", "gone": "#b5bdd0",
-     "warn": "#f5a623", "red": "#e11d48"}
+BG = "#f4f6fb"          # Spark page background, shown before the page has drawn; the other tokens are in the html
 
 user32, kernel32, shell32 = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
+user32.GetWindowLongW.restype = ctypes.c_long
+user32.SetWindowPos.argtypes = [wt.HWND, ctypes.c_ssize_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT]
 
 
 # ---------- one instance only ----------
@@ -498,7 +498,7 @@ def tray(events):
     return icon
 
 
-# ---------- the window (Spark theme, drawn on canvases: Tk has no rounded widgets) ----------
+# ---------- the window: agent-panel.html in a WebView2 window (mindmap desktop-apps.md) ----------
 def ago(ts):
     d = time.time() - ts
     if d < 60:
@@ -514,142 +514,121 @@ def ago(ts):
     return datetime.datetime.fromtimestamp(ts).strftime("%d %b").lstrip("0")
 
 
-def rounded(canvas, x1, y1, x2, y2, r, **kw):
-    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
-           x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
-    return canvas.create_polygon(pts, smooth=True, **kw)
+
+WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+
+def own_window(title):
+    """The visible top window of this process with this title."""
+    found = []
+
+    def each(h, _):
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        if pid.value == os.getpid() and user32.IsWindowVisible(h) and window_title(h) == title:
+            found.append(h)
+            return False
+        return True
+    user32.EnumWindows(WNDENUMPROC(each), 0)
+    return found[0] if found else None
+
+
+class Api:
+    """What the page may call, as window.pywebview.api.<name>; each returns a message for the bottom line."""
+
+    def __init__(self, panel):
+        self._p = panel
+
+    def ready(self):
+        self._p.page_ready = True
+        self._p.push(force=True)
+
+    def click(self, sid):
+        return self._p.click(sid)
+
+    def open(self, sid):
+        return self._p.open(sid)
+
+    def set_hidden(self, sid, on):
+        self._p.set_hidden(sid, on)
+
+    def close(self, sid):
+        return self._p.close(sid)
+
+    def delete(self, sid):
+        return self._p.delete(sid)
+
+    def hide(self):
+        self._p.events.put("toggle")
 
 
 class Panel:
     def __init__(self):
         self.events = queue.Queue()
         self.cache = load_cache()
-        self.sessions, self.shown_key, self.rows = [], None, []
-        self.hidden, self.show_hidden, self.scroll_to_aside = load_hidden(), False, False
-        self.imgs, self.tip, self.tip_job, self.usage_key = {}, None, None, None
-        self.root = tk.Tk()
-        self.scale = self.root.winfo_fpixels("1i") / 96.0
-        self.root.overrideredirect(True)
-        self.root.configure(bg=C["bg"])
-        self.f_head = tkfont.Font(family="Segoe UI Semibold", size=11)
-        self.f_title = tkfont.Font(family="Segoe UI Semibold", size=10)
-        self.f_meta = tkfont.Font(family="Segoe UI", size=8)
-        self.f_pill = tkfont.Font(family="Segoe UI Semibold", size=8)
-        self.f_body = tkfont.Font(family="Segoe UI", size=9)
-        self.build()
-        self.root.update_idletasks()
-        self.hwnd = user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+        self.sessions, self.hidden = [], load_hidden()
+        self.hwnd, self.icon, self.visible, self.page_ready = None, None, True, False
+        self.pushed, self.lock = None, threading.Lock()
+        with open(HTML, encoding="utf-8") as f:
+            html = f.read()
+        self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
+                                            frameless=True, easy_drag=False, background_color=BG)
+
+    def run(self):
+        webview.start(self.main, gui="edgechromium", private_mode=True)
+
+    def main(self):
+        """Runs on its own thread once the window is up: placement, hotkey, tray, then the poll loop."""
+        for _ in range(100):
+            self.hwnd = own_window(TITLE)
+            if self.hwnd:
+                break
+            time.sleep(0.1)
+        if not self.hwnd:
+            return self.quit()
+        # out of the taskbar and Alt+Tab, like a tool window; the style takes effect on the next show
+        user32.ShowWindow(self.hwnd, 0)
+        ex = user32.GetWindowLongW(self.hwnd, -20)  # GWL_EXSTYLE
+        user32.SetWindowLongW(self.hwnd, -20, (ex | 0x80) & ~0x40000)  # WS_EX_TOOLWINDOW, not WS_EX_APPWINDOW
         self.dock = Edge(self.hwnd)
-        self.visible = True
         self.place()
+        user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
         self.icon = tray(self.events)
-        self.refresh()
-        self.root.after(200, self.poll)
+        self.last_scan = self.last_live = 0
+        while True:
+            try:
+                while True:
+                    ev = self.events.get_nowait()
+                    if ev == "toggle":
+                        self.toggle()
+                    elif ev == "refresh":
+                        self.last_scan = 0
+                    elif ev == "quit":
+                        return self.quit()
+            except queue.Empty:
+                pass
+            if kernel32.WaitForSingleObject(QUIT_EVENT, 0) == 0:
+                return self.quit()
+            now = time.time()
+            if now - self.last_scan > SCAN_EVERY:
+                self.last_scan = self.last_live = now
+                try:
+                    self.sessions = scan(self.cache)
+                    save_cache(self.cache)
+                    self.push()
+                except Exception as e:
+                    self.say("Could not read sessions: %s" % e)
+            elif now - self.last_live > LIVE_EVERY:
+                self.last_live = now
+                self.update_live()
+            time.sleep(0.2)
 
-    def px(self, n):
-        return int(round(n * self.scale))
-
-    # ----- layout -----
-    def build(self):
-        p = self.px
-        self.head = tk.Canvas(self.root, height=p(52), bg=C["bg"], highlightthickness=0, bd=0)
-        self.head.pack(fill="x")
-        try:
-            from PIL import ImageTk
-            self.logo = ImageTk.PhotoImage(logo_image(p(26)))
-        except ImportError:
-            self.logo = None
-        self.head.bind("<Configure>", lambda e: self.draw_head())
-
-        self.search = tk.Canvas(self.root, height=p(36), bg=C["bg"], highlightthickness=0, bd=0)
-        self.search.pack(fill="x")
-        self.query = tk.StringVar()
-        self.entry = tk.Entry(self.search, textvariable=self.query, font=self.f_meta, relief="flat", bd=0,
-                              bg=C["panel"], fg=C["text"], insertbackground=C["text"])
-        self.search_focus = False
-        self.entry.bind("<FocusIn>", lambda e: self.set_search_focus(True))
-        self.entry.bind("<FocusOut>", lambda e: self.set_search_focus(False))
-        self.search.bind("<Configure>", lambda e: self.draw_search())
-        self.search.bind("<Button-1>", lambda e: self.activate_search())
-        self.query.trace_add("write", lambda *a: (self.draw_search(), self.render(force=True)))
-
-        # 5-hour and weekly usage, the lowest thing in the panel
-        self.usage = tk.Canvas(self.root, height=p(58), bg=C["bg"], highlightthickness=0, bd=0)
-        self.usage.pack(side="bottom", fill="x")
-        self.usage.bind("<Configure>", lambda e: self.draw_usage(force=True))
-
-        # messages show at the bottom, so the list starts right under the search box
-        self.note = tk.Label(self.root, text="", font=self.f_meta, fg=C["muted"], bg=C["bg"], anchor="w")
-        # the link to the set-aside list sits greyed out in the strip under the list
-        self.footer = tk.Label(self.root, text="", font=self.f_meta, fg=C["gone"], bg=C["bg"],
-                               anchor="w", cursor="hand2")
-        self.footer.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(10)))
-        self.footer.bind("<Button-1>", lambda e: self.toggle_hidden())
-        self.footer.bind("<Enter>", lambda e: self.footer.configure(fg=C["blue"]))
-        self.footer.bind("<Leave>", lambda e: self.footer.configure(fg=C["gone"]))
-        self.note.pack(side="bottom", fill="x", padx=p(16), pady=(0, p(4)))
-        tk.Frame(self.root, height=p(8), bg=C["bg"]).pack(fill="x")
-
-        self.list = tk.Canvas(self.root, bg=C["bg"], highlightthickness=0, bd=0)
-        self.list.pack(fill="both", expand=True)
-        self.list.bind("<Configure>", lambda e: self.render(force=True))
-        self.root.bind_all("<MouseWheel>", lambda e: (self.tip_hide(),
-                                                      self.list.yview_scroll(int(-e.delta / 120) * 3, "units")))
-        self.list.configure(yscrollincrement=p(8))
-
-    def draw_head(self):
-        p, c = self.px, self.head
-        c.delete("all")
-        w = c.winfo_width()
-        x = p(16)
-        if self.logo:
-            c.create_image(x, p(26), image=self.logo, anchor="w")
-            x += p(26) + p(10)
-        c.create_text(x, p(26), text="Agent Panel", font=self.f_head, fill=C["text"], anchor="w")
-        x += self.f_head.measure("Agent Panel") + p(8)
-        n = str(sum(1 for s in self.sessions if not self.aside(s)))
-        pw = self.f_pill.measure(n) + p(14)
-        rounded(c, x, p(17), x + pw, p(35), p(9), fill=C["surface2"], outline="")
-        c.create_text(x + pw / 2, p(26), text=n, font=self.f_pill, fill=C["muted"])
-        close = c.create_text(w - p(18), p(26), text="✕", font=self.f_meta, fill=C["muted"])
-        c.tag_bind(close, "<Button-1>", lambda e: self.toggle())
-        c.tag_bind(close, "<Enter>", lambda e: c.itemconfigure(close, fill=C["blue"]))
-        c.tag_bind(close, "<Leave>", lambda e: c.itemconfigure(close, fill=C["muted"]))
-
-    def activate_search(self):
-        self.search.itemconfigure(self.entry_win, state="normal")
-        self.entry.focus_force()
-        self.set_search_focus(True)
-
-    def set_search_focus(self, on):
-        self.search_focus = on
-        self.draw_search()
-
-    def draw_search(self):
-        p, c = self.px, self.search
-        c.delete("box")
-        w = c.winfo_width()
-        rounded(c, p(16), p(2), w - p(16), p(34), p(10), fill=C["panel"],
-                outline=C["blue"] if self.search_focus else C["line"], width=p(1.5) if self.search_focus else 1,
-                tags="box")
-        c.create_image(p(26), p(10), image=self.glass(), anchor="nw", tags="box")
-        if not self.query.get():
-            c.create_text(p(48), p(18), text="Search sessions", font=self.f_meta, fill=C["muted"],
-                          anchor="w", tags="box")
-        if not getattr(self, "entry_win", None):
-            self.entry_win = c.create_window(p(46), p(18), window=self.entry, anchor="w")
-        c.itemconfigure(self.entry_win, width=w - p(46) - p(26), height=p(22))
-        c.tag_raise(self.entry_win)
-        self.entry.configure(width=1)
-        if not self.query.get() and not self.search_focus:
-            c.itemconfigure(self.entry_win, state="hidden")
-        else:
-            c.itemconfigure(self.entry_win, state="normal")
-
+    # ----- placement -----
     def place(self):
-        x, y, w, h = self.dock.place(self.px(WIDTH))
-        self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        scale = user32.GetDpiForWindow(self.hwnd) / 96.0 or 1.0
+        x, y, w, h = self.dock.place(int(round(WIDTH * scale)))
+        user32.SetWindowPos(self.hwnd, 0, x, y, w, h, 0x0004 | 0x0010)  # SWP_NOZORDER | SWP_NOACTIVATE
 
     def toggle(self):
         """Ctrl+Alt+C and the tray: a panel covered by another window comes to the front;
@@ -658,62 +637,22 @@ class Panel:
             self.raise_panel()
             return
         if self.visible:
-            self.root.withdraw()
+            user32.ShowWindow(self.hwnd, 0)  # SW_HIDE
         else:
-            self.root.deiconify()
-            self.root.update_idletasks()
             self.place()
+            user32.ShowWindow(self.hwnd, 5)
             self.raise_panel()
         self.visible = not self.visible
 
     def raise_panel(self):
-        self.root.lift()
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-topmost", False)
+        user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)  # HWND_TOPMOST, no move or size
+        user32.SetWindowPos(self.hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002)  # back to HWND_NOTOPMOST
         user32.SetForegroundWindow(self.hwnd)
+        if user32.GetForegroundWindow() != self.hwnd:
+            press(0x12)  # a lone Alt lets this process take the foreground
+            user32.SetForegroundWindow(self.hwnd)
 
-    # ----- data -----
-    def refresh(self):
-        def work():
-            try:
-                found = scan(self.cache)
-                save_cache(self.cache)
-                self.events.put(("sessions", found))
-            except Exception as e:
-                self.events.put(("error", str(e)))
-        threading.Thread(target=work, daemon=True).start()
-
-    def poll(self):
-        try:
-            while True:
-                ev = self.events.get_nowait()
-                if ev == "toggle":
-                    self.toggle()
-                elif ev == "refresh":
-                    self.refresh()
-                elif ev == "quit":
-                    self.quit()
-                    return
-                elif ev[0] == "sessions":
-                    self.sessions = ev[1]
-                    self.draw_head()
-                    self.render()
-                elif ev[0] == "error":
-                    self.flash("Could not read sessions: " + ev[1])
-        except queue.Empty:
-            pass
-        if kernel32.WaitForSingleObject(QUIT_EVENT, 0) == 0:
-            self.quit()
-            return
-        now = time.time()
-        if now - getattr(self, "last_scan", 0) > SCAN_EVERY:
-            self.last_scan = self.last_live = now
-            self.refresh()
-        elif now - getattr(self, "last_live", 0) > LIVE_EVERY:
-            self.last_live = now
-            self.update_live()
-        self.root.after(200, self.poll)
-
+    # ----- data to the page -----
     def update_live(self):
         """Refresh only which sessions are open and what they are doing, between full scans."""
         live = running()
@@ -722,404 +661,96 @@ class Panel:
             s["status"], s["pid"] = run.get("status"), run.get("pid")
             if s["status"]:
                 s["ctx"] = read_ctx(s["id"])
-        self.render()
-        self.draw_usage()
+        self.push()
 
-    # ----- sharp drawings: Tk does not smooth edges, so small round shapes are drawn 4x and scaled down -----
-    def sharp(self, key, w, h, paint):
-        im = self.imgs.get(key)
-        if im is None:
-            from PIL import Image, ImageDraw, ImageTk
-            k = 4
-            big = Image.new("RGBA", (max(1, w) * k, h * k), (0, 0, 0, 0))
-            paint(ImageDraw.Draw(big), k * self.scale)
-            im = self.imgs[key] = ImageTk.PhotoImage(big.resize((max(1, w), h), Image.LANCZOS))
-        return im
+    def state(self):
+        lim, now = read_limits(), time.time()
 
-    def dot(self, colour):
-        d = self.px(8)
-        return self.sharp(("dot", colour), d, d, lambda g, u: g.ellipse((0, 0, d * 4 - 1, d * 4 - 1), fill=colour))
-
-    def glass(self):
-        n = self.px(16)
-
-        def paint(g, u):
-            wd = max(1, int(round(1.6 * u)))
-            cx = cy = 6.5 * u
-            r = 4.6 * u
-            g.ellipse((cx - r, cy - r, cx + r, cy + r), outline=C["muted"], width=wd)
-            g.line((10 * u, 10 * u, 13.8 * u, 13.8 * u), fill=C["muted"], width=wd)
-            e = wd / 2.0
-            g.ellipse((13.8 * u - e, 13.8 * u - e, 13.8 * u + e, 13.8 * u + e), fill=C["muted"])
-        return self.sharp("glass", n, n, paint)
-
-    def bar(self, w, pct):
-        """A rounded progress bar: green under 50 %, gold under 80 %, red above, as on the status line."""
-        h = self.px(6)
-        pct = None if pct is None else max(0.0, min(100.0, pct))
-        colour = None if pct is None else C["idle"] if pct < 50 else C["warn"] if pct < 80 else C["red"]
-        fill = 0 if not pct else max(h, int(round(w * pct / 100.0)))
-
-        def paint(g, u):
-            k = 4
-            g.rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=h * k // 2, fill=C["line"])
-            if fill:
-                g.rounded_rectangle((0, 0, fill * k - 1, h * k - 1), radius=h * k // 2, fill=colour)
-        return self.sharp(("bar", w, fill, colour), w, h, paint)
-
-    def fit_path(self, text, font, width):
-        """Cut a path in the middle, so its start and its last folder both stay readable."""
-        if font.measure(text) <= width:
-            return text
-        cut = text.rstrip("\\").rfind("\\")
-        head, tail = (text[:cut], text[cut:]) if cut > 0 else ("", text)
-        for k in range(len(head), -1, -1):
-            cand = head[:k] + "…" + tail
-            if font.measure(cand) <= width:
-                return cand
-        return self.fit(tail, font, width)
-
-    # ----- tooltip (mindmap tooltip.md: opens on movement after ~400 ms, leaves by itself after ~3 s) -----
-    def tip_arm(self, text, canvas, item):
-        if self.tip is not None or self.tip_job is not None:
-            return
-        self.tip_job = self.root.after(400, lambda: self.tip_show(text, canvas, item))
-
-    def tip_show(self, text, canvas, item):
-        self.tip_job = None
-        p = self.px
-        x1, y1, x2, y2 = canvas.bbox(item)
-        top = tk.Toplevel(self.root)
-        top.overrideredirect(True)
-        top.attributes("-topmost", True)
-        tk.Label(top, text=text, font=self.f_meta, fg="#ffffff", bg=C["text"], justify="left",
-                 wraplength=p(420), padx=p(8), pady=p(5)).pack()
-        top.update_idletasks()
-        w = top.winfo_reqwidth()
-        sx = canvas.winfo_rootx() + (x1 + x2) // 2 - int(canvas.canvasx(0)) - w // 2
-        sy = canvas.winfo_rooty() + y2 - int(canvas.canvasy(0)) + p(6)
-        sx = max(p(4), min(sx, top.winfo_screenwidth() - w - p(4)))
-        top.geometry("+%d+%d" % (sx, sy))
-        self.tip = top
-        self.tip_job = self.root.after(3000, self.tip_hide)
-
-    def tip_hide(self):
-        if self.tip_job is not None:
-            self.root.after_cancel(self.tip_job)
-            self.tip_job = None
-        if self.tip is not None:
-            self.tip.destroy()
-            self.tip = None
-
-    def draw_usage(self, force=False):
-        """5h and week bars from the latest status line of any session (statusline.py records them)."""
-        lim = read_limits()
-        c, p = self.usage, self.px
-        w = c.winfo_width()
-        key = (json.dumps(lim, sort_keys=True), w, int(time.time() // 60))
-        if key == self.usage_key and not force:
-            return
-        self.usage_key = key
-        c.delete("all")
-        c.create_line(p(16), 1, w - p(16), 1, fill=C["line"])
-        rx = w - p(16)
-        bx = p(16) + self.f_meta.measure("week") + p(10)
-        bw = rx - self.f_meta.measure("100%  ·  Wed 00:00") - p(10) - bx
-        y = p(20)
-        for label, v, fmt in (("5h", lim.get("five_hour"), "%H:%M"), ("week", lim.get("seven_day"), "%a %H:%M")):
-            pct, note = None, ""
+        def usage(v, fmt):
             try:
-                if v and float(v.get("resets_at")) > time.time():  # past its reset, the figure is stale
-                    pct = v.get("used_percentage")
-                    note = time.strftime(fmt, time.localtime(float(v["resets_at"])))
+                if v and float(v.get("resets_at")) > now:  # past its reset, the figure is stale
+                    return {"pct": v.get("used_percentage"),
+                            "note": time.strftime(fmt, time.localtime(float(v["resets_at"])))}
             except (TypeError, ValueError):
                 pass
-            c.create_text(p(16), y, text=label, font=self.f_meta, fill=C["muted"], anchor="w")
-            c.create_image(bx, y, image=self.bar(bw, pct), anchor="w")
-            c.create_text(rx, y, text=("--" if pct is None else "%d%%" % round(pct)) + ("  ·  " + note if note else ""),
-                          font=self.f_meta, fill=C["muted"], anchor="e")
-            y += p(22)
+            return None
+        return {"sessions": [{"id": s["id"], "title": s["title"], "folder": s["folder"], "path": where_of(s),
+                              "status": s["status"], "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden,
+                              "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"])}
+                             for s in self.sessions],
+                "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
+                           "seven_day": usage(lim.get("seven_day"), "%a %H:%M")}}
 
-    def flash(self, text):
-        self.note.configure(text=text)
-        self.root.after(4000, lambda: self.note.configure(text=""))
-
-    def fit(self, text, font, width):
-        if font.measure(text) <= width:
-            return text
-        while text and font.measure(text + "…") > width:
-            text = text[:-1]
-        return text + "…"
-
-    # ----- the list -----
-    def aside(self, s):
-        """Hidden by the user, or its folder is gone: kept out of the main list."""
-        return s["id"] in self.hidden or not folder_exists(s)
-
-    def render(self, force=False):
-        q = self.query.get().strip().lower()
-        n_aside = sum(1 for s in self.sessions if self.aside(s))
-        if not n_aside:
-            self.show_hidden = False
-        self.footer.configure(text=("Close hidden and deleted" if self.show_hidden else
-                                    "Show hidden and deleted (%d)" % n_aside) if n_aside else "")
-        found = [s for s in self.sessions
-                 if not q or q in s["title"].lower() or q in (s["folder"] or "").lower()]
-        rows = [s for s in found if not self.aside(s)]
-        rest = [s for s in found if self.aside(s)] if self.show_hidden else []
-        width = self.list.winfo_width()
-        key = (q, width, self.show_hidden, tuple(sorted(self.hidden)),
-               tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60), s.get("ctx")) for s in rows + rest))
-        if key == self.shown_key and not force:
+    def push(self, force=False):
+        if not self.page_ready:
             return
-        self.shown_key = key
-        c, p = self.list, self.px
-        c.delete("all")
-        x1, x2, y, h, gap = p(16), width - p(16), p(4), p(72), p(8)
-        for i, s in enumerate(rows):
-            self.card(s, i, x1, y, x2, y + h)
-            y += h + gap
-        if rest:
-            y += p(10)
-            section = y
-            c.create_text(x1 + p(2), y + p(8), text="HIDDEN AND DELETED", font=self.f_pill,
-                          fill=C["muted"], anchor="w")
-            y += p(24)
-            for i, s in enumerate(rest, len(rows)):
-                self.card(s, i, x1, y, x2, y + h)
-                y += h + gap
-        if not rows and not rest:
-            c.create_text(width / 2, p(40), text="No sessions match." if q else "No sessions yet.",
-                          font=self.f_meta, fill=C["muted"])
-        c.configure(scrollregion=(0, 0, width, y + p(8)))
-        if rest and self.scroll_to_aside:
-            self.scroll_to_aside = False
-            c.update_idletasks()
-            c.yview_moveto(max(0, section - p(4)) / float(y + p(8)))
+        with self.lock:
+            data = json.dumps(self.state())
+            if data == self.pushed and not force:
+                return
+            self.pushed = data
+            self.window.evaluate_js("app.update(%s)" % data)
 
-    def card(self, s, i, x1, y1, x2, y2):
-        c, p = self.list, self.px
-        here = folder_exists(s)
-        hidden = s["id"] in self.hidden
-        tag = "card%d" % i
-        box = rounded(c, x1, y1, x2, y2, p(14), fill=C["panel"], outline=C["line"], width=1, tags=tag)
-        tx = x1 + p(14)
+    def say(self, text):
+        if self.page_ready:
+            self.window.evaluate_js("app.flash(%s)" % json.dumps(text))
+
+    def find(self, sid):
+        return next((s for s in self.sessions if s["id"] == sid), None)
+
+    # ----- what the page asks for -----
+    def click(self, sid):
+        s = self.find(sid)
+        if not s:
+            return ""
+        if not folder_exists(s):
+            return "Its folder was deleted."
         if s["status"]:
-            c.create_image(tx, y1 + p(18), image=self.dot(C["busy"] if s["status"] == "busy" else C["idle"]),
-                           tags=tag)
-        tx += p(14)
-        room = x2 - p(14) - tx
-        c.create_text(tx, y1 + p(18), text=self.fit(s["title"], self.f_title, room), font=self.f_title,
-                      fill=C["text"], anchor="w", tags=tag)
-        # second row: the full folder path; when it is cut, hovering it shows it whole
-        full = where_of(s)
-        shown = self.fit_path(full, self.f_meta, room)
-        path_item = c.create_text(tx, y1 + p(38), text=shown, font=self.f_meta, fill=C["muted"], anchor="w",
-                                  tags=(tag, tag + "path"))
-        if shown != full:
-            c.tag_bind(tag + "path", "<Motion>", lambda e: self.tip_arm(full, c, path_item))
-            c.tag_bind(tag + "path", "<Leave>", lambda e: self.tip_hide())
-        # third row: context used, as on the status line; then flags and age
-        y3 = y1 + p(57)
-        c.create_text(tx, y3, text="ctx", font=self.f_meta, fill=C["muted"], anchor="w", tags=tag)
-        bx, bw = tx + self.f_meta.measure("ctx") + p(6), p(56)
-        ctx = s.get("ctx")
-        c.create_image(bx, y3, image=self.bar(bw, ctx), anchor="w", tags=tag)
-        c.create_text(bx + bw + p(6), y3, text="--" if ctx is None else "%d%%" % round(ctx), font=self.f_meta,
-                      fill=C["muted"], anchor="w", tags=tag)
-        flags = (["hidden"] if hidden else []) + ([] if here else ["folder deleted"]) + [ago(s["mtime"])]
-        c.create_text(x2 - p(14), y3, text="  ·  ".join(flags), font=self.f_meta, fill=C["muted"],
-                      anchor="e", tags=tag)
+            return "" if focus_session(s) else "Already open, but its window was not found."
+        return "Double-click to open it."
 
-        def enter(e):
-            c.itemconfigure(box, outline=C["blue"], width=p(1.5))
-            c.configure(cursor="hand2" if here else "arrow")
+    def open(self, sid):
+        s = self.find(sid)
+        if s and folder_exists(s) and not s["status"]:
+            open_session(s)
+            return "Opening " + s["title"][:40]
+        return ""
 
-        def leave(e):
-            c.itemconfigure(box, outline=C["line"], width=1)
-            c.configure(cursor="arrow")
-
-        # An open session comes forward on a single click; a closed one opens only on a
-        # double click, so a stray click never starts a session.
-        def click(e):
-            self.tip_hide()
-            if not here:
-                self.flash("Its folder was deleted.")
-            elif s["status"]:
-                if not focus_session(s):
-                    self.flash("Already open, but its window was not found.")
-            else:
-                self.flash("Double-click to open it.")
-
-        def double(e):
-            if here and not s["status"]:
-                open_session(s)
-                self.flash("Opening " + s["title"][:40])
-        c.tag_bind(tag, "<Enter>", enter)
-        c.tag_bind(tag, "<Leave>", leave)
-        c.tag_bind(tag, "<Button-1>", click)
-        c.tag_bind(tag, "<Double-Button-1>", double)
-        c.tag_bind(tag, "<Button-3>", lambda e: self.menu(e, s))
-
-    # ----- right-click menu -----
-    def menu(self, e, s):
-        """A Spark context menu drawn by hand: Tk's own menu is the native Windows one,
-        which ignores the theme and adds its own 3D border."""
-        self.tip_hide()
-        items = [("Unhide", lambda: self.set_hidden(s, False)) if s["id"] in self.hidden
-                 else ("Hide", lambda: self.set_hidden(s, True))]
-        if s["status"]:
-            items.append(("Close", lambda: self.close(s)))
-        items += [None, ("Delete", lambda: self.delete(s))]
-        p, key = self.px, "#ff00fe"  # key: the colour Windows makes see-through, for round corners
-        row, sep, pad = p(32), p(9), p(6)
-        w = max(self.f_body.measure(it[0]) for it in items if it) + p(64)
-        h = pad * 2 + sum(row if it else sep for it in items)
-        top = tk.Toplevel(self.root)
-        top.overrideredirect(True)
-        top.attributes("-topmost", True)
-        top.configure(bg=key)
-        top.attributes("-transparentcolor", key)
-        c = tk.Canvas(top, width=w, height=h, bg=key, highlightthickness=0, bd=0)
-        c.pack()
-        rounded(c, 0, 0, w - 1, h - 1, p(10), fill=C["panel"], outline=C["line"], width=1)
-
-        def close(*_):
-            if top.winfo_exists():
-                top.grab_release()
-                top.destroy()
-
-        def pick(cmd):
-            close()
-            self.root.after(10, cmd)
-        y = pad
-        for it in items:
-            if it is None:
-                c.create_line(p(12), y + sep // 2, w - p(12), y + sep // 2, fill=C["line"])
-                y += sep
-                continue
-            label, cmd = it
-            tag = "item" + label
-            bg = rounded(c, p(5), y, w - p(5), y + row, p(7), fill=C["panel"], outline="", tags=tag)
-            c.create_text(p(16), y + row // 2, text=label, font=self.f_body, anchor="w", tags=tag,
-                          fill="#e11d48" if label == "Delete" else C["text"])
-            c.tag_bind(tag, "<Enter>", lambda ev, b=bg, red=(label == "Delete"):
-                       c.itemconfigure(b, fill="#fde8ec" if red else C["surface2"]))
-            c.tag_bind(tag, "<Leave>", lambda ev, b=bg: c.itemconfigure(b, fill=C["panel"]))
-            c.tag_bind(tag, "<ButtonRelease-1>", lambda ev, cmd=cmd: pick(cmd))
-            y += row
-        # open at the pointer, kept inside the screen
-        x0 = min(e.x_root, top.winfo_screenwidth() - w - p(4))
-        y0 = min(e.y_root, top.winfo_screenheight() - h - p(48))
-        top.geometry("%dx%d+%d+%d" % (w, h, x0, y0))
-        top.bind("<Escape>", close)
-        top.bind("<FocusOut>", close)
-        # a click anywhere else in the panel closes it; a click in another app takes focus away
-        top.bind("<Button-1>", lambda ev: close() if not (0 <= ev.x_root - x0 < w and 0 <= ev.y_root - y0 < h) else None)
-        top.bind("<Button-3>", lambda ev: close())
-        top.update_idletasks()
-        top.focus_force()
-        top.grab_set()
-
-    def set_hidden(self, s, on):
-        (self.hidden.add if on else self.hidden.discard)(s["id"])
+    def set_hidden(self, sid, on):
+        (self.hidden.add if on else self.hidden.discard)(sid)
         save_hidden(self.hidden)
-        self.draw_head()
-        self.render(force=True)
+        self.push()
 
-    def toggle_hidden(self):
-        self.show_hidden = not self.show_hidden
-        self.scroll_to_aside = self.show_hidden
-        self.render(force=True)
+    def close(self, sid):
+        s = self.find(sid)
+        if s and close_session(s):
+            threading.Timer(1.5, lambda: self.events.put("refresh")).start()
+            return "Closed " + s["title"][:40]
+        return "Could not close it."
 
-    def close(self, s):
-        if not self.confirm("Close this session?",
-                            "Its window closes. Anything Claude is doing in it right now stops; "
-                            "the conversation so far is kept and can be resumed.", "Close"):
-            return
-        if close_session(s):
-            self.flash("Closed " + s["title"][:40])
-            self.root.after(1500, self.refresh)
-        else:
-            self.flash("Could not close it.")
-
-    def delete(self, s):
+    def delete(self, sid):
+        s = self.find(sid)
+        if not s:
+            return ""
         if s["status"]:
-            self.flash("Close the session first, then delete it.")
-            return
+            return "Close the session first, then delete it."
         if s["distro"]:
-            self.flash("A session stored inside WSL cannot go to the Recycle Bin.")
-            return
-        if not self.confirm("Delete this session?",
-                            "This session will be deleted: its conversation is moved to the Recycle Bin. "
-                            "Files in the project folder (CLAUDE.md, memory.md and the rest) are not touched.",
-                            "Delete", danger=True):
-            return
-        if not self.confirm("Are you sure?",
-                            "\"%s\" will no longer be in this list and cannot be resumed, "
-                            "unless you restore it from the Recycle Bin." % s["title"][:60],
-                            "Yes, delete", danger=True):
-            return
+            return "A session stored inside WSL cannot go to the Recycle Bin."
         if recycle(session_files(s)) and not os.path.exists(s["path"]):
-            self.hidden.discard(s["id"])
+            self.hidden.discard(sid)
             save_hidden(self.hidden)
-            self.sessions = [x for x in self.sessions if x["id"] != s["id"]]
-            self.draw_head()
-            self.render(force=True)
-            self.flash("Moved to the Recycle Bin.")
-        else:
-            self.flash("Could not delete it.")
-
-    def button(self, parent, text, colour, fg, command):
-        p = self.px
-        w = self.f_title.measure(text) + p(28)
-        b = tk.Canvas(parent, width=w, height=p(34), bg=C["panel"], highlightthickness=0, bd=0, cursor="hand2")
-        rounded(b, 1, 1, w - 1, p(34) - 1, p(10), fill=colour, outline=C["line"] if colour == C["panel"] else colour)
-        b.create_text(w / 2, p(17), text=text, font=self.f_title, fill=fg)
-        b.bind("<Button-1>", lambda e: command())
-        return b
-
-    def confirm(self, title, text, ok_label, danger=False):
-        """A Spark-styled yes/no dialog in the middle of the screen. Cancel is the default."""
-        p = self.px
-        top = tk.Toplevel(self.root)
-        top.overrideredirect(True)
-        top.attributes("-topmost", True)
-        top.configure(bg=C["line"])
-        box = tk.Frame(top, bg=C["panel"])
-        box.pack(padx=1, pady=1)
-        tk.Label(box, text=title, font=self.f_head, fg=C["text"], bg=C["panel"], anchor="w").pack(
-            fill="x", padx=p(22), pady=(p(20), p(6)))
-        tk.Label(box, text=text, font=self.f_body, fg=C["muted"], bg=C["panel"], justify="left",
-                 wraplength=p(320), anchor="w").pack(fill="x", padx=p(22), pady=(0, p(18)))
-        row = tk.Frame(box, bg=C["panel"])
-        row.pack(fill="x", padx=p(22), pady=(0, p(20)))
-        result = {"ok": False}
-
-        def done(ok):
-            result["ok"] = ok
-            top.destroy()
-        self.button(row, ok_label, "#e11d48" if danger else C["blue"], "#ffffff", lambda: done(True)).pack(side="right")
-        self.button(row, "Cancel", C["panel"], C["text"], lambda: done(False)).pack(side="right", padx=(0, p(8)))
-        top.bind("<Escape>", lambda e: done(False))
-        top.update_idletasks()
-        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
-        top.geometry("+%d+%d" % ((top.winfo_screenwidth() - w) // 2, (top.winfo_screenheight() - h) // 3))
-        top.grab_set()
-        top.focus_force()
-        self.root.wait_window(top)
-        return result["ok"]
+            self.sessions = [x for x in self.sessions if x["id"] != sid]
+            self.push()
+            return "Moved to the Recycle Bin."
+        return "Could not delete it."
 
     def quit(self):
-        self.dock.release()
+        if getattr(self, "dock", None):
+            self.dock.release()
         if self.icon:
             self.icon.stop()
-        self.root.destroy()
+        self.window.destroy()
 
 
 if __name__ == "__main__":
-    p = Panel()
-    try:
-        p.root.mainloop()
-    finally:
-        p.dock.release()
+    Panel().run()

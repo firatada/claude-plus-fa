@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Panel</title>
+<!-- The Agent Panel's face, shown by agent-panel.pyw in a WebView2 window. Afiniti Spark tokens
+     (mindmap/design_themes/spark_theme); gold is for rewards only, so "working" is blue. -->
+<style>
+:root {
+  --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
+  --blue: #1b4df5; --green: #16a34a; --gold: #f5a623; --red: #e11d48; --gone: #b5bdd0;
+  --shadow: 0 10px 30px rgba(10, 26, 64, .08);
+  --glow: 0 4px 14px rgba(27, 77, 245, .35); --glow-red: 0 4px 14px rgba(225, 29, 72, .35);
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--text); font: 400 12px/1.35 "Segoe UI", system-ui, sans-serif;
+  display: flex; flex-direction: column; overflow: hidden; user-select: none; cursor: default;
+}
+button { font: inherit; cursor: pointer; }
+
+header { flex: none; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 16px; }
+.logo { flex: none; width: 26px; height: 26px; }
+h1 { font-size: 15px; font-weight: 600; }
+#count {
+  min-width: 22px; height: 18px; padding: 0 7px; border-radius: 20px; background: var(--surface2);
+  color: var(--muted); font-size: 11px; font-weight: 600; display: grid; place-items: center;
+}
+#hide {
+  margin-left: auto; width: 26px; height: 26px; border: 0; border-radius: 8px; background: none;
+  color: var(--muted); display: grid; place-items: center;
+}
+#hide:hover { color: var(--blue); background: var(--surface2); }
+
+.search {
+  flex: none; margin: 2px 16px 12px; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; cursor: text;
+  transition: border-color .15s, box-shadow .15s;
+}
+.search:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(27, 77, 245, .12); }
+.search svg { flex: none; color: var(--muted); }
+#q { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; color: var(--text); }
+#q::placeholder { color: var(--muted); }
+
+#list { flex: 1; overflow-y: auto; padding: 4px 8px 8px 16px; scrollbar-gutter: stable; }
+#list::-webkit-scrollbar { width: 8px; }
+#list::-webkit-scrollbar-thumb { background: #d5dcea; border-radius: 4px; border: 2px solid var(--bg); }
+#list::-webkit-scrollbar-thumb:hover { background: #b5bdd0; }
+
+.card {
+  height: 72px; margin-bottom: 8px; padding: 9px 14px; display: flex; flex-direction: column; gap: 2px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+  transition: border-color .12s, box-shadow .12s;
+}
+.card:hover { border-color: var(--blue); box-shadow: var(--shadow), 0 0 0 .5px var(--blue); }
+.card.here { cursor: pointer; }
+.t { display: flex; align-items: center; gap: 6px; height: 18px; }
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.dot.busy { background: var(--blue); }
+.dot.idle { background: var(--green); }
+.name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.path, .meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
+.path { white-space: nowrap; overflow: hidden; }
+.meta { display: flex; align-items: center; gap: 6px; }
+.flags { margin-left: auto; white-space: pre; }
+.bar { flex: none; width: 56px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 3px; }
+
+.sect { margin: 18px 2px 8px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted); }
+.empty { padding-top: 30px; text-align: center; color: var(--muted); }
+
+#note { flex: none; padding: 0 16px; min-height: 0; font-size: 11px; color: var(--muted); }
+#note:not(:empty) { padding-bottom: 4px; }
+#footer { flex: none; align-self: flex-start; margin: 0 16px 10px; font-size: 11px; color: var(--gone); cursor: pointer; }
+#footer:hover { color: var(--blue); }
+#footer:empty { display: none; }
+#usage { flex: none; margin: 0 16px; padding: 8px 0 10px; border-top: 1px solid var(--line); }
+.u { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; height: 22px;
+     font-size: 11px; color: var(--muted); }
+.u .bar { width: auto; }
+.u span:last-child { white-space: pre; text-align: right; min-width: 92px; }
+
+.pop {
+  position: fixed; z-index: 10; padding: 6px; min-width: 150px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(10, 26, 64, .16);
+  animation: pop .12s ease-out;
+}
+@keyframes pop { from { opacity: 0; transform: scale(.97); } }
+.item {
+  display: block; width: 100%; height: 32px; padding: 0 10px; text-align: left; border: 0; border-radius: 8px;
+  background: none; color: var(--text);
+}
+.item:hover { background: var(--surface2); }
+.item.danger { color: var(--red); }
+.item.danger:hover { background: #fde8ec; }
+.sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.confirm { width: 232px; padding: 8px 8px 4px; }
+.confirm h2 { margin-bottom: 4px; font-size: 13px; font-weight: 600; }
+.confirm p { margin-bottom: 12px; color: var(--muted); }
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
+.btn {
+  height: 30px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  color: var(--text); font-weight: 600;
+}
+.btn:hover { background: var(--surface2); }
+.btn.go { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: var(--glow); }
+.btn.danger { background: var(--red); border-color: var(--red); color: #fff; box-shadow: var(--glow-red); }
+.btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+.tip {
+  position: fixed; z-index: 20; max-width: calc(100vw - 16px); padding: 5px 8px; border-radius: 6px;
+  background: var(--text); color: #fff; font-size: 11px; word-break: break-all; pointer-events: none;
+  box-shadow: 0 6px 16px rgba(10, 26, 64, .2);
+}
+</style>
+</head>
+<body>
+<header>
+  <svg class="logo" viewBox="0 0 256 256" aria-hidden="true">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b4df5"/><stop offset="1" stop-color="#33c6f4"/></linearGradient></defs>
+    <rect width="256" height="256" rx="72" fill="url(#g)"/>
+    <g fill="#fff">
+      <circle cx="75" cy="78" r="13"/><rect x="104" y="67" width="92" height="22" rx="11"/>
+      <circle cx="75" cy="128" r="13"/><rect x="104" y="117" width="74" height="22" rx="11"/>
+      <circle cx="75" cy="178" r="13"/><rect x="104" y="167" width="56" height="22" rx="11"/>
+    </g>
+  </svg>
+  <h1>Agent Panel</h1>
+  <span id="count">0</span>
+  <button id="hide" title="Hide (Ctrl+Alt+C)" aria-label="Hide">
+    <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor"
+      stroke-width="1.5" stroke-linecap="round"/></svg>
+  </button>
+</header>
+<label class="search">
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+    stroke-linecap="round"><circle cx="6.5" cy="6.5" r="4.6"/><path d="M10 10l3.8 3.8"/></svg>
+  <input id="q" placeholder="Search sessions" spellcheck="false" autocomplete="off">
+</label>
+<div id="list"></div>
+<div id="note"></div>
+<div id="footer"></div>
+<div id="usage"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = () => window.pywebview.api;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
+let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = false, lastKey = null;
+
+// hidden by the user, or its folder is gone: kept out of the main list
+const aside = s => s.hidden || !s.here;
+const pct = p => p == null ? "--" : Math.round(p) + "%";
+
+// green under 50 %, gold under 80 %, red above, as on the status line
+function bar(p) {
+  if (p == null) return '<span class="bar"></span>';
+  const v = Math.max(0, Math.min(100, p));
+  const c = v < 50 ? "var(--green)" : v < 80 ? "var(--gold)" : "var(--red)";
+  return `<span class="bar"><i style="width:${v ? `max(6px, ${v}%)` : 0};background:${c}"></i></span>`;
+}
+
+// Cards are kept and patched, never redrawn wholesale: open sessions change every 2 s, and a
+// redrawn card would drop the pointer's hover and the tooltip on its path.
+function fill(el, s) {
+  el.className = "card" + (s.here ? " here" : "");
+  el.querySelector(".dot").className = "dot " + (s.status ? (s.status === "busy" ? "busy" : "idle") : "");
+  el.querySelector(".name").textContent = s.title;
+  el.querySelector(".path").dataset.full = s.path;
+  const flags = (s.hidden ? ["hidden"] : []).concat(s.here ? [] : ["folder deleted"], [s.age]).join("  ·  ");
+  const meta = `ctx ${bar(s.ctx)}<span>${pct(s.ctx)}</span><span class="flags">${esc(flags)}</span>`;
+  const m = el.querySelector(".meta");
+  if (m.dataset.html !== meta) { m.innerHTML = meta; m.dataset.html = meta; }
+}
+function cardEl(s, old) {
+  let el = old.get(s.id);
+  if (!el) {
+    el = document.createElement("div");
+    el.dataset.id = s.id;
+    el.innerHTML = '<div class="t"><span class="dot"></span><span class="name"></span></div>' +
+                   '<div class="path"></div><div class="meta"></div>';
+  }
+  fill(el, s);
+  return el;
+}
+function note(cls, text, id) {
+  const el = document.createElement("div");
+  el.className = cls;
+  el.textContent = text;
+  if (id) el.id = id;
+  return el;
+}
+
+function render() {
+  const q = $("q").value.trim().toLowerCase();
+  const all = state.sessions, nAside = all.filter(aside).length;
+  if (!nAside) showHidden = false;
+  $("count").textContent = all.length - nAside;
+  $("footer").textContent = !nAside ? "" : showHidden ? "Close hidden and deleted" : `Show hidden and deleted (${nAside})`;
+  const found = all.filter(s => !q || s.title.toLowerCase().includes(q) || (s.folder || "").toLowerCase().includes(q));
+  const rows = found.filter(s => !aside(s)), rest = showHidden ? found.filter(aside) : [];
+  const key = JSON.stringify([q, rows, rest]);
+  if (key !== lastKey) {
+    lastKey = key;
+    const list = $("list"), old = new Map([...list.querySelectorAll(".card")].map(e => [e.dataset.id, e]));
+    const els = rows.map(s => cardEl(s, old));
+    if (rest.length) els.push($("sect") || note("sect", "HIDDEN AND DELETED", "sect"), ...rest.map(s => cardEl(s, old)));
+    if (!els.length && state.ready) els.push(note("empty", q ? "No sessions match." : "No sessions yet."));
+    const same = els.length === list.children.length && els.every((e, i) => e === list.children[i]);
+    if (!same) list.replaceChildren(...els);
+    if (tip && !document.body.contains(tipTarget)) tipHide();
+    fitPaths();
+  }
+  if (scrollToAside && rest.length) {
+    scrollToAside = false;
+    $("sect").scrollIntoView({block: "start", behavior: "smooth"});
+  }
+  const L = state.limits || {};
+  $("usage").innerHTML = [["5h", L.five_hour], ["week", L.seven_day]].map(([n, v]) =>
+    `<div class="u"><span>${n}</span>${bar(v && v.pct)}<span>${pct(v && v.pct)}${v && v.note ? "  ·  " + esc(v.note) : ""}</span></div>`).join("");
+}
+
+// a path too long for its row is cut in the middle, so its start and its last folder both stay readable
+const ruler = document.createElement("canvas").getContext("2d");
+function fitPath(t, w) {
+  const m = x => ruler.measureText(x).width;
+  if (m(t) <= w) return t;
+  const cut = t.replace(/\\+$/, "").lastIndexOf("\\");
+  const head = cut > 0 ? t.slice(0, cut) : "", tail = cut > 0 ? t.slice(cut) : t;
+  for (let k = head.length; k >= 0; k--) {
+    const c = head.slice(0, k) + "…" + tail;
+    if (m(c) <= w) return c;
+  }
+  let s = tail;
+  while (s && m(s + "…") > w) s = s.slice(0, -1);
+  return s + "…";
+}
+function fitPaths() {
+  document.querySelectorAll(".path").forEach(el => {
+    ruler.font = getComputedStyle(el).font;
+    const full = el.dataset.full, w = el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft);
+    const shown = fitPath(full, w);
+    if (el.textContent !== shown) el.textContent = shown;
+    el.classList.toggle("cut", shown !== full);
+  });
+}
+addEventListener("resize", fitPaths);
+
+// ----- messages at the bottom -----
+let noteJob = null;
+function flash(t) {
+  if (!t) return;
+  $("note").textContent = t;
+  clearTimeout(noteJob);
+  noteJob = setTimeout(() => $("note").textContent = "", 4000);
+}
+
+// ----- tooltip (mindmap tooltip.md: opens on movement after ~400 ms, leaves by itself after ~3 s) -----
+let tip = null, tipTarget = null, tipJob = null, tipEnd = null;
+function tipArm(el) {
+  if (tip || tipJob) return;
+  tipTarget = el;
+  tipJob = setTimeout(() => tipShow(el), 400);
+}
+function tipShow(el) {
+  tipJob = null;
+  if (!document.body.contains(el)) return;
+  const r = el.getBoundingClientRect();
+  tip = document.createElement("div");
+  tip.className = "tip";
+  tip.textContent = el.dataset.full;
+  document.body.append(tip);
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = (r.left + r.right) / 2 - w / 2, y = r.bottom + 6;
+  x = Math.max(8, Math.min(x, innerWidth - w - 8));
+  if (y + h > innerHeight - 8) y = r.top - 6 - h;
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+  tipEnd = setTimeout(tipHide, 3000);
+}
+function tipHide() {
+  clearTimeout(tipJob); clearTimeout(tipEnd);
+  tipJob = tipEnd = tipTarget = null;
+  if (tip) { tip.remove(); tip = null; }
+}
+
+// ----- right-click menu, and the two-step confirm it turns into -----
+let menu = null, swallow = false;
+function closeMenu() { if (menu) { menu.remove(); menu = null; } }
+function placePop(m, x, y) {
+  m.style.left = Math.max(8, Math.min(x, innerWidth - m.offsetWidth - 8)) + "px";
+  m.style.top = Math.max(8, Math.min(y, innerHeight - m.offsetHeight - 8)) + "px";
+}
+function openMenu(s, x, y) {
+  tipHide(); closeMenu();
+  const m = menu = document.createElement("div");
+  m.className = "pop";
+  const items = [[s.hidden ? "Unhide" : "Hide", () => { closeMenu(); api().set_hidden(s.id, !s.hidden); }]];
+  if (s.status) items.push(["Close", () => confirmIn(m, "Close this session?",
+    "Its window closes and anything Claude is doing in it stops; the conversation is kept and can be resumed.",
+    "Yes, close", false, () => api().close(s.id).then(flash))]);
+  items.push(null, ["Delete", () => {
+    const why = s.status ? "Close the session first, then delete it."
+      : s.distro ? "A session stored inside WSL cannot go to the Recycle Bin." : "";
+    if (why) { closeMenu(); flash(why); return; }
+    confirmIn(m, "Delete this session?",
+      "Its conversation moves to the Recycle Bin; files in the project folder are not touched.",
+      "Yes, delete", true, () => api().delete(s.id).then(flash));
+  }, true]);
+  for (const it of items) {
+    if (!it) { m.insertAdjacentHTML("beforeend", '<div class="sep"></div>'); continue; }
+    const b = document.createElement("button");
+    b.className = "item" + (it[2] ? " danger" : "");
+    b.textContent = it[0];
+    b.onclick = it[1];
+    m.append(b);
+  }
+  document.body.append(m);
+  placePop(m, x, y);
+}
+function confirmIn(m, title, text, ok, danger, act) {
+  const x = parseFloat(m.style.left), y = parseFloat(m.style.top);
+  m.innerHTML = `<div class="confirm"><h2>${esc(title)}</h2><p>${esc(text)}</p><div class="actions">
+    <button class="btn" data-a="no">Cancel</button>
+    <button class="btn ${danger ? "danger" : "go"}" data-a="yes">${esc(ok)}</button></div></div>`;
+  m.querySelector('[data-a="no"]').onclick = closeMenu;
+  m.querySelector('[data-a="yes"]').onclick = () => { closeMenu(); act(); };
+  placePop(m, x, y);
+  m.querySelector('[data-a="no"]').focus();  // Cancel is the default
+}
+
+// ----- input -----
+const list = $("list");
+const cardOf = e => e.target.closest(".card");
+const find = id => state.sessions.find(s => s.id === id);
+// a click outside an open menu only closes it, as a menu does
+addEventListener("mousedown", e => {
+  if (menu && !menu.contains(e.target)) { closeMenu(); swallow = e.button === 0; e.stopPropagation(); }
+  tipHide();
+}, true);
+addEventListener("click", e => { if (swallow) { swallow = false; e.stopPropagation(); } }, true);
+// An open session comes forward on a single click; a closed one opens only on a double click,
+// so a stray click never starts a session.
+list.addEventListener("click", e => { const c = cardOf(e); if (c) api().click(c.dataset.id).then(flash); });
+list.addEventListener("dblclick", e => { const c = cardOf(e); if (c) api().open(c.dataset.id).then(flash); });
+addEventListener("contextmenu", e => {
+  e.preventDefault();
+  const c = cardOf(e), s = c && find(c.dataset.id);
+  if (s) openMenu(s, e.clientX, e.clientY); else closeMenu();
+});
+list.addEventListener("mousemove", e => {
+  const p = e.target.closest(".path.cut");
+  if (p) { if (tipTarget && tipTarget !== p) tipHide(); tipArm(p); }
+  else if (tipTarget) tipHide();
+});
+list.addEventListener("mouseleave", tipHide);
+list.addEventListener("scroll", () => { tipHide(); closeMenu(); });
+addEventListener("blur", () => { tipHide(); closeMenu(); });
+addEventListener("keydown", e => { if (e.key === "Escape") { tipHide(); closeMenu(); } });
+$("q").addEventListener("input", render);
+$("footer").onclick = () => { showHidden = !showHidden; scrollToAside = showHidden; render(); };
+$("hide").onclick = () => api().hide();
+
+window.app = { update(st) { state = Object.assign(st, {ready: true}); render(); }, flash };
+addEventListener("pywebviewready", () => api().ready());
+</script>
+</body>
+</html>

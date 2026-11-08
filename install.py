@@ -5,6 +5,7 @@
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
 #   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge; starts at sign-in)
+#   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
 import ctypes, json, os, shutil, subprocess, sys, time, winreg
@@ -121,11 +122,15 @@ def install_panel():
     stop_panel()
     remove_old_name()
     shutil.copy2(os.path.join(HERE, "agent-panel.pyw"), PANEL)
-    print("copied  agent-panel.pyw -> %s" % CLAUDE_DIR)
-    r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pystray", "pillow"],
+    shutil.copy2(os.path.join(HERE, "agent-panel.html"), CLAUDE_DIR)
+    print("copied  agent-panel.pyw and agent-panel.html -> %s" % CLAUDE_DIR)
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywebview", "pystray", "pillow"],
                        capture_output=True, text=True)
-    print("ok      pystray and pillow installed" if r.returncode == 0 else
-          "WARNING could not install pystray (%s); the Agent Panel runs without a tray icon" % r.stderr.strip()[-200:])
+    if r.returncode != 0:
+        print("WARNING could not install pywebview, pystray and pillow (%s); the Agent Panel needs them"
+              % r.stderr.strip()[-200:])
+        return
+    print("ok      pywebview, pystray and pillow installed")
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     command = '"%s" "%s"' % (pythonw, PANEL)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
