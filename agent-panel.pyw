@@ -797,21 +797,62 @@ class Panel:
 
     # ----- right-click menu -----
     def menu(self, e, s):
-        m = tk.Menu(self.root, tearoff=0, font=self.f_body, bg=C["panel"], fg=C["text"],
-                    activebackground=C["surface2"], activeforeground=C["text"], bd=0)
-        if s["id"] in self.hidden:
-            m.add_command(label="Unhide", command=lambda: self.set_hidden(s, False))
-        else:
-            m.add_command(label="Hide", command=lambda: self.set_hidden(s, True))
+        """A Spark context menu drawn by hand: Tk's own menu is the native Windows one,
+        which ignores the theme and adds its own 3D border."""
+        items = [("Unhide", lambda: self.set_hidden(s, False)) if s["id"] in self.hidden
+                 else ("Hide", lambda: self.set_hidden(s, True))]
         if s["status"]:
-            m.add_command(label="Close", command=lambda: self.close(s))
-        m.add_separator()
-        m.add_command(label="Delete", foreground="#e11d48", activeforeground="#e11d48",
-                      command=lambda: self.delete(s))
-        try:
-            m.tk_popup(e.x_root, e.y_root)
-        finally:
-            m.grab_release()
+            items.append(("Close", lambda: self.close(s)))
+        items += [None, ("Delete", lambda: self.delete(s))]
+        p, key = self.px, "#ff00fe"  # key: the colour Windows makes see-through, for round corners
+        row, sep, pad = p(32), p(9), p(6)
+        w = max(self.f_body.measure(it[0]) for it in items if it) + p(64)
+        h = pad * 2 + sum(row if it else sep for it in items)
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        top.configure(bg=key)
+        top.attributes("-transparentcolor", key)
+        c = tk.Canvas(top, width=w, height=h, bg=key, highlightthickness=0, bd=0)
+        c.pack()
+        rounded(c, 0, 0, w - 1, h - 1, p(10), fill=C["panel"], outline=C["line"], width=1)
+
+        def close(*_):
+            if top.winfo_exists():
+                top.grab_release()
+                top.destroy()
+
+        def pick(cmd):
+            close()
+            self.root.after(10, cmd)
+        y = pad
+        for it in items:
+            if it is None:
+                c.create_line(p(12), y + sep // 2, w - p(12), y + sep // 2, fill=C["line"])
+                y += sep
+                continue
+            label, cmd = it
+            tag = "item" + label
+            bg = rounded(c, p(5), y, w - p(5), y + row, p(7), fill=C["panel"], outline="", tags=tag)
+            c.create_text(p(16), y + row // 2, text=label, font=self.f_body, anchor="w", tags=tag,
+                          fill="#e11d48" if label == "Delete" else C["text"])
+            c.tag_bind(tag, "<Enter>", lambda ev, b=bg, red=(label == "Delete"):
+                       c.itemconfigure(b, fill="#fde8ec" if red else C["surface2"]))
+            c.tag_bind(tag, "<Leave>", lambda ev, b=bg: c.itemconfigure(b, fill=C["panel"]))
+            c.tag_bind(tag, "<ButtonRelease-1>", lambda ev, cmd=cmd: pick(cmd))
+            y += row
+        # open at the pointer, kept inside the screen
+        x0 = min(e.x_root, top.winfo_screenwidth() - w - p(4))
+        y0 = min(e.y_root, top.winfo_screenheight() - h - p(48))
+        top.geometry("%dx%d+%d+%d" % (w, h, x0, y0))
+        top.bind("<Escape>", close)
+        top.bind("<FocusOut>", close)
+        # a click anywhere else in the panel closes it; a click in another app takes focus away
+        top.bind("<Button-1>", lambda ev: close() if not (0 <= ev.x_root - x0 < w and 0 <= ev.y_root - y0 < h) else None)
+        top.bind("<Button-3>", lambda ev: close())
+        top.update_idletasks()
+        top.focus_force()
+        top.grab_set()
 
     def set_hidden(self, s, on):
         (self.hidden.add if on else self.hidden.discard)(s["id"])
