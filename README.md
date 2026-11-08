@@ -45,7 +45,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - A green dot marks a session that is open and waiting, a blue one a session that is working. A single click on an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
 - It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon brings it to the front when it is covered, and hides or shows it otherwise.
 - Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, and sessions whose folder no longer exists, leave the main list; *Show hidden and deleted* at the bottom of the panel lists them in a section of their own.
-- Delete asks twice, then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session has to be closed first.
+- Delete asks once more on the spot (*Yes, delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session has to be closed first.
 
 **Get your free z.ai API key**
 
@@ -97,7 +97,7 @@ The installer:
 - registers the hooks in `~/.claude/settings.json`, after saving a backup as `settings.json.before-claude-plus`;
 - sets up the status line only if you do not already have one;
 - creates `~/.claudex/profiles/glm/.env`, where you can store the optional z.ai key;
-- installs the Agent Panel's tray library (`pystray`), starts the panel and adds it to Windows sign-in.
+- installs what the Agent Panel needs (`pywebview` for its window, `pystray` for the tray icon), starts the panel and adds it to Windows sign-in.
 
 ## Use your own steps
 
@@ -133,6 +133,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `glm-fallback.py` | Shows the free-model switch dialog when the usage limit is reached |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
 | `agent-panel.pyw` | The Agent Panel on the right edge of the screen |
+| `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
 | `install.cmd`, `install.py` | The installer |
 | `uninstall.cmd`, `uninstall.py` | Removes claude-plus-fa in one step |
 
