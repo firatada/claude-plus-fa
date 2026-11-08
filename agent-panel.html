@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <title>Agent Panel</title>
 <!-- The Agent Panel's face, shown by agent-panel.pyw in a WebView2 window. Afiniti Spark tokens
-     (mindmap/design_themes/spark_theme). Dots: working is red and blinks, open and waiting is green,
-     closed is grey (Fırat, 2026-11-08). The bars' 50-80 % band is gold to match the status line,
+     (mindmap/design_themes/spark_theme). Dots: working is green and blinks, open and waiting is green,
+     closed is grey (Fırat, 2026-11-08); a prompt waiting for an answer is red and blinks. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
      one shape": the header's logo (26), count pill (18, pill radius) and hide button (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
@@ -86,8 +86,10 @@ h1 { font-size: 15px; font-weight: 600; }
 .card:focus-visible { outline-offset: 1px; }
 .t { display: flex; align-items: center; gap: 6px; height: 18px; }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gone); }
-/* working: red and blinking for as long as Claude reports the session busy */
-.dot.busy { background: var(--red); animation: blink 1s ease-in-out infinite; }
+/* working: green and blinking for as long as Claude reports the session busy; a prompt in it
+   waiting for an answer is red and blinking, the family's "this needs you" */
+.dot.busy { background: var(--green); animation: blink 1s ease-in-out infinite; }
+.dot.ask { background: var(--red); animation: blink 1s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .2; } }
 .dot.idle { background: var(--green); }
 .name { min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -210,8 +212,9 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .card.here:active, .btn:active, .item:active, #hide:active, #qx:active, #footer:active { transform: none; }
-  /* without the blink, working still differs from waiting by shape, not by colour alone */
-  .dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--red); }
+  /* without the blink, each state still differs by shape, not by colour alone */
+  .dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--green); }
+  .dot.ask { box-shadow: 0 0 0 2px var(--red-tint); }
 }
 </style>
 </head>
@@ -263,7 +266,7 @@ let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = fals
 // hidden by the user, its folder is gone, or a headless `claude -p` run another session started:
 // kept out of the main list
 const aside = s => s.hidden || !s.here || s.headless;
-const STATUS = {busy: "Working", idle: "Open, waiting for you", "": "Closed"};
+const STATUS = {ask: "A prompt in it waits for your answer", busy: "Working", idle: "Open, waiting for you", "": "Closed"};
 
 // green under 50 %, gold under 80 %, red above, as on the status line; colour and figure both
 // come from the same rounded value, so the two can never disagree
@@ -290,7 +293,7 @@ function hit(t, q) {
 // Cards are kept and patched, never redrawn wholesale: open sessions change every 2 s, and a
 // redrawn card would drop the pointer's hover and the tooltip on its path.
 function fill(el, s, q) {
-  const st = s.status ? (s.status === "busy" ? "busy" : "idle") : "";
+  const st = !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
   el.className = "card" + (s.here ? " here" : "") + (menuFor === s.id ? " target" : "");
   const d = el.querySelector(".dot");
   d.className = "dot " + st;

@@ -175,7 +175,10 @@ def running():
         except Exception:
             continue
         if o.get("sessionId") and o.get("pid") and alive(o["pid"]):
-            out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"]}
+            # waitingFor is set while a prompt in the session (a permission question, a dialog) waits
+            # for an answer; the status alone still says "busy" then
+            out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"],
+                                   "waiting": o.get("waitingFor")}
     return out
 
 
@@ -245,6 +248,7 @@ def scan(cache):
                 sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title, "path": path,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
                                  "mtime": st.st_mtime, "status": (run or {}).get("status"),
+                                 "waiting": (run or {}).get("waiting"),
                                  "pid": (run or {}).get("pid"), "name": (run or {}).get("name"),
                                  "ctx": read_ctx(sid), "headless": hit.get("entry") == "sdk-cli"})
     for gone in [p for p in cache if p not in seen]:
@@ -687,7 +691,7 @@ class Panel:
         live = running()
         for s in self.sessions:
             run = live.get(s["id"]) or {}
-            s["status"], s["pid"] = run.get("status"), run.get("pid")
+            s["status"], s["pid"], s["waiting"] = run.get("status"), run.get("pid"), run.get("waiting")
             if s["status"]:
                 s["ctx"] = read_ctx(s["id"])
         self.push()
@@ -704,7 +708,8 @@ class Panel:
                 pass
             return None
         return {"sessions": [{"id": s["id"], "title": s["title"], "folder": s["folder"], "path": where_of(s),
-                              "status": s["status"], "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden,
+                              "status": s["status"], "waiting": bool(s["status"] and s.get("waiting")),
+                              "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden,
                               "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
                               "headless": s.get("headless", False)}
                              for s in self.sessions],
