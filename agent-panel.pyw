@@ -641,8 +641,12 @@ class Panel:
                 except Exception as e:
                     # stays on screen until a scan succeeds, so an old list is never taken for a current one
                     self.scanned = True
-                    self.error = ("Could not read sessions at %s: %s. The list is from the last good read; "
-                                  "it tries again every %d s." % (time.strftime("%H:%M"), e, SCAN_EVERY))
+                    # worded once, at the first failure, so it is not re-announced every minute
+                    if not self.error:
+                        self.error = ("Could not read sessions at %s: %s. %s; it tries again every %d s." % (
+                            time.strftime("%H:%M"), e,
+                            "The list is from the last good read" if self.sessions else "No read has worked yet",
+                            SCAN_EVERY))
                 self.push()
             elif now - self.last_live > LIVE_EVERY:
                 self.last_live = now
