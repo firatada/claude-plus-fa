@@ -11,6 +11,8 @@ CLAUDE = os.path.join(HOME, ".claude")
 STATE_DIR = os.path.join(CLAUDE, "state", "agent-panel")
 CACHE_FILE = os.path.join(STATE_DIR, "cache.json")
 HIDDEN_FILE = os.path.join(STATE_DIR, "hidden.json")
+CTX_DIR = os.path.join(CLAUDE, "state", "context")      # written by claude-plus statusline.py
+LIMITS_FILE = os.path.join(CTX_DIR, "rate_limits.json")
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
@@ -21,7 +23,8 @@ CREATE_NO_WINDOW = 0x08000000
 
 # Afiniti Spark tokens (mindmap/design_themes/spark_theme). Gold is for rewards only, so "working" is blue.
 C = {"bg": "#f4f6fb", "panel": "#ffffff", "surface2": "#eef2fb", "line": "#e2e8f5", "text": "#0a1a40",
-     "muted": "#4b5672", "blue": "#1b4df5", "busy": "#1b4df5", "idle": "#16a34a", "gone": "#b5bdd0"}
+     "muted": "#4b5672", "blue": "#1b4df5", "busy": "#1b4df5", "idle": "#16a34a", "gone": "#b5bdd0",
+     "warn": "#f5a623", "red": "#e11d48"}
 
 user32, kernel32, shell32 = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
 
@@ -175,6 +178,35 @@ def running():
     return out
 
 
+def read_ctx(sid):
+    """Context used by a session, in percent, as its status line last recorded it; None if unknown."""
+    try:
+        with open(os.path.join(CTX_DIR, sid + ".json")) as f:
+            v = json.load(f).get("used_percentage")
+        return None if v is None else float(v)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def read_limits():
+    try:
+        with open(LIMITS_FILE) as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def where_of(s):
+    """The session's folder as a full path, written the Windows way."""
+    cwd = s["cwd"] or ""
+    if s["distro"] and cwd.startswith("/"):
+        return "\\\\wsl.localhost\\%s%s" % (s["distro"], cwd.replace("/", "\\"))
+    if cwd.startswith("//"):
+        cwd = cwd.replace("/", "\\")
+    return cwd or s["folder"]
+
+
 def scan(cache):
     roots = [(os.path.join(CLAUDE, "projects"), None)] + wsl_roots()
     live = running()
@@ -212,7 +244,8 @@ def scan(cache):
                 sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title, "path": path,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
                                  "mtime": st.st_mtime, "status": (run or {}).get("status"),
-                                 "pid": (run or {}).get("pid"), "name": (run or {}).get("name")})
+                                 "pid": (run or {}).get("pid"), "name": (run or {}).get("name"),
+                                 "ctx": read_ctx(sid)})
     for gone in [p for p in cache if p not in seen]:
         del cache[gone]
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
@@ -493,6 +526,7 @@ class Panel:
         self.cache = load_cache()
         self.sessions, self.shown_key, self.rows = [], None, []
         self.hidden, self.show_hidden, self.scroll_to_aside = load_hidden(), False, False
+        self.imgs, self.tip, self.tip_job, self.usage_key = {}, None, None, None
         self.root = tk.Tk()
         self.scale = self.root.winfo_fpixels("1i") / 96.0
         self.root.overrideredirect(True)
@@ -540,6 +574,11 @@ class Panel:
         self.search.bind("<Button-1>", lambda e: self.activate_search())
         self.query.trace_add("write", lambda *a: (self.draw_search(), self.render(force=True)))
 
+        # 5-hour and weekly usage, the lowest thing in the panel
+        self.usage = tk.Canvas(self.root, height=p(58), bg=C["bg"], highlightthickness=0, bd=0)
+        self.usage.pack(side="bottom", fill="x")
+        self.usage.bind("<Configure>", lambda e: self.draw_usage(force=True))
+
         # messages show at the bottom, so the list starts right under the search box
         self.note = tk.Label(self.root, text="", font=self.f_meta, fg=C["muted"], bg=C["bg"], anchor="w")
         # the link to the set-aside list sits greyed out in the strip under the list
@@ -555,7 +594,8 @@ class Panel:
         self.list = tk.Canvas(self.root, bg=C["bg"], highlightthickness=0, bd=0)
         self.list.pack(fill="both", expand=True)
         self.list.bind("<Configure>", lambda e: self.render(force=True))
-        self.root.bind_all("<MouseWheel>", lambda e: self.list.yview_scroll(int(-e.delta / 120) * 3, "units"))
+        self.root.bind_all("<MouseWheel>", lambda e: (self.tip_hide(),
+                                                      self.list.yview_scroll(int(-e.delta / 120) * 3, "units")))
         self.list.configure(yscrollincrement=p(8))
 
     def draw_head(self):
@@ -593,8 +633,7 @@ class Panel:
         rounded(c, p(16), p(2), w - p(16), p(34), p(10), fill=C["panel"],
                 outline=C["blue"] if self.search_focus else C["line"], width=p(1.5) if self.search_focus else 1,
                 tags="box")
-        c.create_oval(p(28), p(12), p(37), p(21), outline=C["muted"], width=p(1.5), tags="box")
-        c.create_line(p(36), p(20), p(40), p(24), fill=C["muted"], width=p(1.5), capstyle="round", tags="box")
+        c.create_image(p(26), p(10), image=self.glass(), anchor="nw", tags="box")
         if not self.query.get():
             c.create_text(p(48), p(18), text="Search sessions", font=self.f_meta, fill=C["muted"],
                           anchor="w", tags="box")
@@ -681,7 +720,125 @@ class Panel:
         for s in self.sessions:
             run = live.get(s["id"]) or {}
             s["status"], s["pid"] = run.get("status"), run.get("pid")
+            if s["status"]:
+                s["ctx"] = read_ctx(s["id"])
         self.render()
+        self.draw_usage()
+
+    # ----- sharp drawings: Tk does not smooth edges, so small round shapes are drawn 4x and scaled down -----
+    def sharp(self, key, w, h, paint):
+        im = self.imgs.get(key)
+        if im is None:
+            from PIL import Image, ImageDraw, ImageTk
+            k = 4
+            big = Image.new("RGBA", (max(1, w) * k, h * k), (0, 0, 0, 0))
+            paint(ImageDraw.Draw(big), k * self.scale)
+            im = self.imgs[key] = ImageTk.PhotoImage(big.resize((max(1, w), h), Image.LANCZOS))
+        return im
+
+    def dot(self, colour):
+        d = self.px(8)
+        return self.sharp(("dot", colour), d, d, lambda g, u: g.ellipse((0, 0, d * 4 - 1, d * 4 - 1), fill=colour))
+
+    def glass(self):
+        n = self.px(16)
+
+        def paint(g, u):
+            wd = max(1, int(round(1.6 * u)))
+            cx = cy = 6.5 * u
+            r = 4.6 * u
+            g.ellipse((cx - r, cy - r, cx + r, cy + r), outline=C["muted"], width=wd)
+            g.line((10 * u, 10 * u, 13.8 * u, 13.8 * u), fill=C["muted"], width=wd)
+            e = wd / 2.0
+            g.ellipse((13.8 * u - e, 13.8 * u - e, 13.8 * u + e, 13.8 * u + e), fill=C["muted"])
+        return self.sharp("glass", n, n, paint)
+
+    def bar(self, w, pct):
+        """A rounded progress bar: green under 50 %, gold under 80 %, red above, as on the status line."""
+        h = self.px(6)
+        pct = None if pct is None else max(0.0, min(100.0, pct))
+        colour = None if pct is None else C["idle"] if pct < 50 else C["warn"] if pct < 80 else C["red"]
+        fill = 0 if not pct else max(h, int(round(w * pct / 100.0)))
+
+        def paint(g, u):
+            k = 4
+            g.rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=h * k // 2, fill=C["line"])
+            if fill:
+                g.rounded_rectangle((0, 0, fill * k - 1, h * k - 1), radius=h * k // 2, fill=colour)
+        return self.sharp(("bar", w, fill, colour), w, h, paint)
+
+    def fit_path(self, text, font, width):
+        """Cut a path in the middle, so its start and its last folder both stay readable."""
+        if font.measure(text) <= width:
+            return text
+        cut = text.rstrip("\\").rfind("\\")
+        head, tail = (text[:cut], text[cut:]) if cut > 0 else ("", text)
+        for k in range(len(head), -1, -1):
+            cand = head[:k] + "…" + tail
+            if font.measure(cand) <= width:
+                return cand
+        return self.fit(tail, font, width)
+
+    # ----- tooltip (mindmap tooltip.md: opens on movement after ~400 ms, leaves by itself after ~3 s) -----
+    def tip_arm(self, text, canvas, item):
+        if self.tip is not None or self.tip_job is not None:
+            return
+        self.tip_job = self.root.after(400, lambda: self.tip_show(text, canvas, item))
+
+    def tip_show(self, text, canvas, item):
+        self.tip_job = None
+        p = self.px
+        x1, y1, x2, y2 = canvas.bbox(item)
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        tk.Label(top, text=text, font=self.f_meta, fg="#ffffff", bg=C["text"], justify="left",
+                 wraplength=p(420), padx=p(8), pady=p(5)).pack()
+        top.update_idletasks()
+        w = top.winfo_reqwidth()
+        sx = canvas.winfo_rootx() + (x1 + x2) // 2 - int(canvas.canvasx(0)) - w // 2
+        sy = canvas.winfo_rooty() + y2 - int(canvas.canvasy(0)) + p(6)
+        sx = max(p(4), min(sx, top.winfo_screenwidth() - w - p(4)))
+        top.geometry("+%d+%d" % (sx, sy))
+        self.tip = top
+        self.tip_job = self.root.after(3000, self.tip_hide)
+
+    def tip_hide(self):
+        if self.tip_job is not None:
+            self.root.after_cancel(self.tip_job)
+            self.tip_job = None
+        if self.tip is not None:
+            self.tip.destroy()
+            self.tip = None
+
+    def draw_usage(self, force=False):
+        """5h and week bars from the latest status line of any session (statusline.py records them)."""
+        lim = read_limits()
+        c, p = self.usage, self.px
+        w = c.winfo_width()
+        key = (json.dumps(lim, sort_keys=True), w, int(time.time() // 60))
+        if key == self.usage_key and not force:
+            return
+        self.usage_key = key
+        c.delete("all")
+        c.create_line(p(16), 1, w - p(16), 1, fill=C["line"])
+        rx = w - p(16)
+        bx = p(16) + self.f_meta.measure("week") + p(10)
+        bw = rx - self.f_meta.measure("100%  ·  Wed 00:00") - p(10) - bx
+        y = p(20)
+        for label, v, fmt in (("5h", lim.get("five_hour"), "%H:%M"), ("week", lim.get("seven_day"), "%a %H:%M")):
+            pct, note = None, ""
+            try:
+                if v and float(v.get("resets_at")) > time.time():  # past its reset, the figure is stale
+                    pct = v.get("used_percentage")
+                    note = time.strftime(fmt, time.localtime(float(v["resets_at"])))
+            except (TypeError, ValueError):
+                pass
+            c.create_text(p(16), y, text=label, font=self.f_meta, fill=C["muted"], anchor="w")
+            c.create_image(bx, y, image=self.bar(bw, pct), anchor="w")
+            c.create_text(rx, y, text=("--" if pct is None else "%d%%" % round(pct)) + ("  ·  " + note if note else ""),
+                          font=self.f_meta, fill=C["muted"], anchor="e")
+            y += p(22)
 
     def flash(self, text):
         self.note.configure(text=text)
@@ -712,13 +869,13 @@ class Panel:
         rest = [s for s in found if self.aside(s)] if self.show_hidden else []
         width = self.list.winfo_width()
         key = (q, width, self.show_hidden, tuple(sorted(self.hidden)),
-               tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60)) for s in rows + rest))
+               tuple((s["id"], s["title"], s["status"], int(s["mtime"] // 60), s.get("ctx")) for s in rows + rest))
         if key == self.shown_key and not force:
             return
         self.shown_key = key
         c, p = self.list, self.px
         c.delete("all")
-        x1, x2, y, h, gap = p(16), width - p(16), p(4), p(54), p(8)
+        x1, x2, y, h, gap = p(16), width - p(16), p(4), p(72), p(8)
         for i, s in enumerate(rows):
             self.card(s, i, x1, y, x2, y + h)
             y += h + gap
@@ -748,23 +905,31 @@ class Panel:
         box = rounded(c, x1, y1, x2, y2, p(14), fill=C["panel"], outline=C["line"], width=1, tags=tag)
         tx = x1 + p(14)
         if s["status"]:
-            colour = C["busy"] if s["status"] == "busy" else C["idle"]
-            r = p(4)
-            c.create_oval(tx - r, y1 + p(18) - r, tx + r, y1 + p(18) + r, fill=colour, outline="", tags=tag)
+            c.create_image(tx, y1 + p(18), image=self.dot(C["busy"] if s["status"] == "busy" else C["idle"]),
+                           tags=tag)
         tx += p(14)
         room = x2 - p(14) - tx
         c.create_text(tx, y1 + p(18), text=self.fit(s["title"], self.f_title, room), font=self.f_title,
                       fill=C["text"], anchor="w", tags=tag)
-        where = s["folder"] + ("  (WSL)" if s["distro"] or (s["cwd"] or "").startswith("\\\\wsl") else "")
-        if not here:
-            where += "  · folder deleted"
-        if hidden:
-            where = "hidden  · " + where
-        when = ago(s["mtime"])
-        c.create_text(x2 - p(14), y1 + p(38), text=when, font=self.f_meta,
-                      fill=C["muted"], anchor="e", tags=tag)
-        c.create_text(tx, y1 + p(38), text=self.fit(where, self.f_meta, room - self.f_meta.measure(when) - p(10)),
-                      font=self.f_meta, fill=C["muted"], anchor="w", tags=tag)
+        # second row: the full folder path; when it is cut, hovering it shows it whole
+        full = where_of(s)
+        shown = self.fit_path(full, self.f_meta, room)
+        path_item = c.create_text(tx, y1 + p(38), text=shown, font=self.f_meta, fill=C["muted"], anchor="w",
+                                  tags=(tag, tag + "path"))
+        if shown != full:
+            c.tag_bind(tag + "path", "<Motion>", lambda e: self.tip_arm(full, c, path_item))
+            c.tag_bind(tag + "path", "<Leave>", lambda e: self.tip_hide())
+        # third row: context used, as on the status line; then flags and age
+        y3 = y1 + p(57)
+        c.create_text(tx, y3, text="ctx", font=self.f_meta, fill=C["muted"], anchor="w", tags=tag)
+        bx, bw = tx + self.f_meta.measure("ctx") + p(6), p(56)
+        ctx = s.get("ctx")
+        c.create_image(bx, y3, image=self.bar(bw, ctx), anchor="w", tags=tag)
+        c.create_text(bx + bw + p(6), y3, text="--" if ctx is None else "%d%%" % round(ctx), font=self.f_meta,
+                      fill=C["muted"], anchor="w", tags=tag)
+        flags = (["hidden"] if hidden else []) + ([] if here else ["folder deleted"]) + [ago(s["mtime"])]
+        c.create_text(x2 - p(14), y3, text="  ·  ".join(flags), font=self.f_meta, fill=C["muted"],
+                      anchor="e", tags=tag)
 
         def enter(e):
             c.itemconfigure(box, outline=C["blue"], width=p(1.5))
@@ -777,6 +942,7 @@ class Panel:
         # An open session comes forward on a single click; a closed one opens only on a
         # double click, so a stray click never starts a session.
         def click(e):
+            self.tip_hide()
             if not here:
                 self.flash("Its folder was deleted.")
             elif s["status"]:
@@ -799,6 +965,7 @@ class Panel:
     def menu(self, e, s):
         """A Spark context menu drawn by hand: Tk's own menu is the native Windows one,
         which ignores the theme and adds its own 3D border."""
+        self.tip_hide()
         items = [("Unhide", lambda: self.set_hidden(s, False)) if s["id"] in self.hidden
                  else ("Hide", lambda: self.set_hidden(s, True))]
         if s["status"]:
