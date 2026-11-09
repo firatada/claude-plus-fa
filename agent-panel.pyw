@@ -2,7 +2,7 @@
 # edge of the screen. Double-click a closed session to resume it in its own folder, in a new
 # terminal; click an open one to bring its window forward. Tray icon: click to show or hide;
 # Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
-import ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, threading, time
+import base64, ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, threading, time
 import webview
 
 HOME = os.path.expanduser("~")
@@ -13,6 +13,20 @@ HIDDEN_FILE = os.path.join(STATE_DIR, "hidden.json")
 CTX_DIR = os.path.join(CLAUDE, "state", "context")      # written by claude-plus statusline.py
 LIMITS_FILE = os.path.join(CTX_DIR, "rate_limits.json")
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel.html")
+MASCOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-mascot")
+
+
+def mascot_js():
+    """The octopus strips as data URLs: the page is handed over as a string, so it cannot load files."""
+    strips = {}
+    try:
+        for name in sorted(os.listdir(MASCOT)):
+            if name.endswith(".webp"):
+                with open(os.path.join(MASCOT, name), "rb") as f:
+                    strips[name[:-5]] = "data:image/webp;base64," + base64.b64encode(f.read()).decode("ascii")
+    except OSError:
+        pass  # no strips: the page keeps its plain logo
+    return "window.MASCOT = %s;" % json.dumps(strips)
 TITLE = "Agent Panel"
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
@@ -467,8 +481,13 @@ def hotkey_loop(events):
 
 
 def logo_image(size):
-    """The Spark logo tile: a blue to cyan gradient at 135 degrees, white list mark."""
+    """The package's logo, the octopus (mascot/logo.png); without it the Spark logo tile: a blue to
+    cyan gradient at 135 degrees, white list mark."""
     from PIL import Image, ImageDraw
+    try:
+        return Image.open(os.path.join(MASCOT, "logo.png")).convert("RGBA").resize((size, size), Image.LANCZOS)
+    except OSError:
+        pass
     big = 256
     a, b = (0x1b, 0x4d, 0xf5), (0x33, 0xc6, 0xf4)
     grad = Image.new("RGB", (big, big))
@@ -595,7 +614,7 @@ class Panel:
         self.pushed, self.lock = None, threading.Lock()
         self.scanned, self.error = False, None  # the first scan has finished; the last scan's failure
         with open(HTML, encoding="utf-8") as f:
-            html = f.read()
+            html = f.read().replace("/*MASCOT*/", mascot_js(), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
                                             frameless=True, easy_drag=False, background_color=BG)
 

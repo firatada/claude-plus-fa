@@ -123,7 +123,10 @@ def install_panel():
     remove_old_name()
     shutil.copy2(os.path.join(HERE, "agent-panel.pyw"), PANEL)
     shutil.copy2(os.path.join(HERE, "agent-panel.html"), CLAUDE_DIR)
-    print("copied  agent-panel.pyw and agent-panel.html -> %s" % CLAUDE_DIR)
+    # replaced whole, so strips of an earlier mascot do not linger
+    shutil.rmtree(os.path.join(CLAUDE_DIR, "agent-panel-mascot"), ignore_errors=True)
+    shutil.copytree(os.path.join(HERE, "mascot"), os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
+    print("copied  agent-panel.pyw, agent-panel.html and agent-panel-mascot -> %s" % CLAUDE_DIR)
     r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywebview", "pystray", "pillow"],
                        capture_output=True, text=True)
     if r.returncode != 0:

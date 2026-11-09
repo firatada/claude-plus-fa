@@ -6,9 +6,13 @@
 <!-- The Agent Panel's face, shown by agent-panel.pyw in a WebView2 window. Afiniti Spark tokens
      (mindmap/design_themes/spark_theme). Dots: working and open are green, closed is grey;
      a working card breathes green slowly, a card whose prompt waits for an answer pulses red, faster
-     (the maintainer, 2026-11-09). The folder path shows only in the title's tooltip. The bars' 50-80 % band is gold to match the status line,
+     (the maintainer, 2026-11-09). The folder path shows only in the title's tooltip.
+     Mascot (2026-11-09): a purple octopus (the maintainer's sheet, cut by tools/mascot-export.py into
+     mascot/ and inlined by agent-panel.pyw as window.MASCOT). It is the header's logo and sits on every
+     card: reading a tablet while the session works, puzzled with a question mark while it asks, calm and
+     blinking now and then while it is open, asleep and still when closed. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
-     one shape": the header's logo (26), count pill (18, pill radius) and hide button (26) differ, the
+     one shape": the header's logo (36, the octopus), count pill (18, pill radius) and hide button (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
      16 px edge; card text sits inside its card. -->
 <style>
@@ -39,6 +43,12 @@ button { font: inherit; cursor: pointer; }
 
 header { flex: none; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 var(--edge); }
 .logo { flex: none; width: 26px; height: 26px; }
+/* a mascot strip: its frames side by side, the frame shown picked by background-position */
+.mascot { flex: none; background-repeat: no-repeat; background-position: 0 0; }
+.mascot[hidden] { display: none; }
+.logo.mascot { width: 36px; height: 36px; }
+.av { width: 38px; height: 38px; align-self: center; }
+.body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 h1 { font-size: 15px; font-weight: 600; }
 #count {
   min-width: 22px; height: 18px; padding: 0 7px; border-radius: var(--r-pill); background: var(--surface2);
@@ -76,7 +86,7 @@ h1 { font-size: 15px; font-weight: 600; }
 #list::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover); }
 
 .card {
-  height: 56px; margin-bottom: 8px; padding: 9px 14px; display: flex; flex-direction: column; gap: 2px;
+  height: 56px; margin-bottom: 8px; padding: 9px 14px 9px 8px; display: flex; gap: 8px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow);
   transition: transform .16s ease-out;
 }
@@ -227,7 +237,8 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 </head>
 <body>
 <header>
-  <svg class="logo" viewBox="0 0 256 256" aria-hidden="true">
+  <span class="logo mascot" id="me" aria-hidden="true" hidden></span>
+  <svg class="logo" id="mark" viewBox="0 0 256 256" aria-hidden="true">
     <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#1b4df5"/><stop offset="1" stop-color="#33c6f4"/></linearGradient></defs>
     <rect width="256" height="256" rx="72" fill="url(#g)"/>
@@ -263,12 +274,56 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 </div>
 <div id="live" class="sr" role="status" aria-live="polite"></div>
 
+<script>window.MASCOT = window.MASCOT || {}; /*MASCOT*/</script>
 <script>
 const $ = id => document.getElementById(id);
 const api = () => window.pywebview.api;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const still = matchMedia("(prefers-reduced-motion: reduce)");
 let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = false, revealing = false, lastKey = null;
+
+// ----- the mascot (mindmap mascot.md: frame 0 the rest, frame 0 only under reduced motion). The
+// octopus sheet's frames are poses, not in-betweens, so each one holds about half a second. -----
+const sprites = new Map();   // element -> {key, mode, n, ms, f, at}
+// strip, how it plays, its frame count (fixed by tools/mascot-export.py), ms per frame:
+// working reads, asking looks puzzled, open blinks now and then, closed sleeps without moving
+const MOOD = {busy: ["reading", "loop", 5, 650], ask: ["asking", "loop", 4, 550],
+              idle: ["calm", "idle", 5, 450], "": ["sleeping", "still", 3, 0]};
+function sprite(el, [key, mode, n, ms]) {
+  const src = MASCOT[key];
+  el.hidden = !src;
+  if (!src) return false;
+  const s = sprites.get(el);
+  if (s && s.key === key) return true;
+  el.style.backgroundImage = `url(${src})`;
+  el.style.backgroundSize = n * 100 + "% 100%";
+  el.style.backgroundPosition = "0 0";
+  // each card starts at its own moment, so the octopuses do not move in step
+  sprites.set(el, {key, mode, n, ms, f: 0, at: performance.now() + Math.random() * 1200});
+  return true;
+}
+function tick(now) {
+  for (const [el, s] of sprites) {
+    if (!el.isConnected) { sprites.delete(el); continue; }
+    if (still.matches || s.mode === "still") {
+      if (s.f) { s.f = 0; el.style.backgroundPosition = "0 0"; }
+      continue;
+    }
+    if (now < s.at) continue;
+    s.f = (s.f + 1) % s.n;
+    // idle: one look around, then about 5 s at rest on frame 0
+    s.at = now + (s.f === 0 && s.mode === "idle" ? 5000 : s.ms);
+    el.style.backgroundPosition = s.f * 100 / (s.n - 1) + "% 0";
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+// the header's octopus shows the most pressing state in the list
+function headerMascot() {
+  const st = state.sessions.map(s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle");
+  const top = st.includes("ask") ? "ask" : st.includes("busy") ? "busy" : "idle";
+  $("mark").style.display = sprite($("me"), MOOD[top]) ? "none" : "";
+}
 
 // hidden by the user, its folder is gone, or a headless `claude -p` run another session started:
 // kept out of the main list
@@ -303,6 +358,7 @@ function fill(el, s, q) {
   const st = !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
   el.className = "card" + (st === "busy" || st === "ask" ? " " + st : "") + (s.here ? " here" : "") +
                  (menuFor === s.id ? " target" : "");
+  sprite(el.querySelector(".av"), MOOD[st]);
   const d = el.querySelector(".dot");
   d.className = "dot " + st;
   d.dataset.full = STATUS[st];
@@ -343,9 +399,10 @@ function cardEl(s, old, q) {
     el.dataset.id = s.id;
     el.tabIndex = 0;
     el.setAttribute("role", "button");
-    el.innerHTML = '<div class="t"><span class="dot" role="img" data-tip></span><span class="name" data-tip></span>' +
+    el.innerHTML = '<span class="mascot av" aria-hidden="true" hidden></span><div class="body">' +
+                   '<div class="t"><span class="dot" role="img" data-tip></span><span class="name" data-tip></span>' +
                    '<span class="arrow" aria-hidden="true">↗</span><span class="age"></span></div>' +
-                   '<div class="meta"></div>';
+                   '<div class="meta"></div></div>';
   }
   fill(el, s, q);
   return el;
@@ -376,6 +433,7 @@ function holdOrder(els, list) {
 }
 
 function render() {
+  headerMascot();
   const q = $("q").value.trim().toLowerCase();
   const all = state.sessions, nAside = all.filter(aside).length, nMain = all.length - nAside;
   const found = all.filter(s => !q || (s.title + "\n" + s.path).toLowerCase().includes(q));
