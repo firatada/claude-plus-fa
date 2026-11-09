@@ -75,6 +75,10 @@ def remove_files():
     if os.path.isdir(STATE):
         shutil.rmtree(STATE, ignore_errors=True)
         print("deleted %s" % STATE)
+    mascot = os.path.join(CLAUDE_DIR, "agent-panel-mascot")
+    if os.path.isdir(mascot):
+        shutil.rmtree(mascot, ignore_errors=True)
+        print("deleted %s" % mascot)
 
 
 def stop_panel():

@@ -1,3 +1,5 @@
+<img src="mascot/logo.png" alt="The claude-plus-fa octopus" width="120" align="right">
+
 # claude-plus-fa
 
 A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows safer and more pleasant to work with over long sessions.
@@ -39,9 +41,13 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - The switch requires a free z.ai API key; without one, the dialog never appears.
 
 **Agent Panel**
+
+<img src="docs/agent-panel.png" alt="The Agent Panel: seven sessions, two working, one asking, one open and three closed, with the 5-hour and weekly usage at the bottom" width="280">
+
 - Every Claude Code session on your PC, old and current, in a narrow list over the right edge of the screen, newest first, with a search box. It takes no screen space: desktop icons and maximised windows keep their place, and the window you are working in covers it.
 - Each session shows its title (point at it to see the session's full folder path) and a `ctx` bar with how much of its context is used, as on the status line. The bottom of the panel shows your `5h` and `week` usage and when each resets. Both come from the claude-plus-fa status line, so a session that never ran with it shows no bar, and a usage figure not reported yet says *no figure yet*.
 - Double-click a closed session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
+- A little purple octopus sits beside every session: it reads a tablet while the session works, looks puzzled with a question mark when the session asks you something, blinks now and then while it is open and sleeps when it is closed.
 - A green dot marks an open session and a grey one a closed session. The whole card of a working session slowly glows green, and the card of a session whose window asks you something (a permission prompt) pulses red. A single click on an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
 - It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon brings it to the front when it is covered, and hides or shows it otherwise.
 - Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Show Hidden, Deleted and Headless* at the bottom of the panel lists them in a section of their own.
@@ -134,6 +140,8 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
 | `agent-panel.pyw` | The Agent Panel on the right edge of the screen |
 | `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
+| `mascot/` | The octopus: the logo (also the tray icon) and the panel's animation strips |
+| `tools/mascot-export.py` | Cuts `mascot/` from the octopus sheet in `tools/mascot-source/` |
 | `install.cmd`, `install.py` | The installer |
 | `uninstall.cmd`, `uninstall.py` | Removes claude-plus-fa in one step |
 
