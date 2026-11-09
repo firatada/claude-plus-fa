@@ -4,8 +4,9 @@
 <meta charset="utf-8">
 <title>Agent Panel</title>
 <!-- The Agent Panel's face, shown by agent-panel.pyw in a WebView2 window. Afiniti Spark tokens
-     (mindmap/design_themes/spark_theme). Dots: working is green and blinks, open and waiting is green,
-     closed is grey (the maintainer, 2026-11-08); a prompt waiting for an answer is red and blinks. The bars' 50-80 % band is gold to match the status line,
+     (mindmap/design_themes/spark_theme). Dots: working and open are green, closed is grey;
+     a working card breathes green slowly, a card whose prompt waits for an answer pulses red, faster
+     (the maintainer, 2026-11-09). The folder path shows only in the title's tooltip. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
      one shape": the header's logo (26), count pill (18, pill radius) and hide button (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
@@ -16,7 +17,7 @@
   --faint: #687189;          /* quiet text, still 4.5:1 on --bg */
   --gone: #8a93a8;           /* the closed dot, 3:1 on white */
   --blue: #1b4df5; --green: #16a34a; --gold: #f5a623; --red: #e11d48; --on-accent: #ffffff;
-  --red-deep: #be123c; --red-tint: #fde8ec; --amber-tint: #fff7e6; --amber-line: #f5d9a8; --hit: #dbe4ff; --thumb: #d5dcea; --thumb-hover: #b5bdd0;
+  --red-deep: #be123c; --red-tint: #fde8ec; --green-tint: #e7f6ec; --amber-tint: #fff7e6; --amber-line: #f5d9a8; --hit: #dbe4ff; --thumb: #d5dcea; --thumb-hover: #b5bdd0;
   --ring: 0 0 0 3px rgba(27, 77, 245, .12);
   --shadow: 0 10px 30px rgba(10, 26, 64, .08);
   --shadow-pop: 0 10px 30px rgba(10, 26, 64, .16); --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2);
@@ -75,7 +76,7 @@ h1 { font-size: 15px; font-weight: 600; }
 #list::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover); }
 
 .card {
-  height: 72px; margin-bottom: 8px; padding: 9px 14px; display: flex; flex-direction: column; gap: 2px;
+  height: 56px; margin-bottom: 8px; padding: 9px 14px; display: flex; flex-direction: column; gap: 2px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow);
   transition: transform .16s ease-out;
 }
@@ -86,20 +87,21 @@ h1 { font-size: 15px; font-weight: 600; }
 .card:focus-visible { outline-offset: 1px; }
 .t { display: flex; align-items: center; gap: 6px; height: 18px; }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gone); }
-/* working: green and blinking for as long as Claude reports the session busy; a prompt in it
-   waiting for an answer is red and blinking, the family's "this needs you" */
-.dot.busy { background: var(--green); animation: blink 1s ease-in-out infinite; }
-.dot.ask { background: var(--red); animation: blink 1s ease-in-out infinite; }
-@keyframes blink { 50% { opacity: .2; } }
+.dot.busy { background: var(--green); }
+.dot.ask { background: var(--red); }
+/* the whole card shows the state: working breathes green slowly for as long as Claude reports the
+   session busy; a prompt in it waiting for an answer pulses red, faster, the family's "this needs you".
+   Background and ring only, so the hover's blue border still shows over it. */
+.card.busy { animation: breathe 2.4s ease-in-out infinite; }
+.card.ask { animation: alarm 1.2s ease-in-out infinite; }
+@keyframes breathe { 50% { background: var(--green-tint); box-shadow: var(--shadow), 0 0 0 1.5px var(--green); } }
+@keyframes alarm { 50% { background: var(--red-tint); box-shadow: var(--shadow), 0 0 0 2px var(--red); } }
 .dot.idle { background: var(--green); }
 .name { min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arrow { flex: none; visibility: hidden; color: var(--blue); font-size: 12px; }
 .card.here:hover .arrow { visibility: visible; }
 .age { flex: none; margin-left: auto; font-size: 11px; color: var(--muted); }
-.path, .meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
-.path { white-space: nowrap; overflow: hidden; color: var(--faint); transition: color .16s ease-out; }
-/* the path stays quiet until the pointer or the keyboard is on its card */
-.card.here:hover .path, .card.here:focus-visible .path { color: var(--text); }
+.meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
 .meta { display: flex; align-items: center; gap: 6px; }
 .meta > span { flex: none; }
 .meta > [hidden] { display: none; }
@@ -217,6 +219,9 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   /* without the blink, each state still differs by shape, not by colour alone */
   .dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--green); }
   .dot.ask { box-shadow: 0 0 0 2px var(--red-tint); }
+  /* the card keeps its state as a still tint instead of breathing */
+  .card.busy { background: var(--green-tint); box-shadow: var(--shadow), 0 0 0 1.5px var(--green); }
+  .card.ask { background: var(--red-tint); box-shadow: var(--shadow), 0 0 0 2px var(--red); }
 }
 </style>
 </head>
@@ -293,23 +298,24 @@ function hit(t, q) {
 }
 
 // Cards are kept and patched, never redrawn wholesale: open sessions change every 2 s, and a
-// redrawn card would drop the pointer's hover and the tooltip on its path.
+// redrawn card would drop the pointer's hover and the tooltip on its title.
 function fill(el, s, q) {
   const st = !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
-  el.className = "card" + (s.here ? " here" : "") + (menuFor === s.id ? " target" : "");
+  el.className = "card" + (st === "busy" || st === "ask" ? " " + st : "") + (s.here ? " here" : "") +
+                 (menuFor === s.id ? " target" : "");
   const d = el.querySelector(".dot");
   d.className = "dot " + st;
   d.dataset.full = STATUS[st];
   d.setAttribute("aria-label", STATUS[st]);
   const n = el.querySelector(".name"), nh = hit(s.title, q);
   if (n.dataset.html !== nh) { n.innerHTML = nh; n.dataset.html = nh; }
-  n.dataset.full = s.title;
+  // the folder path lives in the title's tooltip; a title cut short shows there in full above it
+  n.dataset.title = s.title;
+  n.dataset.path = s.path;
+  n.dataset.full = n.classList.contains("cut") ? s.title + "\n" + s.path : s.path;
   const a = el.querySelector(".age");
   a.textContent = s.age;
   a.dataset.k = "age:" + s.id;
-  const p = el.querySelector(".path");
-  p.dataset.full = s.path;
-  p.dataset.q = q;
   const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"]).join(" · ");
   el.setAttribute("aria-label", [s.title, STATUS[st].toLowerCase(), s.path, s.age,
     s.ctx == null ? "" : "context " + pct(s.ctx), flags].filter(Boolean).join(", "));
@@ -337,9 +343,9 @@ function cardEl(s, old, q) {
     el.dataset.id = s.id;
     el.tabIndex = 0;
     el.setAttribute("role", "button");
-    el.innerHTML = '<div class="t"><span class="dot" role="img" data-tip></span><span class="name"></span>' +
+    el.innerHTML = '<div class="t"><span class="dot" role="img" data-tip></span><span class="name" data-tip></span>' +
                    '<span class="arrow" aria-hidden="true">↗</span><span class="age"></span></div>' +
-                   '<div class="path"></div><div class="meta"></div>';
+                   '<div class="meta"></div>';
   }
   fill(el, s, q);
   return el;
@@ -354,7 +360,7 @@ function note(cls, text, id, tag) {
 function skeleton() {
   const el = document.createElement("div");
   el.className = "card sk";
-  el.innerHTML = '<i style="width:60%"></i><i style="width:85%"></i><i style="width:40%"></i>';
+  el.innerHTML = '<i style="width:60%"></i><i style="width:40%"></i>';
   return el;
 }
 
@@ -467,47 +473,13 @@ function fadeChanged(typed) {
   }
 }
 
-// a path too long for its row is cut in the middle, so its start and its last folder both stay readable
-const ruler = document.createElement("canvas").getContext("2d");
-function fitPath(t, w) {
-  const m = x => ruler.measureText(x).width;
-  if (m(t) <= w) return t;
-  const cut = t.replace(/\\+$/, "").lastIndexOf("\\");
-  const head = cut > 0 ? t.slice(0, cut) : "", tail = cut > 0 ? t.slice(cut) : t;
-  for (let k = head.length; k >= 0; k--) {
-    const c = head.slice(0, k) + "…" + tail;
-    if (m(c) <= w) return c;
-  }
-  let s = tail;
-  while (s && m(s + "…") > w) s = s.slice(0, -1);
-  return s + "…";
-}
-// a cut path that would lose the search hit is cut around the hit instead
-function fitAround(t, w, k) {
-  const m = x => ruler.measureText(x).width;
-  let a = k, b = t.length;
-  while (b > a && m((a > 0 ? "…" : "") + t.slice(a, b) + (b < t.length ? "…" : "")) > w) b--;
-  while (a > 0 && m("…" + t.slice(a - 1, b) + (b < t.length ? "…" : "")) <= w) a--;
-  return (a > 0 ? "…" : "") + t.slice(a, b) + (b < t.length ? "…" : "");
-}
 function fitPaths() {
-  // every measurement first, every change after, so the page lays out once
-  const paths = [...document.querySelectorAll(".path")];
-  const font = paths.length ? getComputedStyle(paths[0]).font : "";
-  const widths = paths.map(el => el.clientWidth - 14);
   // a title or flags that do not fit end in "…" and show in full in the tooltip
   const cut = [...document.querySelectorAll(".name, .flags")].map(el => [el, el.scrollWidth > el.clientWidth]);
-  ruler.font = font;
-  paths.forEach((el, i) => {
-    const full = el.dataset.full, q = el.dataset.q;
-    let shownText = fitPath(full, widths[i]);
-    const k = q ? full.toLowerCase().indexOf(q) : -1;
-    if (k >= 0 && !shownText.toLowerCase().includes(q)) shownText = fitAround(full, widths[i], k);
-    const html = hit(shownText, q);
-    if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
-    el.classList.toggle("cut", shownText !== full);
+  cut.forEach(([el, c]) => {
+    el.classList.toggle("cut", c);
+    if (el.dataset.path) el.dataset.full = c ? el.dataset.title + "\n" + el.dataset.path : el.dataset.path;
   });
-  cut.forEach(([el, c]) => el.classList.toggle("cut", c));
 }
 addEventListener("resize", () => { fitPaths(); closeMenu(); sayGone(); });
 
