@@ -49,6 +49,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - Double-click a closed session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
 - A little octopus sits beside every session, in the colour of the session's dot: green, it reads a tablet while the session works and blinks now and then while it is open; red, it looks puzzled with a question mark when the session asks you something; grey, it sleeps when the session is closed. The one beside the panel's title keeps its own purple.
 - A green dot marks an open session and a grey one a closed session. The whole card of a working session slowly glows green, and the card of a session whose window asks you something (a permission prompt) pulses red. A single click on an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
+- When a session starts waiting for your answer, an alert drops in at the top of the screen over every window, with a knock on the glass. It lists every session still waiting; click one to go to its window. It does not take the keyboard from what you are typing, it is not shown for a session whose window is already in front, and it goes by itself once nothing waits. The tray menu turns the alert and its sound off and on.
 - It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon brings it to the front when it is covered, and hides or shows it otherwise.
 - Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Show Hidden, Deleted and Headless* at the bottom of the panel lists them in a section of their own.
 - Delete asks once more on the spot (*Yes, Delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session is closed first; a session stored inside WSL cannot be deleted from the panel.
@@ -140,8 +141,10 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
 | `agent-panel.pyw` | The Agent Panel on the right edge of the screen |
 | `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
+| `agent-alert.html` | The alert shown when a session waits for your answer |
 | `mascot/` | The octopus: the logo (also the tray icon) and the panel's animation strips |
 | `tools/mascot-export.py` | Cuts `mascot/` from the octopus sheet in `tools/mascot-source/` |
+| `tools/knock-sound.py` | Synthesizes the alert's knock, `mascot/knock.wav` |
 | `install.cmd`, `install.py` | The installer |
 | `uninstall.cmd`, `uninstall.py` | Removes claude-plus-fa in one step |
 
