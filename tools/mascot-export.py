@@ -29,8 +29,9 @@ STRIPS = {
     "asking": (1, 3, [1, 2, 4, 2], "red"),        # 8 Puzzled, question marks (the box frame left out)
 }
 # the panel's dot colours (--green #16a34a, --red #e11d48, --gone grey) as a target hue for the
-# octopus's purple (hue about 250), with saturation and brightness scaled so it is not neon
-COLOURS = {"green": (142, 0.8, 0.85), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85)}
+# octopus's purple (hue about 250, median saturation 0.71, brightness 0.80), with saturation and
+# brightness scaled; green is scaled to the dot's own (0.87, 0.64), as a lighter green read as pale
+COLOURS = {"green": (142, 1.2, 0.8), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85)}
 
 
 def recolour(img, colour):
