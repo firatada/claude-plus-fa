@@ -1,11 +1,12 @@
-"""Writes mascot/knock.wav, the Agent Panel's alert sound: three knuckle taps on glass.
+"""Writes mascot/knock.wav, the Agent Panel's alert sound: three full, deep knocks.
 
 Usage: python -I tools/knock-sound.py
 
-Synthesized, no recording (so the public repository carries no licensed sound). Each tap is a low
-thump (a decaying 170 Hz sine with a little 340 Hz), the glass's ring (a decaying 1.6 kHz and
-2.9 kHz pair) and a 3 ms noise click for the knuckle's hit; three taps 150 ms apart, the last a
-little softer. 44.1 kHz mono 16 bit, peak at about -3 dBFS, about 0.5 s.
+Synthesized, no recording (so the public repository carries no licensed sound). Each knock is a
+deep thump (a decaying 95 Hz sine with 190 Hz under it, 60 ms decay), a short body resonance
+(a decaying 420 Hz) and a soft 4 ms noise for the knuckle's hit; three knocks half a second apart
+(the maintainer, 2026-11-09: "fuller, three times, half a second apart", after three quick glassy
+taps). 44.1 kHz mono 16 bit, peak at about -3 dBFS, about 1.3 s.
 """
 import math, os, random, struct, wave
 
@@ -18,16 +19,16 @@ def tap(n):
     out = []
     for i in range(n):
         t = i / RATE
-        thump = math.exp(-t / 0.022) * (math.sin(2 * math.pi * 170 * t) + 0.35 * math.sin(2 * math.pi * 340 * t))
-        ring = math.exp(-t / 0.012) * (0.45 * math.sin(2 * math.pi * 1600 * t) + 0.25 * math.sin(2 * math.pi * 2900 * t))
-        click = (random.random() * 2 - 1) * math.exp(-t / 0.0012) * 0.6
+        thump = math.exp(-t / 0.06) * (math.sin(2 * math.pi * 95 * t) + 0.5 * math.sin(2 * math.pi * 190 * t))
+        ring = math.exp(-t / 0.018) * 0.3 * math.sin(2 * math.pi * 420 * t)
+        click = (random.random() * 2 - 1) * math.exp(-t / 0.0015) * 0.25
         out.append(thump + ring + click)
     return out
 
 
-one = tap(int(0.12 * RATE))
-total = [0.0] * int(0.5 * RATE)
-for k, (start, gain) in enumerate(((0.0, 1.0), (0.15, 0.95), (0.30, 0.8))):
+one = tap(int(0.3 * RATE))
+total = [0.0] * int(1.3 * RATE)
+for k, (start, gain) in enumerate(((0.0, 1.0), (0.5, 1.0), (1.0, 1.0))):
     s = int(start * RATE)
     for i, v in enumerate(one):
         if s + i < len(total):
