@@ -1,4 +1,4 @@
-<img src="mascot/logo.png" alt="The claude-plus-fa octopus" width="120" align="right">
+<p align="center"><img src="mascot/logo.png" alt="The claude-plus-fa octopus" width="140"></p>
 
 # claude-plus-fa
 
