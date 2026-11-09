@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Panel Alert</title>
+<!-- The Agent Panel's alert (the maintainer, 2026-11-09): when a session starts waiting for an
+     answer, agent-panel.pyw shows this card over every window, top centre of the screen in use,
+     without taking the keyboard, and plays mascot/knock.wav. It lists every session still waiting;
+     a click on one brings its window forward, the cross only closes the card, and the card goes by
+     itself once nothing waits. The window is exactly the card (rounded by a window region), so the
+     page has no margin. Spark tokens as in agent-panel.html. -->
+<style>
+:root {
+  --panel: #ffffff; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672; --faint: #687189;
+  --red: #e11d48; --red-deep: #be123c; --red-tint: #fde8ec; --blue: #1b4df5;
+  --r-ctl: 10px; --ease: cubic-bezier(.23, 1, .32, 1);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--panel); color: var(--text); font: 400 12px/1.35 "Segoe UI", system-ui, sans-serif;
+  overflow: hidden; user-select: none; cursor: default;
+}
+button { font: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+/* the card is the whole window: a red frame drawn inside it, the window region rounds the corners */
+.card { height: 100%; border: 3px solid var(--red); border-radius: 16px; padding: 13px 13px 10px 13px; }
+.top { display: flex; align-items: center; gap: 12px; height: 56px; }
+.mascot { flex: none; width: 56px; height: 56px; background-repeat: no-repeat; background-position: 0 0; }
+.head { flex: 1; min-width: 0; }
+h1 { font-size: 16px; font-weight: 700; color: var(--red-deep); }
+.sub { margin-top: 2px; color: var(--muted); }
+#x {
+  flex: none; align-self: flex-start; width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--muted); font-size: 16px; line-height: 26px;
+}
+#x:hover { background: var(--red-tint); color: var(--red-deep); }
+ul { list-style: none; padding: 0; margin-top: 8px; display: grid; gap: 4px; }
+li button {
+  width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px; text-align: left;
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel); color: var(--text);
+  transition: transform .16s ease-out;
+}
+li button:hover { border-color: var(--red); background: var(--red-tint); }
+li button:active { transform: scale(.98); }
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.t { flex: none; max-width: 45%; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p { flex: 1; min-width: 0; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.go { flex: none; color: var(--muted); }
+.more { padding: 4px 10px; color: var(--muted); }
+/* entering: drops in, then a short shake as the knock sounds */
+.in { animation: drop .2s var(--ease), shake .3s .2s ease-out; }
+@keyframes drop { from { opacity: 0; transform: translateY(-8px); } }
+@keyframes shake { 20% { transform: translateX(-6px); } 40% { transform: translateX(5px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } }
+@media (prefers-reduced-motion: reduce) { .in { animation: fade .2s; } @keyframes fade { from { opacity: 0; } } }
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <div class="top">
+    <span class="mascot" id="me" aria-hidden="true"></span>
+    <div class="head"><h1 id="h">Waiting for your answer</h1><div class="sub">Click a session to go to it.</div></div>
+    <button type="button" id="x" aria-label="Close this alert">✕</button>
+  </div>
+  <ul id="list"></ul>
+</div>
+<script>window.MASCOT = window.MASCOT || {}; /*MASCOT*/</script>
+<script>
+const $ = id => document.getElementById(id);
+const api = () => window.pywebview.api;
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+const SHOWN = 4;   // rows listed; the rest are counted (agent-panel.pyw sizes the window the same way)
+
+// the asking octopus, red, its frames played like the panel's (550 ms each)
+const strip = MASCOT["asking"];
+if (strip) {
+  const me = $("me"), n = 4;
+  me.style.backgroundImage = `url(${strip})`;
+  me.style.backgroundSize = n * 100 + "% 100%";
+  let f = 0;
+  setInterval(() => { if (still.matches) f = 0; else f = (f + 1) % n; me.style.backgroundPosition = f * 100 / (n - 1) + "% 0"; }, 550);
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]); }
+
+window.alertCard = {
+  // sessions: [{id, title, path}]; knock: a new one has just started waiting
+  update(sessions, knock) {
+    $("h").textContent = sessions.length > 1 ? `${sessions.length} sessions need your answer` : "Waiting for your answer";
+    $("list").innerHTML = sessions.slice(0, SHOWN).map(s =>
+      `<li><button type="button" data-id="${esc(s.id)}" title="${esc(s.path)}"><span class="dot"></span>` +
+      `<span class="t">${esc(s.title)}</span><span class="p">${esc(s.path)}</span><span class="go" aria-hidden="true">↗</span></button></li>`).join("") +
+      (sessions.length > SHOWN ? `<li class="more">and ${sessions.length - SHOWN} more in the panel</li>` : "");
+    if (knock) { const c = $("card"); c.classList.remove("in"); void c.offsetWidth; c.classList.add("in"); }
+  }
+};
+$("list").addEventListener("click", e => { const b = e.target.closest("button[data-id]"); if (b && window.pywebview) api().go(b.dataset.id); });
+$("x").addEventListener("click", () => window.pywebview && api().dismiss());
+addEventListener("pywebviewready", () => api().ready());
+</script>
+</body>
+</html>

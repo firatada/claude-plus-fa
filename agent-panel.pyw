@@ -2,6 +2,8 @@
 # edge of the screen. Double-click a closed session to resume it in its own folder, in a new
 # terminal; click an open one to bring its window forward. Tray icon: click to show or hide;
 # Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
+# When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
+# sounds (tray menu: Alerts, Alert Sound).
 import base64, ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, threading, time
 import webview
 
@@ -14,20 +16,26 @@ CTX_DIR = os.path.join(CLAUDE, "state", "context")      # written by claude-plus
 LIMITS_FILE = os.path.join(CTX_DIR, "rate_limits.json")
 HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel.html")
 MASCOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-mascot")
+ALERT_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-alert.html")
+KNOCK = os.path.join(MASCOT, "knock.wav")
+OPTS_FILE = os.path.join(STATE_DIR, "options.json")
 
 
-def mascot_js():
+def mascot_js(only=None):
     """The octopus strips as data URLs: the page is handed over as a string, so it cannot load files."""
     strips = {}
     try:
         for name in sorted(os.listdir(MASCOT)):
-            if name.endswith(".webp"):
+            if name.endswith(".webp") and (only is None or name[:-5] in only):
                 with open(os.path.join(MASCOT, name), "rb") as f:
                     strips[name[:-5]] = "data:image/webp;base64," + base64.b64encode(f.read()).decode("ascii")
     except OSError:
         pass  # no strips: the page keeps its plain logo
     return "window.MASCOT = %s;" % json.dumps(strips)
 TITLE = "Agent Panel"
+ALERT_TITLE = "Agent Panel Alert"
+ALERT_W = 420          # logical pixels; the height follows the rows, as agent-alert.html lays them out
+ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
@@ -507,7 +515,21 @@ def logo_image(size):
     return tile.resize((size, size), Image.LANCZOS)
 
 
-def tray(events):
+def load_opts():
+    opts = {"alerts": True, "sound": True}
+    try:
+        opts.update(json.load(open(OPTS_FILE, encoding="utf-8")))
+    except (OSError, ValueError):
+        pass
+    return opts
+
+
+def save_opts(opts):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    json.dump(opts, open(OPTS_FILE, "w", encoding="utf-8"))
+
+
+def tray(events, opts):
     try:
         import pystray
         img = logo_image(64)
@@ -516,6 +538,8 @@ def tray(events):
     menu = pystray.Menu(
         pystray.MenuItem("Show or Hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
+        pystray.MenuItem("Alerts", lambda: events.put("opt:alerts"), checked=lambda _: opts["alerts"]),
+        pystray.MenuItem("Alert Sound", lambda: events.put("opt:sound"), checked=lambda _: opts["sound"]),
         pystray.MenuItem("Quit", lambda: events.put("quit")))
     icon = pystray.Icon("agent-panel", img, "Agent Panel", menu)
     icon.run_detached()
@@ -543,14 +567,14 @@ def ago(ts):
 WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 
-def own_window(title):
-    """The visible top window of this process with this title."""
+def own_window(title, visible=True):
+    """The top window of this process with this title (a visible one, unless visible=False)."""
     found = []
 
     def each(h, _):
         pid = wt.DWORD()
         user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-        if pid.value == os.getpid() and user32.IsWindowVisible(h) and window_title(h) == title:
+        if pid.value == os.getpid() and (user32.IsWindowVisible(h) or not visible) and window_title(h) == title:
             found.append(h)
             return False
         return True
@@ -605,6 +629,26 @@ class Api:
         self._p.events.put("toggle")
 
 
+class AlertApi:
+    """What the alert page may call."""
+
+    def __init__(self, panel):
+        self._p = panel
+
+    def ready(self):
+        self._p.alert_ready = True
+
+    def go(self, sid):
+        self._p.alert_go(sid)
+
+    def dismiss(self):
+        self._p.alert_dismiss()
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+
 class Panel:
     def __init__(self):
         self.events = queue.Queue()
@@ -617,6 +661,14 @@ class Panel:
             html = f.read().replace("/*MASCOT*/", mascot_js(), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
                                             frameless=True, easy_drag=False, background_color=BG)
+        # the alert: its own window, made now and kept hidden until a session waits for an answer
+        self.opts = load_opts()
+        self.alert_hwnd, self.alert_ready, self.alert_ids, self.alerted = None, False, [], set()
+        with open(ALERT_HTML, encoding="utf-8") as f:
+            ahtml = f.read().replace("/*MASCOT*/", mascot_js(("asking",)), 1)
+        self.alert = webview.create_window(ALERT_TITLE, html=ahtml, js_api=AlertApi(self), width=ALERT_W, height=130,
+                                           frameless=True, easy_drag=False, on_top=True, hidden=True,
+                                           focus=False, shadow=False, background_color="#FFFFFF")
 
     def run(self):
         webview.start(self.main, gui="edgechromium", private_mode=True)
@@ -638,7 +690,12 @@ class Panel:
         self.place()
         user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
-        self.icon = tray(self.events)
+        self.icon = tray(self.events, self.opts)
+        self.alert_hwnd = own_window(ALERT_TITLE, visible=False)
+        if self.alert_hwnd:
+            ex = user32.GetWindowLongW(self.alert_hwnd, -20)
+            # a tool window (no taskbar button) that never takes the keyboard: WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+            user32.SetWindowLongW(self.alert_hwnd, -20, (ex | 0x80 | 0x08000000) & ~0x40000)
         self.last_scan = self.last_live = 0
         while True:
             try:
@@ -650,6 +707,13 @@ class Panel:
                         self.last_scan = 0
                     elif ev == "quit":
                         return self.quit()
+                    elif ev.startswith("opt:"):
+                        self.opts[ev[4:]] = not self.opts[ev[4:]]
+                        save_opts(self.opts)
+                        if not self.opts["alerts"]:
+                            self.alert_dismiss()
+                        if self.icon:
+                            self.icon.update_menu()
             except queue.Empty:
                 pass
             if kernel32.WaitForSingleObject(QUIT_EVENT, 0) == 0:
@@ -671,6 +735,7 @@ class Panel:
                             "The list is from the last good read" if self.sessions else "No read has worked yet",
                             SCAN_EVERY))
                 self.push()
+                self.check_alerts()
             elif now - self.last_live > LIVE_EVERY:
                 self.last_live = now
                 self.update_live()
@@ -724,6 +789,74 @@ class Panel:
                     pass
         self.sessions.sort(key=lambda s: s["mtime"], reverse=True)
         self.push()
+        self.check_alerts()
+
+    # ----- the alert: a session waiting for an answer shows over every window, with a knock -----
+    def check_alerts(self):
+        """A session that has just started waiting joins the alert, which shows and knocks; one that
+        no longer waits leaves it, and the alert goes once none is left. A session whose own window is
+        already in front is not announced: its question is on screen."""
+        waiting = [s for s in self.sessions if s["status"] and s.get("waiting")]
+        ids = {s["id"] for s in waiting}
+        fresh = [s for s in waiting if s["id"] not in self.alerted and not self.in_front(s)]
+        self.alerted = ids  # a session that stops waiting and asks again is announced again
+        before = list(self.alert_ids)
+        self.alert_ids = [i for i in self.alert_ids if i in ids]
+        if self.opts["alerts"]:
+            self.alert_ids += [s["id"] for s in fresh if s["id"] not in self.alert_ids]
+        if self.alert_ids != before or fresh:
+            self.show_alert(knock=bool(fresh) and self.opts["alerts"])
+
+    def in_front(self, s):
+        hwnd = s.get("pid") and window_of(s["pid"])
+        if not hwnd or user32.GetForegroundWindow() != hwnd:
+            return False
+        name = s.get("name")
+        return not name or name in window_title(hwnd)  # a terminal showing another tab does not count
+
+    def show_alert(self, knock=False):
+        if not self.alert_hwnd or not self.alert_ready:
+            return
+        rows = [s for i in self.alert_ids for s in self.sessions if s["id"] == i]
+        if not rows:
+            self.alert.hide()
+            return
+        data = [{"id": s["id"], "title": s["title"], "path": where_of(s)} for s in rows]
+        self.alert.evaluate_js("alertCard.update(%s, %s)" % (json.dumps(data), "true" if knock else "false"))
+        # the card's height, as agent-alert.html lays it out: frame and top 93, 36 a row, 28 for "and n more"
+        n = min(len(rows), ALERT_ROWS)
+        h_css = 93 + 36 * n - 4 + (28 if len(rows) > ALERT_ROWS else 0)
+        scale = user32.GetDpiForWindow(self.hwnd) / 96.0 or 1.0
+        w, h = int(round(ALERT_W * scale)), int(round(h_css * scale))
+        # top centre of the screen the user is working on (the one holding the window in front)
+        mi = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        user32.GetMonitorInfoW(user32.MonitorFromWindow(user32.GetForegroundWindow(), 2), ctypes.byref(mi))
+        wa = mi.rcWork
+        x, y = wa.left + (wa.right - wa.left - w) // 2, wa.top + int(24 * scale)
+        rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, int(32 * scale), int(32 * scale))
+        user32.SetWindowRgn(self.alert_hwnd, rgn, True)
+        # HWND_TOPMOST, SWP_NOACTIVATE: over everything, the keyboard stays where it was. pywebview shows
+        # it (focus=False: without activating), as WebView2 draws nothing in a window shown behind its back
+        user32.SetWindowPos(self.alert_hwnd, -1, x, y, w, h, 0x0010)
+        if not user32.IsWindowVisible(self.alert_hwnd):
+            self.alert.show()
+            user32.SetWindowPos(self.alert_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        if knock and self.opts["sound"] and os.path.exists(KNOCK):
+            import winsound
+            winsound.PlaySound(KNOCK, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+
+    def alert_go(self, sid):
+        """A session clicked in the alert: its window comes forward, and it leaves the alert."""
+        s = self.find(sid)
+        self.alert_ids = [i for i in self.alert_ids if i != sid]
+        self.show_alert()
+        if s and s["status"]:
+            focus_session(s)
+
+    def alert_dismiss(self):
+        self.alert_ids = []
+        if self.alert_hwnd:
+            self.alert.hide()
 
     def state(self):
         lim, now = read_limits(), time.time()
@@ -822,6 +955,7 @@ class Panel:
             self.dock.release()
         if self.icon:
             self.icon.stop()
+        self.alert.destroy()  # a hidden window left behind keeps the program running
         self.window.destroy()
 
 
