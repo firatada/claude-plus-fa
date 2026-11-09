@@ -75,7 +75,7 @@ The key is optional: without it, everything else in claude-plus-fa works as usua
 The easiest way is to ask Claude Code:
 
 ```
-Install claude-plus-fa from github.com/firatada-ctrl/claude-plus-fa.
+Install claude-plus-fa from github.com/firatada/claude-plus-fa.
 ```
 
 By hand instead:
@@ -86,7 +86,7 @@ By hand instead:
 - If you prefer git, clone the repository instead and double-click `install.cmd` in the cloned folder:
 
 ```
-git clone https://github.com/firatada-ctrl/claude-plus-fa
+git clone https://github.com/firatada/claude-plus-fa
 ```
 
 - To update, double-click `install.cmd` again; it is safe to run as often as you like.
