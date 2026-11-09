@@ -63,7 +63,7 @@ Key file: `~/.claudex/profiles/glm/.env`, line `CLAUDEX_KEY="..."`. Never in thi
 
 ## Open questions
 - Manrope and Inter for the Agent Panel: offered to bundle them (download from Google Fonts, OFL), not chosen yet; the panel uses Segoe UI.
-- The claude-plus card on firatada.com does not mention the Agent Panel or the new name yet.
+- The claude-plus card on firatada.com does not mention the Agent Panel or the new name yet; the change is handed to that project in `firatada.com/handoff-claude-plus-fa-card.md` (2026-11-09).
 
 ## Decisions
 Moved to `mindmap/claude-plus-fa.md`, Decisions (2026-11-09).
