@@ -6,7 +6,9 @@ Source: tools/mascot-source/purple-octopus.png, a 1536 x 1024 sheet with transpa
 two columns of six numbered rows, five frames per row, a dark label pill at each row's top left.
 Each row used here is cut into its frames (alpha bands between the drawings), every frame placed
 on one square canvas per row, standing on the drawing's baseline and centred on it, so the frames
-line up when played; then scaled to 96 px frames (shown at 36 to 38 px, sharp on scaled screens).
+line up when played; then scaled to 96 px frames (shown at 36 to 38 px, sharp on scaled screens),
+and recoloured to its state's dot colour: only the octopus's purple changes hue (the blue eyes, the
+white and the props keep theirs), green for open and working, red for asking, grey for closed.
 Output: mascot/<name>.webp next to this folder's parent, one horizontal strip per name, and
 mascot/logo.png, the package's logo (256 px), and mascot/tray.png, the tray icon (64 px).
 """
@@ -19,13 +21,30 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "mascot-source", "purple-octopus.png")
 OUT = os.path.join(os.path.dirname(HERE), "mascot")
 OUT_PX = 96
-# name: (column 0 or 1, row band 0..5, frames to keep in play order)
+# name: (column 0 or 1, row band 0..5, frames to keep in play order, colour)
 STRIPS = {
-    "calm": (0, 0, [0, 1, 2, 3, 4]),        # 1 Calm: looks around, blinks
-    "reading": (1, 0, [0, 1, 2, 3, 4]),     # 2 Watching / reading a tablet
-    "sleeping": (0, 1, [0, 1, 2]),          # 3 Asleep (cap and bubble frames left out)
-    "asking": (1, 3, [1, 2, 4, 2]),         # 8 Puzzled, question marks (the box frame left out)
+    "calm": (0, 0, [0, 1, 2, 3, 4], "green"),     # 1 Calm: looks around, blinks
+    "reading": (1, 0, [0, 1, 2, 3, 4], "green"),  # 2 Watching / reading a tablet
+    "sleeping": (0, 1, [0, 1, 2], "grey"),        # 3 Asleep (cap and bubble frames left out)
+    "asking": (1, 3, [1, 2, 4, 2], "red"),        # 8 Puzzled, question marks (the box frame left out)
 }
+# the panel's dot colours (--green #16a34a, --red #e11d48, --gone grey) as a target hue for the
+# octopus's purple (hue about 250), with saturation and brightness scaled so it is not neon
+COLOURS = {"green": (142, 0.8, 0.85), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85)}
+
+
+def recolour(img, colour):
+    hue, sat, val = COLOURS[colour]
+    rgba = np.array(img)
+    hsv = np.array(Image.fromarray(rgba[:, :, :3]).convert("HSV")).astype(float)
+    h = hsv[:, :, 0] * 360 / 255
+    purple = (h >= 232) & (h <= 320) & (hsv[:, :, 1] > 30)  # the irises (hue about 215) stay blue
+    if hue is not None:
+        hsv[:, :, 0] = np.where(purple, (h + hue - 250) % 360, h) * 255 / 360
+    hsv[:, :, 1] = np.where(purple, hsv[:, :, 1] * sat, hsv[:, :, 1])
+    hsv[:, :, 2] = np.where(purple, hsv[:, :, 2] * val, hsv[:, :, 2])
+    rgb = np.array(Image.fromarray(hsv.clip(0, 255).astype("uint8"), "HSV").convert("RGB"))
+    return Image.fromarray(np.dstack([rgb, rgba[:, :, 3]]), "RGBA")
 BANDS = [0, 170, 345, 530, 700, 870, 1024]
 
 sheet = Image.open(SRC).convert("RGBA")
@@ -67,7 +86,7 @@ def frames_of(col, band):
 
 
 os.makedirs(OUT, exist_ok=True)
-for name, (col, band, keep) in STRIPS.items():
+for name, (col, band, keep, colour) in STRIPS.items():
     frames = frames_of(col, band)
     side = max(max(f.width, f.height) for f in frames) + 6
     strip = Image.new("RGBA", (OUT_PX * len(keep), OUT_PX))
@@ -76,10 +95,10 @@ for name, (col, band, keep) in STRIPS.items():
         canvas = Image.new("RGBA", (side, side))
         canvas.paste(f, ((side - f.width) // 2, side - 3 - f.height))
         strip.paste(canvas.resize((OUT_PX, OUT_PX), Image.LANCZOS), (i * OUT_PX, 0))
-    strip.save(os.path.join(OUT, name + ".webp"), "WEBP", quality=85, method=6)
-    print("wrote %s (%d frames)" % (name, len(keep)))
+    recolour(strip, colour).save(os.path.join(OUT, name + ".webp"), "WEBP", quality=85, method=6)
+    print("wrote %s (%d frames, %s)" % (name, len(keep), colour))
 
-# the package's logo (README, tray icon): the calm octopus's first pose, cut close to its drawing
+# the package's logo (README, tray icon): the calm octopus's first pose in its own purple, cut close
 f = frames_of(*STRIPS["calm"][:2])[0]
 side = max(f.width, f.height)
 logo = Image.new("RGBA", (side, side))
