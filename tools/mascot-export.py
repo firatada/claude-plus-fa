@@ -8,7 +8,8 @@ Each row used here is cut into its frames (alpha bands between the drawings), ev
 on one square canvas per row, standing on the drawing's baseline and centred on it, so the frames
 line up when played; then scaled to 96 px frames (shown at 36 to 38 px, sharp on scaled screens),
 and recoloured to its state's dot colour: only the octopus's purple changes hue (the blue eyes, the
-white and the props keep theirs), green for open and working, red for asking, grey for closed.
+white and the props keep theirs), green for open and working, red for asking, grey for closed;
+the header's moods also as <name>-purple.webp, in the octopus's own colour.
 Output: mascot/<name>.webp next to this folder's parent, one horizontal strip per name, and
 mascot/logo.png, the package's logo (256 px), and mascot/tray.png, the tray icon (64 px).
 """
@@ -31,6 +32,7 @@ STRIPS = {
 # the panel's dot colours (--green #16a34a, --red #e11d48, --gone grey) as a target hue for the
 # octopus's purple (hue about 250, median saturation 0.71, brightness 0.80), with saturation and
 # brightness scaled; green is scaled to the dot's own (0.87, 0.64), as a lighter green read as pale
+HEADER = ("calm", "reading", "asking")  # the moods the header shows (never asleep)
 COLOURS = {"green": (142, 1.2, 0.8), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85)}
 
 
@@ -98,6 +100,9 @@ for name, (col, band, keep, colour) in STRIPS.items():
         strip.paste(canvas.resize((OUT_PX, OUT_PX), Image.LANCZOS), (i * OUT_PX, 0))
     recolour(strip, colour).save(os.path.join(OUT, name + ".webp"), "WEBP", quality=85, method=6)
     print("wrote %s (%d frames, %s)" % (name, len(keep), colour))
+    if name in HEADER:  # the header's octopus keeps its own purple
+        strip.save(os.path.join(OUT, name + "-purple.webp"), "WEBP", quality=85, method=6)
+        print("wrote %s-purple" % name)
 
 # the package's logo (README, tray icon): the calm octopus's first pose in its own purple, cut close
 f = frames_of(*STRIPS["calm"][:2])[0]
