@@ -481,7 +481,7 @@ def hotkey_loop(events):
 
 
 def logo_image(size):
-    """The octopus's head close up (mascot/tray.png: the whole logo is a speck at tray size); without
+    """The octopus cut close (mascot/tray.png: the whole logo is a speck at tray size); without
     it the Spark logo tile: a blue to cyan gradient at 135 degrees, white list mark."""
     from PIL import Image, ImageDraw
     try:

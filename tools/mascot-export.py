@@ -8,7 +8,7 @@ Each row used here is cut into its frames (alpha bands between the drawings), ev
 on one square canvas per row, standing on the drawing's baseline and centred on it, so the frames
 line up when played; then scaled to 96 px frames (shown at 36 to 38 px, sharp on scaled screens).
 Output: mascot/<name>.webp next to this folder's parent, one horizontal strip per name, and
-mascot/logo.png, the package's logo (256 px), and mascot/tray.png, its head close up (64 px).
+mascot/logo.png, the package's logo (256 px), and mascot/tray.png, the tray icon (64 px).
 """
 import os
 import numpy as np
@@ -88,13 +88,13 @@ logo = logo.resize((256, 256), Image.LANCZOS)
 logo.save(os.path.join(OUT, "logo.png"), optimize=True)
 print("wrote logo.png")
 
-# the tray icon: 16 to 20 px on screen, where the whole octopus is a speck, so only the head and
-# the tentacles' start: a square two thirds of the logo wide, from the top of the drawing, centred
-# on the head (the drawing's top 40 %)
+# the tray icon: 16 to 20 px on screen, where the full logo is a speck and the head alone breaks
+# into pieces: a square 0.86 of the logo wide, from the top of the drawing, centred on the head
+# (the drawing's top 40 %), which trims only the tentacles' outer tips
 a = np.array(logo)[:, :, 3] > 40
 top = np.where(a.any(1))[0][0]
 head = np.where(a[top:top + int(0.4 * 256)].any(0))[0]
-side = int(256 * 2 / 3)
+side = int(256 * 0.86)
 x = max(0, min(256 - side, (head[0] + head[-1]) // 2 - side // 2))
 logo.crop((x, top, x + side, top + side)).resize((64, 64), Image.LANCZOS).save(
     os.path.join(OUT, "tray.png"), optimize=True)
