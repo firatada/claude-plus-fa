@@ -97,7 +97,9 @@ h1 { font-size: 15px; font-weight: 600; }
 .card.here:hover .arrow { visibility: visible; }
 .age { flex: none; margin-left: auto; font-size: 11px; color: var(--muted); }
 .path, .meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
-.path { white-space: nowrap; overflow: hidden; }
+.path { white-space: nowrap; overflow: hidden; color: var(--faint); transition: color .16s ease-out; }
+/* the path stays quiet until the pointer or the keyboard is on its card */
+.card.here:hover .path, .card.here:focus-visible .path { color: var(--text); }
 .meta { display: flex; align-items: center; gap: 6px; }
 .meta > span { flex: none; }
 .meta > [hidden] { display: none; }
