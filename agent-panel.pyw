@@ -706,13 +706,23 @@ class Panel:
 
     # ----- data to the page -----
     def update_live(self):
-        """Refresh only which sessions are open and what they are doing, between full scans."""
+        """Refresh only which sessions are open and what they are doing, between full scans. An open
+        session's transcript time is read again too, so a session that just started working moves to
+        the top within LIVE_EVERY, not at the next full scan (up to SCAN_EVERY later)."""
         live = running()
+        known = {s["id"] for s in self.sessions}
+        if any(sid not in known for sid in live):
+            self.last_scan = 0  # a session the list does not have yet: scan now, not in up to 15 s
         for s in self.sessions:
             run = live.get(s["id"]) or {}
             s["status"], s["pid"], s["waiting"] = run.get("status"), run.get("pid"), run.get("waiting")
             if s["status"]:
                 s["ctx"] = read_ctx(s["id"])
+                try:
+                    s["mtime"] = os.stat(s["path"]).st_mtime
+                except OSError:
+                    pass
+        self.sessions.sort(key=lambda s: s["mtime"], reverse=True)
         self.push()
 
     def state(self):

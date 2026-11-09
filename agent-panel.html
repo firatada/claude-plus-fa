@@ -428,6 +428,24 @@ function skeleton() {
 // was under it; the newest-first order comes back when the pointer leaves.
 let hovering = false;
 const rowsOf = list => [...list.children].filter(e => !e.classList.contains("say"));
+// A reorder moves cards (design.md: what moves is animated): each card that stood in the list
+// slides from its old place to its new one; a card new to the list, once the list was already
+// drawn, fades in from a few pixels above. Under reduced motion the cards simply take their places.
+const MOVE = {duration: 260, easing: "cubic-bezier(0.23, 1, 0.32, 1)"};
+function glide(els, was) {
+  if (still.matches || !was.size) return;
+  for (const e of els) {
+    if (!e.classList || !e.classList.contains("card")) continue;
+    const from = was.get(e);
+    if (from === undefined) {
+      e.animate([{opacity: 0, transform: "translateY(-4px)"}, {opacity: 1, transform: "none"}], MOVE);
+      continue;
+    }
+    const dy = from - e.getBoundingClientRect().top;
+    if (Math.abs(dy) > 1) e.animate([{transform: `translateY(${dy}px)`}, {transform: "none"}], MOVE);
+  }
+}
+
 function holdOrder(els, list) {
   const now = rowsOf(list);
   const held = hovering || menu || list.contains(document.activeElement);
@@ -476,6 +494,9 @@ function render() {
     const same = els.length === kids.length && els.every((e, i) => e === kids[i]);
     if (!same) {
       const bubble = list.querySelector(".say"), before = new Set(list.children);
+      // where each card stood, so a card that changes place glides there instead of jumping
+      // (real cards only: the first list after the loading skeletons arrives without motion)
+      const was = new Map([...list.querySelectorAll(".card[data-id]")].map(e => [e, e.getBoundingClientRect().top]));
       const had = list.contains(document.activeElement) && document.activeElement.closest(".card[data-id]");
       const at = had ? [...list.querySelectorAll(".card[data-id]")].indexOf(had) : -1;
       list.replaceChildren(...els);
@@ -491,6 +512,7 @@ function render() {
         if (card) { bubble.style.animation = "none"; list.append(bubble); placeSay(bubble, card); } else sayGone();
       }
       if (revealing) els.forEach(e => { if (!before.has(e)) { e.classList.remove("enter"); void e.offsetWidth; e.classList.add("enter"); } });
+      glide(els, was);
     }
     revealing = false;
     if (tip && !document.body.contains(tipTarget)) tipHide();
