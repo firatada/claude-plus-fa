@@ -59,6 +59,8 @@ gdi32 = ctypes.windll.gdi32
 gdi32.CreateRectRgn.restype = gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
 gdi32.CombineRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
 gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+dwmapi = ctypes.windll.dwmapi
+dwmapi.DwmSetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
 
 
 # ---------- one instance only ----------
@@ -696,6 +698,7 @@ class Panel:
         self.scanned, self.error = False, None  # the first scan has finished; the last scan's failure
         self.opts = load_opts()
         self.rects = []  # what the page has open under the strip, in css px: [x, y, w, h, radius]
+        self.nc = None  # the DWM frame policy last set (see frame())
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
@@ -783,19 +786,35 @@ class Panel:
     def place(self, dock=None):
         dock = dock or self.opts["dock"]
         x, y, w, h = self.dock.place(dock, self.scale())
+        if dock == "top":
+            self.clip(dock, w)  # shaped before it grows, so the tall window is never seen whole
         user32.SetWindowPos(self.hwnd, 0, x, y, w, h, 0x0004 | 0x0010)  # SWP_NOZORDER | SWP_NOACTIVATE
-        self.clip(dock)
+        if dock != "top":
+            self.clip(dock)
 
-    def clip(self, dock):
+    def frame(self, dock):
+        """pywebview's shadow=True forces DWM's frame on (DWMWA_NCRENDERING_POLICY = enabled): its shadow and
+        1 px border. DWM draws them round the whole window rectangle and ignores the window region, so on top
+        they traced the hidden 476 px room as a line across the screen. On top the frame is off; on the right
+        it stays on, as it always was."""
+        policy = 1 if dock == "top" else 2  # DWMNCRP_DISABLED, DWMNCRP_ENABLED
+        if self.nc != policy:
+            self.nc = policy
+            dwmapi.DwmSetWindowAttribute(self.hwnd, 2, ctypes.byref(ctypes.c_int(policy)), 4)
+
+    def clip(self, dock, width=None):
         """On top the window shows only the strip and what the page has open under it (a menu, a tooltip,
         the set-aside list); clicks anywhere else go to the windows below. On the right it shows whole."""
+        self.frame(dock)
         if dock != "top":
             user32.SetWindowRgn(self.hwnd, None, True)
             return
         s = self.scale()
-        r = wt.RECT()
-        user32.GetWindowRect(self.hwnd, ctypes.byref(r))
-        rgn = gdi32.CreateRectRgn(0, 0, r.right - r.left, int(round(STRIP * s)))
+        if width is None:
+            r = wt.RECT()
+            user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+            width = r.right - r.left
+        rgn = gdi32.CreateRectRgn(0, 0, width, int(round(STRIP * s)))
         for x, y, w, h, rad in self.rects:
             part = gdi32.CreateRoundRectRgn(int(x * s), int(y * s), int((x + w) * s) + 1, int((y + h) * s) + 1,
                                             int(rad * 2 * s), int(rad * 2 * s))
@@ -854,7 +873,7 @@ class Panel:
                     else:
                         # the column hangs from the pointer by its header
                         ox, oy = int(60 * s), int(26 * s)
-                        user32.SetWindowRgn(self.hwnd, None, True)
+                        self.clip("right")
                 if shape == "right":
                     user32.SetWindowPos(self.hwnd, 0, pt.x - ox, pt.y - oy, side_w, work.bottom - work.top,
                                         0x0004 | 0x0010)
