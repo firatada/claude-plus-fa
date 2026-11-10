@@ -425,7 +425,9 @@ function skeleton() {
 }
 
 // While the pointer is over the list the cards keep their order, so a click lands on the card that
-// was under it; the newest-first order comes back when the pointer leaves.
+// was under it; the newest-first order comes back when the pointer leaves. Keyboard focus on a card
+// holds it too, but only while the panel window has focus: a click on a card raises another window
+// and leaves document.activeElement on that card, which would otherwise freeze the order for hours.
 let hovering = false;
 const rowsOf = list => [...list.children].filter(e => !e.classList.contains("say"));
 // A reorder moves cards (design.md: what moves is animated): each card that stood in the list
@@ -448,7 +450,7 @@ function glide(els, was) {
 
 function holdOrder(els, list) {
   const now = rowsOf(list);
-  const held = hovering || menu || list.contains(document.activeElement);
+  const held = hovering || menu || (document.hasFocus() && list.contains(document.activeElement));
   if (!held || els.length !== now.length || !els.every(e => now.includes(e))) return els;
   return now;
 }
@@ -828,9 +830,12 @@ list.addEventListener("keydown", e => {
   }
 });
 list.addEventListener("pointerenter", () => { hovering = true; });
+// a pointer still over the list after the window lost focus holds the order again once it moves
+list.addEventListener("pointermove", () => { hovering = true; });
 list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
 list.addEventListener("scroll", () => { tipHide(); if (quiet) quiet = false; else closeMenu(); });
-addEventListener("blur", () => { tipHide(); closeMenu(); });
+// a window raised over the panel sends no pointerleave, so losing focus ends the hold as well
+addEventListener("blur", () => { tipHide(); closeMenu(); hovering = false; lastKey = null; render(); });
 // Tab closes the menu and gives the keyboard back to its card; inside the confirm it stays on the two buttons
 addEventListener("keydown", e => {
   if (!menu || e.key !== "Tab") return;
