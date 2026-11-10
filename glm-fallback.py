@@ -6,7 +6,7 @@
 # timeout; StopFailure output is ignored, so blocking costs nothing.
 #
 # Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
-import ctypes, html, json, os, subprocess, sys, threading, time
+import base64, ctypes, html, json, os, subprocess, sys, threading, time
 
 MB_YESNO, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, IDYES = 0x4, 0x20, 0x10000, 0x40000, 6
 TITLE = "Claude Code: usage limit reached"
@@ -15,7 +15,9 @@ TITLE = "Claude Code: usage limit reached"
 # WebView2 window by pywebview, which the installer puts in for the Agent Panel. Same Afiniti
 # Spark tokens as agent-panel.html. Shape per design-dashboard.md "Modals": a title naming the
 # thing, an X, the body with an amber callout for the side effect, Cancel and a confirm that
-# names its action, side by side and equally wide.
+# names its action, side by side and equally wide. Above the title a brand line says the window
+# comes from claude-plus-fa, with the Agent Panel's purple octopus in its asking pose (the maintainer,
+# 2026-11-10: so the user knows where the question comes from).
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><style>
 :root { --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
   --blue: #1b4df5; --on-accent: #ffffff; --amber-tint: #fff7e6; --amber-line: #f5d9a8; --amber-text: #7a4b00;
@@ -27,7 +29,12 @@ body { background: var(--panel); color: var(--text); font: 400 13px/1.45 "Segoe 
   border: 1px solid var(--line); }
 button { font: inherit; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line);
+/* the octopus's drawing fills its 96 px frames almost edge to edge (ink x 3..94), so the box is the drawing's
+   size; -1 px puts its ink on the title's left edge */
+.brand { display: flex; align-items: center; gap: 8px; padding: 12px 20px 0; color: var(--muted);
+  font-size: 12px; font-weight: 600; -webkit-app-region: drag; }
+#me { flex: none; width: 28px; height: 28px; margin-left: -1px; background: no-repeat 0 0 / 400% 100%; }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 20px 14px; border-bottom: 1px solid var(--line);
   -webkit-app-region: drag; }
 h1 { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 #x { -webkit-app-region: no-drag; flex: none; width: 26px; height: 26px; padding: 0; border: 0;
@@ -45,6 +52,7 @@ footer { display: flex; gap: 12px; padding: 14px 20px; border-top: 1px solid var
 .btn:active, #x:active { transform: scale(.97); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } .btn:active, #x:active { transform: none; } }
 </style></head><body role="dialog" aria-labelledby="t" aria-describedby="d">
+<div class="brand">%(mascot)s<span>claude-plus-fa</span></div>
 <header><h1 id="t">Usage Limit Reached: %(folder)s</h1>
   <button id="x" aria-label="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>
@@ -52,6 +60,9 @@ footer { display: flex; gap: 12px; padding: 14px 20px; border-top: 1px solid var
   <p class="note">The conversation so far is sent to z.ai.</p></main>
 <footer><button class="btn" id="no">Cancel</button><button class="btn go" id="yes">Continue With GLM</button></footer>
 <script>
+// the asking octopus, its 4 frames played as in the Agent Panel (550 ms each); frame 0 only under reduced motion
+const me = document.getElementById("me"), still = matchMedia("(prefers-reduced-motion: reduce)");
+if (me) { let f = 0; setInterval(() => { f = still.matches ? 0 : (f + 1) % 4; me.style.backgroundPositionX = f * 100 / 3 + "%"; }, 550); }
 const answer = yes => window.pywebview && window.pywebview.api.answer(yes);
 document.getElementById("yes").onclick = () => answer(true);
 document.getElementById("no").onclick = () => answer(false);
@@ -67,8 +78,23 @@ addEventListener("pywebviewready", async () => {
 </script></body></html>"""
 
 
-def ask_themed(folder):
-    """The themed modal; True for Continue, False for Cancel, the X, Escape or a closed window."""
+def mascot_html():
+    """The octopus strip the Agent Panel installs (or the repo's, run from the claude-plus-fa folder) as a data
+    URL, since the page is handed over as a string; without it the brand line is the name alone."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in (os.path.join(os.path.dirname(here), "agent-panel-mascot"), os.path.join(here, "mascot")):
+        try:
+            with open(os.path.join(folder, "asking-purple.webp"), "rb") as f:
+                data = base64.b64encode(f.read()).decode()
+        except OSError:
+            continue
+        return '<span id="me" aria-hidden="true" style="background-image: url(data:image/webp;base64,%s)"></span>' % data
+    return ""
+
+
+def ask_themed(folder, forward=True):
+    """The themed modal; True for Continue, False for Cancel, the X, Escape or a closed window.
+    forward=False leaves the foreground alone (the preview: no key is pressed)."""
     import webview
     result = {"yes": False}
 
@@ -80,7 +106,8 @@ def ask_themed(folder):
         def fit(self, more):
             window.resize(window.width, window.height + int(more))
             window.show()
-            threading.Thread(target=come_forward, daemon=True).start()
+            if forward:
+                threading.Thread(target=come_forward, daemon=True).start()
 
     def come_forward():
         # a hook runs in the background, and Windows refuses the foreground to it
@@ -99,7 +126,8 @@ def ask_themed(folder):
             user32.keybd_event(0x12, 0, 2, 0)
             user32.SetForegroundWindow(hwnd)
 
-    window = webview.create_window(TITLE, html=PAGE.replace("%(folder)s", html.escape(folder)), js_api=Api(),
+    page = PAGE.replace("%(mascot)s", mascot_html()).replace("%(folder)s", html.escape(folder))
+    window = webview.create_window(TITLE, html=page, js_api=Api(),
                                    width=440, height=250, frameless=True, easy_drag=False, on_top=True,
                                    hidden=True, background_color="#FFFFFF")
     webview.start(gui="edgechromium", private_mode=True)
@@ -112,6 +140,12 @@ def ask_native(folder):
             "Continue this session with GLM (z.ai) in a new window?" % folder)
     return ctypes.windll.user32.MessageBoxW(
         None, text, "Claude Code", MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST) == IDYES
+
+# python glm-fallback.py --preview [folder]: the dialog alone, its answer printed; nothing is read, sent or
+# started, and no key is pressed. For checking its look.
+if sys.argv[1:2] == ["--preview"]:
+    print(ask_themed(sys.argv[2] if len(sys.argv) > 2 else "example", forward=False))
+    sys.exit(0)
 
 data = json.load(sys.stdin)
 
