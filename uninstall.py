@@ -137,7 +137,7 @@ def remove_panel():
         print("removed the Agent Panel from sign-in")
     except FileNotFoundError:
         pass
-    for name in ("agent-panel", "session-panel"):
+    for name in ("agent-panel", "session-panel", "glm-return"):
         panel_state = os.path.join(CLAUDE_DIR, "state", name)
         if os.path.isdir(panel_state):
             shutil.rmtree(panel_state, ignore_errors=True)

@@ -37,6 +37,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 **Auto Switch to Free Models When Claude Tokens End**
 - When your Claude usage limit runs out, a dialog offers to carry on with a **free** model, GLM by [z.ai](https://z.ai).
 - Choosing Yes resumes the very same session, with its full conversation, in a new window.
+- When Claude's limit resets, the Agent Panel waits until GLM has finished its turn, then offers to bring the session back to Claude: Continue With Claude reopens it in a new Claude window and closes the GLM one. Not Now asks once more 30 minutes later, never again after that.
 - **It is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai.
 - The switch requires a free z.ai API key; without one, the dialog never appears.
 

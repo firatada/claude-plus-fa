@@ -333,19 +333,19 @@ def folder_exists(s):
     return bool(s["cwd"]) and os.path.isdir(s["cwd"])
 
 
-def open_session(s):
-    cmd = RESUME % s["id"]
+def open_session(s, cmd=None):
+    """Resume a session in a new console in its folder; returns the console's process."""
+    cmd = cmd or RESUME % s["id"]
     title = "claude: " + clean(s["title"])
     if s["distro"]:  # a session started inside WSL: resume it there
-        subprocess.Popen(["wsl.exe", "-d", s["distro"], "--cd", s["cwd"], "--", "bash", "-lic", cmd],
-                         creationflags=CREATE_NEW_CONSOLE, env=clean_env())
-    elif s["cwd"].startswith("\\\\"):  # cmd cannot stand in a UNC folder; PowerShell can
-        subprocess.Popen(["powershell.exe", "-NoLogo", "-NoExit", "-Command",
-                          "$Host.UI.RawUI.WindowTitle = '%s'; %s" % (title.replace("'", ""), cmd)],
-                         cwd=s["cwd"], creationflags=CREATE_NEW_CONSOLE, env=clean_env())
-    else:
-        subprocess.Popen(["cmd.exe", "/k", "title %s& %s" % (title, cmd)],
-                         cwd=s["cwd"], creationflags=CREATE_NEW_CONSOLE, env=clean_env())
+        return subprocess.Popen(["wsl.exe", "-d", s["distro"], "--cd", s["cwd"], "--", "bash", "-lic", cmd],
+                                creationflags=CREATE_NEW_CONSOLE, env=clean_env())
+    if s["cwd"].startswith("\\\\"):  # cmd cannot stand in a UNC folder; PowerShell can
+        return subprocess.Popen(["powershell.exe", "-NoLogo", "-NoExit", "-Command",
+                                 "$Host.UI.RawUI.WindowTitle = '%s'; %s" % (title.replace("'", ""), cmd)],
+                                cwd=s["cwd"], creationflags=CREATE_NEW_CONSOLE, env=clean_env())
+    return subprocess.Popen(["cmd.exe", "/k", "title %s& %s" % (title, cmd)],
+                            cwd=s["cwd"], creationflags=CREATE_NEW_CONSOLE, env=clean_env())
 
 
 # ---------- bringing an open session's window forward ----------
@@ -465,6 +465,116 @@ def close_session(s):
     ok = kernel32.TerminateProcess(h, 1)
     kernel32.CloseHandle(h)
     return bool(ok)
+
+
+# ---------- back to Claude after a GLM fallback ----------
+# glm-fallback.py records every session it moves to GLM in RETURN_DIR/<session>.json. Once Claude's limit has
+# reset and the GLM session sits idle, the panel asks, in the fallback's own themed window (glm-fallback.py
+# --ask-return), whether to continue it with Claude. On Continue it resumes the session with Claude in a new
+# window and closes the GLM window only once Claude holds the session. The record is a file, so a restart of
+# the panel loses nothing; the answer comes back as a file beside it for the same reason.
+RETURN_DIR = os.path.join(CLAUDE, "state", "glm-return")
+FALLBACK = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "glm-fallback.py"),  # run from the repo
+            os.path.join(CLAUDE, "hooks", "glm-fallback.py"))                             # installed
+ASK_AGAIN = 30 * 60    # seconds after Not Now before the one further question
+IDLE_FOR = 4           # seconds the GLM session must stay idle, so a pause between two steps of a turn is no end
+START_WAIT = 90        # seconds for the new Claude window to hold the session; after that GLM is left as it is
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+
+
+def parents():
+    """{pid: parent pid} for every running process."""
+    snap = kernel32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    out = {}
+    if not snap or snap == wt.HANDLE(-1).value:
+        return out
+    e = PROCESSENTRY32W(dwSize=ctypes.sizeof(PROCESSENTRY32W))
+    more = kernel32.Process32FirstW(snap, ctypes.byref(e))
+    while more:
+        out[e.th32ProcessID] = e.th32ParentProcessID
+        more = kernel32.Process32NextW(snap, ctypes.byref(e))
+    kernel32.CloseHandle(snap)
+    return out
+
+
+def born(pid):
+    """A process's creation time (FILETIME as an int), None if it cannot be read; with alive() it tells a
+    process from a later one that got the same number."""
+    h = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    t = [wt.FILETIME() for _ in range(4)]
+    got = kernel32.GetProcessTimes(h, *[ctypes.byref(x) for x in t])
+    kernel32.CloseHandle(h)
+    return (t[0].dwHighDateTime << 32 | t[0].dwLowDateTime) if got else None
+
+
+def runs_under(pid, root, par):
+    """pid is root or started under it (cmd -> glm.cmd -> claude.cmd -> node is a few levels down)."""
+    for _ in range(12):
+        if not pid:
+            return False
+        if pid == root:
+            return True
+        pid = par.get(pid)
+    return False
+
+
+def end_tree(root, par):
+    """End a console's process and everything started under it, the deepest first, the console's own process
+    last with exit code 0: Windows Terminal then closes its tab (it keeps a tab whose process failed open) and
+    a plain console window closes once nothing is attached to it. Never WM_CLOSE: under Windows Terminal the
+    console's window is the terminal's own, and closing it would close every tab in it."""
+    kids = {}
+    for p, pp in par.items():
+        kids.setdefault(pp, []).append(p)
+    order, todo = [], [root]
+    while todo:
+        p = todo.pop(0)
+        start = born(p)
+        for k in kids.get(p, []):
+            # a child is never older than its parent; an older one only inherited a reused number
+            if k != root and k not in order and start and (born(k) or 0) >= start:
+                order.append(k)
+                todo.append(k)
+    for p, code in [(p, 1) for p in reversed(order)] + [(root, 0)]:
+        h = kernel32.OpenProcess(0x0001, False, int(p))  # PROCESS_TERMINATE
+        if h:
+            kernel32.TerminateProcess(h, code)
+            kernel32.CloseHandle(h)
+
+
+def session_procs(sid):
+    """The live processes holding a session, from ~/.claude/sessions/<pid>.json: [{"pid", "status"}]."""
+    folder, out = os.path.join(CLAUDE, "sessions"), []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return out
+    for n in names:
+        if n.endswith(".json"):
+            try:
+                o = json.load(open(os.path.join(folder, n), encoding="utf-8"))
+            except Exception:
+                continue
+            if o.get("sessionId") == sid and o.get("pid") and alive(o["pid"]):
+                out.append({"pid": int(o["pid"]), "status": o.get("status") or "idle"})
+    return out
+
+
+def save_record(path, rec):
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(rec, f)
+    os.replace(path + ".tmp", path)
 
 
 # ---------- placement: over the right or the top edge, without taking any screen space ----------
@@ -837,6 +947,7 @@ class Panel:
         self.scanned, self.error = False, None  # the first scan has finished; the last scan's failure
         self.opts = load_opts()
         self.rects = []  # what the page has open under the strip, in css px: [x, y, w, h, radius]
+        self.idle_since = {}  # GLM sessions on their way back to Claude: since when each has been idle
         self.nc = None  # the DWM frame policy last set (see frame())
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
@@ -914,6 +1025,7 @@ class Panel:
                             SCAN_EVERY))
                 self.push()
                 self.check_alerts()
+                self.watch_return()
             elif now - self.last_live > LIVE_EVERY:
                 self.last_live = now
                 self.update_live()
@@ -1093,6 +1205,118 @@ class Panel:
         self.sessions.sort(key=lambda s: s["mtime"], reverse=True)
         self.push()
         self.check_alerts()
+        self.watch_return()
+
+    # ----- back to Claude after a GLM fallback (see RETURN_DIR) -----
+    def watch_return(self):
+        """Every live pass: each session glm-fallback.py moved to GLM, one step further on its way back."""
+        try:
+            names = [n for n in os.listdir(RETURN_DIR) if n.endswith(".json")]
+        except OSError:
+            return
+        if not names:
+            return
+        par = parents()
+        for n in names:
+            path = os.path.join(RETURN_DIR, n)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    rec = json.load(f)
+                rec["session"], rec["glm_cmd"], rec["resets_at"]
+            except Exception:
+                continue  # half written or foreign: left alone
+            try:
+                self.step_return(path, rec, par)
+            except Exception:
+                pass  # never let it stop the panel's loop; the next pass tries again
+
+    def step_return(self, path, rec, par):
+        sid, now = rec["session"], time.time()
+        answer_file = path[:-len(".json")] + ".answer"
+
+        def done():
+            """Nothing more to do for this session: the record goes, and a question still open with it."""
+            if rec.get("asker") and alive(rec["asker"]) and born(rec["asker"]) == rec.get("asker_born"):
+                h = kernel32.OpenProcess(0x0001, False, int(rec["asker"]))
+                if h:
+                    kernel32.TerminateProcess(h, 0)
+                    kernel32.CloseHandle(h)
+            for p in (path, answer_file):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            self.idle_since.pop(sid, None)
+
+        procs = session_procs(sid)
+        if rec.get("claude_cmd"):
+            # Continue was taken and Claude started: the GLM window closes only once Claude holds the session,
+            # so it is never without a window, and GLM is idle, so two windows never write it at once
+            if [p for p in procs if runs_under(p["pid"], rec["claude_cmd"], par)]:
+                end_tree(rec["glm_cmd"], par)
+                return done()
+            if now - rec.get("switch_at", now) > START_WAIT or not alive(rec["claude_cmd"]):
+                return done()  # Claude did not start: GLM stays as it is
+            return
+        glm = [p for p in procs if runs_under(p["pid"], rec["glm_cmd"], par)]
+        orig = next((p for p in procs if p["pid"] == rec.get("orig_pid") and p not in glm), None)
+        back = [p for p in procs if p not in glm and p is not orig]
+        if (back                                                  # open in another (Claude) window
+                or not alive(rec["glm_cmd"])                      # the GLM window was closed
+                or (rec.get("glm_pid") and not glm)               # GLM was left (/exit) in its window
+                or (orig and rec.get("orig_idle") and orig["status"] in ("busy", "waiting"))):  # typed into the old window
+            return done()
+        changed = False
+        if glm and not rec.get("glm_pid"):
+            rec["glm_pid"], changed = glm[0]["pid"], True
+        if orig and orig["status"] == "idle" and not rec.get("orig_idle"):
+            rec["orig_idle"], changed = True, True  # the old window's turn has ended (the hook ran inside it)
+        asking = rec.get("asker") and alive(rec["asker"]) and born(rec["asker"]) == rec.get("asker_born")
+        answer = None
+        try:
+            with open(answer_file, encoding="utf-8") as f:
+                answer = f.read().strip()
+            os.remove(answer_file)
+        except OSError:
+            if rec.get("asker") and not asking:
+                answer = "later"  # the window went without an answer
+        if answer:
+            rec.pop("asker", None)
+            changed = asking = False
+            if answer == "continue":
+                rec["go"] = True
+            elif rec.get("asked", 0) >= 2:
+                return done()  # Not Now twice: it stays on GLM and is not asked again
+            else:
+                rec["next_ask"] = now + ASK_AGAIN
+            save_record(path, rec)
+        if changed:
+            save_record(path, rec)
+        if asking or now < rec["resets_at"] or now < rec.get("next_ask", 0):
+            return
+        # never cut GLM off mid-turn: only when every GLM process of the session is idle, and has been for a moment
+        if not glm or any(p["status"] != "idle" for p in glm):
+            self.idle_since.pop(sid, None)
+            return
+        if now - self.idle_since.setdefault(sid, now) < IDLE_FOR:
+            return
+        s = self.find(sid)
+        title = short(s["title"], 60) if s else rec.get("folder") or sid
+        if rec.get("go"):
+            cmd = "claude --resume %s%s" % (sid, " --dangerously-skip-permissions" if rec.get("skip") else "")
+            p = open_session({"id": sid, "cwd": rec["cwd"], "distro": None, "title": title}, cmd)
+            rec["claude_cmd"], rec["switch_at"] = p.pid, now
+        else:
+            script = next((f for f in FALLBACK if os.path.exists(f)), None)
+            if not script:
+                return
+            later = ("Not Now stays on GLM and asks once more in %d minutes." % (ASK_AGAIN // 60)
+                     if rec.get("asked", 0) == 0 else "Not Now stays on GLM and does not ask again.")
+            p = subprocess.Popen([sys.executable, script, "--ask-return", answer_file, rec.get("folder") or "",
+                                  title, later], creationflags=CREATE_NO_WINDOW, env=clean_env())
+            rec["asker"], rec["asker_born"], rec["asked"] = p.pid, born(p.pid), rec.get("asked", 0) + 1
+        self.idle_since.pop(sid, None)
+        save_record(path, rec)
 
     # ----- the alert: a session waiting for an answer shows over every window, with a knock -----
     def check_alerts(self):
