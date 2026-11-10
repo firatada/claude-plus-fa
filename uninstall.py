@@ -5,7 +5,7 @@
 #   ~/.local/bin     -> glm.cmd
 # Kept on purpose: your z.ai key file and ~/.claude/claude-plus.local.json (yours,
 # not ours), the install backup, and ~/.local/bin on PATH (other tools live there).
-import ctypes, json, os, shutil, subprocess, time, winreg
+import ctypes, json, os, shutil, stat, subprocess, sys, time, winreg
 
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
@@ -68,6 +68,18 @@ def clean_settings():
         print("kept    your own status line (%s)" % status)
 
 
+def remove_tree(path):
+    """A folder deleted whole, read-only parts too: copytree gives the copy its source's read-only
+    flag, and shutil.rmtree cannot delete a read-only folder, so a reinstall then failed to copy."""
+    def again(func, p, _):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, **({"onexc": again} if sys.version_info >= (3, 12) else {"onerror": again}))
+
+
 def remove_files():
     for path in FILES:
         if os.path.exists(path):
@@ -78,7 +90,7 @@ def remove_files():
         print("deleted %s" % STATE)
     mascot = os.path.join(CLAUDE_DIR, "agent-panel-mascot")
     if os.path.isdir(mascot):
-        shutil.rmtree(mascot, ignore_errors=True)
+        remove_tree(mascot)
         print("deleted %s" % mascot)
 
 
