@@ -17,7 +17,7 @@
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
      16 px edge; card text sits inside its card.
      Top dock (2026-11-10, the maintainer): the same page as a strip over the top edge (body.top): a grip,
-     the octopus and the count, the search, the cards as one row of 28 px tabs scrolling sideways, the
+     the octopus and the count, the search, the cards as one row of tabs (the ones that do not fit are not shown), the
      set-aside link opening its section as a list under the strip (#drop), the usage bars, the hide
      button. The window is taller than the strip; agent-panel.pyw clips it to the strip plus whatever is
      open under it (menus, tooltips, messages, #drop), which this page reports every frame (syncRegion).
@@ -261,20 +261,16 @@ body.top #hide { margin-left: 0; min-width: var(--tab); min-height: var(--tab); 
 body.top .search { margin: 0; flex: 0 1 210px; min-width: 120px; min-height: var(--tab); }
 /* a narrow screen gives the tabs the room the reset times took */
 @media (max-width: 1400px) { body.top .rt { display: none; } }
-/* the cards are tabs in one row that scrolls sideways; the wheel scrolls it too. The tabs sit as
-   centred as the other controls; their 4 px scrollbar fits in the room below them */
+/* the cards are tabs in one row that never scrolls: the tabs that do not fit wrap onto a second row,
+   which the strip clips, and fit() hides them, so a tab shows whole or not at all, newest first.
+   The tabs sit as centred as the other controls */
 body.top #list {
-  flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: flex-start; gap: 6px;
-  overflow-x: scroll; overflow-y: hidden; padding: calc((var(--strip) - var(--tab)) / 2) 4px 0; scrollbar-gutter: auto;
+  flex: 1; min-width: 0; align-self: stretch; display: flex; flex-wrap: wrap; align-items: flex-start;
+  align-content: flex-start; gap: var(--strip) 6px; overflow: clip; padding: calc((var(--strip) - var(--tab)) / 2) 4px 0;
 }
-/* a row cut by the strip's end fades out there, so more tabs read as more to scroll to */
-body.top #list.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
-body.top #list.less { -webkit-mask-image: linear-gradient(to right, transparent, #000 32px); }
-body.top #list.more.less { -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); }
-body.top #list::-webkit-scrollbar { height: 4px; }
-body.top #list::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; }
+body.top #list .card.off { visibility: hidden; }
 body.top #list .card {
-  flex: none; width: 236px; height: var(--tab); margin: 0; padding: 0 10px 0 4px; gap: 6px; align-items: center;
+  flex: none; width: 170px; height: var(--tab); margin: 0; padding: 0 10px 0 4px; gap: 6px; align-items: center;
   border-radius: var(--r-ctl); --card-shadow: 0 0 0 0 transparent;
 }
 body.top #list .card:focus-visible { outline-offset: -2px; }
@@ -637,7 +633,7 @@ function render() {
     if (tip && !document.body.contains(tipTarget)) tipHide();
     fitPaths();
   }
-  edges();
+  fit();
   if (scrollToAside && rest.length && !top) {
     scrollToAside = false;
     const r = $("sect").getBoundingClientRect(), l = list.getBoundingClientRect();
@@ -681,11 +677,15 @@ function fadeChanged(typed) {
   }
 }
 
-// on top: which ends of the tab row have more tabs beyond them
-function edges() {
-  const l = $("list"), top = onTop();
-  l.classList.toggle("less", top && l.scrollLeft > 1);
-  l.classList.toggle("more", top && l.scrollLeft + l.clientWidth < l.scrollWidth - 1);
+// on top: a tab that wrapped past the strip's first row is not shown, and leaves the Tab order with it
+function fit() {
+  const cards = [...$("list").querySelectorAll(".card")], top = onTop();
+  const row = cards.length ? cards[0].offsetTop : 0;
+  cards.forEach(c => {
+    const off = top && c.offsetTop > row;
+    c.classList.toggle("off", off);
+    if (off && c === document.activeElement) c.blur();
+  });
 }
 function fitPaths() {
   // a title or flags that do not fit end in "…" and show in full in the tooltip
@@ -695,7 +695,7 @@ function fitPaths() {
     if (el.dataset.path) el.dataset.full = c ? el.dataset.title + "\n" + el.dataset.path : el.dataset.path;
   });
 }
-addEventListener("resize", () => { fitPaths(); edges(); closeMenu(); sayGone(); });
+addEventListener("resize", () => { fitPaths(); fit(); closeMenu(); sayGone(); });
 
 // ----- messages: one about a card sits under that card; one about the whole panel floats above the link -----
 // The bottom line shows a passing message when there is one, else the standing one (a failed
@@ -975,15 +975,8 @@ list.addEventListener("pointerenter", () => { hovering = true; });
 // a pointer still over the list after the window lost focus holds the order again once it moves
 list.addEventListener("pointermove", () => { hovering = true; });
 list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
-// on top a message under a tab cannot follow it sideways, so scrolling the strip takes it away
-list.addEventListener("scroll", () => { tipHide(); edges(); if (onTop()) sayGone(); if (quiet) quiet = false; else closeMenu(); });
+list.addEventListener("scroll", () => { tipHide(); if (quiet) quiet = false; else closeMenu(); });
 $("drop").addEventListener("scroll", () => { tipHide(); sayGone(); closeMenu(); });
-// the mouse wheel scrolls the strip's tabs sideways
-list.addEventListener("wheel", e => {
-  if (!onTop() || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
-  e.preventDefault();
-  list.scrollLeft += e.deltaY;
-}, {passive: false});
 // a window raised over the panel sends no pointerleave, so losing focus ends the hold as well;
 // on top it also closes the list under the strip, as a dropdown does
 addEventListener("blur", () => { tipHide(); closeMenu(); hovering = false; if (onTop()) showHidden = false; lastKey = null; render(); });
