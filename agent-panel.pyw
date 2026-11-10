@@ -1,5 +1,5 @@
 # Agent Panel: every Claude Code session on this PC, in a narrow list over the right
-# edge of the screen. Double-click a closed session to resume it in its own folder, in a new
+# edge of the screen, or in a strip of tabs over the top edge (drag its header there; tray: Dock). Double-click a closed session to resume it in its own folder, in a new
 # terminal; click an open one to bring its window forward. Tray icon: click to show or hide;
 # Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
@@ -39,6 +39,10 @@ ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
+STRIP = 36             # logical pixels: the top dock's strip, a 28 px tab with 4 px above and a 4 px scrollbar below
+DROP_ROOM = 440        # logical pixels under the strip where its menus, tooltips and the set-aside list may open;
+                       # the window region shows only the strip and whatever is open there
+TOP_ZONE = 120         # logical pixels: a drag released this close to the top edge docks the panel there
 SCAN_EVERY = 15        # seconds
 LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
 CREATE_NEW_CONSOLE = 0x10
@@ -49,6 +53,12 @@ BG = "#f4f6fb"          # Spark page background, shown before the page has drawn
 user32, kernel32, shell32 = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
 user32.GetWindowLongW.restype = ctypes.c_long
 user32.SetWindowPos.argtypes = [wt.HWND, ctypes.c_ssize_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT]
+user32.GetAsyncKeyState.restype = ctypes.c_short
+user32.SetWindowRgn.argtypes = [wt.HWND, ctypes.c_void_p, wt.BOOL]
+gdi32 = ctypes.windll.gdi32
+gdi32.CreateRectRgn.restype = gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+gdi32.CombineRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
 
 
 # ---------- one instance only ----------
@@ -452,7 +462,7 @@ def close_session(s):
     return bool(ok)
 
 
-# ---------- placement: over the right edge, without taking any screen space ----------
+# ---------- placement: over the right or the top edge, without taking any screen space ----------
 class APPBARDATA(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("hWnd", wt.HWND), ("uCallbackMessage", wt.UINT),
                 ("uEdge", wt.UINT), ("rc", wt.RECT), ("lParam", wt.LPARAM)]
@@ -469,9 +479,19 @@ class Edge:
         shell32.SHAppBarMessage(0, ctypes.byref(abd))  # ABM_NEW
         shell32.SHAppBarMessage(1, ctypes.byref(abd))  # ABM_REMOVE
 
-    def place(self, width):
+    @staticmethod
+    def work():
         work = wt.RECT()
         user32.SystemParametersInfoW(0x30, 0, ctypes.byref(work), 0)  # SPI_GETWORKAREA
+        return work
+
+    def place(self, dock, scale):
+        """The window's rectangle for a dock: a column down the right edge, or the full width of the top
+        edge, as tall as the strip plus the room its menus open in (the window region hides that room)."""
+        work = self.work()
+        if dock == "top":
+            return work.left, work.top, work.right - work.left, int(round((STRIP + DROP_ROOM) * scale))
+        width = int(round(WIDTH * scale))
         return work.right - width, work.top, width, work.bottom - work.top
 
     def release(self):
@@ -516,7 +536,7 @@ def logo_image(size):
 
 
 def load_opts():
-    opts = {"alerts": True, "sound": True}
+    opts = {"alerts": True, "sound": True, "dock": "right"}
     try:
         opts.update(json.load(open(OPTS_FILE, encoding="utf-8")))
     except (OSError, ValueError):
@@ -538,6 +558,10 @@ def tray(events, opts):
     menu = pystray.Menu(
         pystray.MenuItem("Show or Hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
+        pystray.MenuItem("Dock on the Right", lambda: events.put("dock:right"),
+                         checked=lambda _: opts["dock"] != "top", radio=True),
+        pystray.MenuItem("Dock at the Top", lambda: events.put("dock:top"),
+                         checked=lambda _: opts["dock"] == "top", radio=True),
         pystray.MenuItem("Alerts", lambda: events.put("opt:alerts"), checked=lambda _: opts["alerts"]),
         pystray.MenuItem("Alert Sound", lambda: events.put("opt:sound"), checked=lambda _: opts["sound"]),
         pystray.MenuItem("Quit", lambda: events.put("quit")))
@@ -628,6 +652,12 @@ class Api:
     def hide(self):
         self._p.events.put("toggle")
 
+    def drag(self, ox, oy):
+        self._p.drag(ox, oy)
+
+    def region(self, rects):
+        self._p.region(rects)
+
 
 class AlertApi:
     """What the alert page may call."""
@@ -645,6 +675,13 @@ class AlertApi:
         self._p.alert_dismiss()
 
 
+def animations_on():
+    """Windows' "Show animations in Windows", the setting a browser reads as prefers-reduced-motion."""
+    on = wt.BOOL(True)
+    user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0)  # SPI_GETCLIENTAREAANIMATION
+    return bool(on.value)
+
+
 class MONITORINFO(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
 
@@ -654,15 +691,16 @@ class Panel:
         self.events = queue.Queue()
         self.cache = load_cache()
         self.sessions, self.hidden = [], load_hidden()
-        self.hwnd, self.icon, self.visible, self.page_ready = None, None, True, False
+        self.hwnd, self.icon, self.visible, self.page_ready, self.dragging = None, None, True, False, False
         self.pushed, self.lock = None, threading.Lock()
         self.scanned, self.error = False, None  # the first scan has finished; the last scan's failure
+        self.opts = load_opts()
+        self.rects = []  # what the page has open under the strip, in css px: [x, y, w, h, radius]
         with open(HTML, encoding="utf-8") as f:
-            html = f.read().replace("/*MASCOT*/", mascot_js(), 1)
+            html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
                                             frameless=True, easy_drag=False, background_color=BG)
         # the alert: its own window, made now and kept hidden until a session waits for an answer
-        self.opts = load_opts()
         self.alert_hwnd, self.alert_ready, self.alert_ids, self.alerted = None, False, [], set()
         with open(ALERT_HTML, encoding="utf-8") as f:
             ahtml = f.read().replace("/*MASCOT*/", mascot_js(("asking",)), 1)
@@ -702,6 +740,8 @@ class Panel:
                         self.last_scan = 0
                     elif ev == "quit":
                         return self.quit()
+                    elif ev.startswith("dock:"):
+                        self.set_dock(ev[5:])
                     elif ev.startswith("opt:"):
                         self.opts[ev[4:]] = not self.opts[ev[4:]]
                         save_opts(self.opts)
@@ -737,10 +777,106 @@ class Panel:
             time.sleep(0.2)
 
     # ----- placement -----
-    def place(self):
-        scale = user32.GetDpiForWindow(self.hwnd) / 96.0 or 1.0
-        x, y, w, h = self.dock.place(int(round(WIDTH * scale)))
+    def scale(self):
+        return user32.GetDpiForWindow(self.hwnd) / 96.0 or 1.0
+
+    def place(self, dock=None):
+        dock = dock or self.opts["dock"]
+        x, y, w, h = self.dock.place(dock, self.scale())
         user32.SetWindowPos(self.hwnd, 0, x, y, w, h, 0x0004 | 0x0010)  # SWP_NOZORDER | SWP_NOACTIVATE
+        self.clip(dock)
+
+    def clip(self, dock):
+        """On top the window shows only the strip and what the page has open under it (a menu, a tooltip,
+        the set-aside list); clicks anywhere else go to the windows below. On the right it shows whole."""
+        if dock != "top":
+            user32.SetWindowRgn(self.hwnd, None, True)
+            return
+        s = self.scale()
+        r = wt.RECT()
+        user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+        rgn = gdi32.CreateRectRgn(0, 0, r.right - r.left, int(round(STRIP * s)))
+        for x, y, w, h, rad in self.rects:
+            part = gdi32.CreateRoundRectRgn(int(x * s), int(y * s), int((x + w) * s) + 1, int((y + h) * s) + 1,
+                                            int(rad * 2 * s), int(rad * 2 * s))
+            gdi32.CombineRgn(rgn, rgn, part, 2)  # RGN_OR
+            gdi32.DeleteObject(part)
+        user32.SetWindowRgn(self.hwnd, rgn, True)  # the system owns the region from here
+
+    def region(self, rects):
+        """The page reports what it has open under the strip."""
+        try:
+            self.rects = [[float(v) for v in r[:5]] for r in rects]
+        except (TypeError, ValueError):
+            self.rects = []
+        if self.opts["dock"] == "top" and not self.dragging:
+            self.clip("top")
+
+    def set_dock(self, dock, page=True):
+        dock = "top" if dock == "top" else "right"
+        self.opts["dock"] = dock
+        save_opts(self.opts)
+        self.rects = []
+        if page:
+            self.window.evaluate_js("app.dock(%s)" % json.dumps(dock))
+        if self.visible:
+            self.place()
+        if self.icon:
+            self.icon.update_menu()
+
+    def drag(self, ox, oy):
+        """The header was dragged (ox, oy: where it was grabbed, in css px). Until the button is released the
+        panel takes the shape it will have when dropped: near the top edge (outside the right column) the strip
+        at the top, anywhere else the column, hanging from the pointer. Released, it docks in that shape."""
+        if self.dragging:
+            return
+        self.dragging = True
+        try:
+            button = 0x02 if user32.GetSystemMetrics(23) else 0x01  # SM_SWAPBUTTON: the primary button
+            s, work = self.scale(), self.dock.work()
+            side_w = int(round(WIDTH * s))
+            ox, oy = int(ox * s), int(oy * s)
+            shape = self.opts["dock"]
+            pt = wt.POINT()
+            held = True
+            while held:
+                # read the button first and the pointer after: a drag the page reports late, with the button
+                # already released, still lands where the pointer was let go
+                held = bool(user32.GetAsyncKeyState(button) & 0x8000)
+                user32.GetCursorPos(ctypes.byref(pt))
+                want = "top" if pt.y < work.top + TOP_ZONE * s and pt.x < work.right - side_w else "right"
+                if want != shape:
+                    shape = want
+                    self.window.evaluate_js("app.dock(%s)" % json.dumps(shape))
+                    if shape == "top":
+                        self.rects = []
+                        self.place("top")
+                    else:
+                        # the column hangs from the pointer by its header
+                        ox, oy = int(60 * s), int(26 * s)
+                        user32.SetWindowRgn(self.hwnd, None, True)
+                if shape == "right":
+                    user32.SetWindowPos(self.hwnd, 0, pt.x - ox, pt.y - oy, side_w, work.bottom - work.top,
+                                        0x0004 | 0x0010)
+                if held:
+                    time.sleep(0.01)
+            if shape == "right":
+                self.glide_to(self.dock.place("right", s))
+        finally:
+            self.dragging = False
+        self.set_dock(shape, page=False)
+
+    def glide_to(self, rect):
+        """Move the window to its dock in 160 ms, easing out; at once when Windows animations are off."""
+        r = wt.RECT()
+        user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+        x0, y0 = r.left, r.top
+        x1, y1, w, h = rect
+        steps = 8 if animations_on() else 0
+        for i in range(1, steps + 1):
+            t = 1 - (1 - i / steps) ** 3
+            user32.SetWindowPos(self.hwnd, 0, int(x0 + (x1 - x0) * t), int(y0 + (y1 - y0) * t), w, h, 0x0004 | 0x0010)
+            time.sleep(0.02)
 
     def toggle(self):
         """Ctrl+Alt+C and the tray: a panel covered by another window comes to the front;
@@ -842,8 +978,10 @@ class Panel:
         mi = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
         user32.GetMonitorInfoW(user32.MonitorFromWindow(user32.GetForegroundWindow(), 2), ctypes.byref(mi))
         wa = mi.rcWork
-        x, y = wa.left + (wa.right - wa.left - w) // 2, wa.top + int(24 * scale)
-        rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, int(32 * scale), int(32 * scale))
+        # below the top strip when the panel is docked there, so it covers none of its tabs
+        gap = 24 + (STRIP if self.opts["dock"] == "top" and self.visible else 0)
+        x, y = wa.left + (wa.right - wa.left - w) // 2, wa.top + int(gap * scale)
+        rgn = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, int(32 * scale), int(32 * scale))
         user32.SetWindowRgn(self.alert_hwnd, rgn, True)
         # HWND_TOPMOST, SWP_NOACTIVATE: over everything, the keyboard stays where it was. pywebview shows
         # it (focus=False: without activating), as WebView2 draws nothing in a window shown behind its back

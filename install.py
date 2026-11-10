@@ -4,7 +4,7 @@
 #   context-guard.py -> ~/.claude/hooks     (Stop at 90 % context, PreCompact, SessionStart compact + startup)
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
-#   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge; starts at sign-in)
+#   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge or a strip on the top edge; starts at sign-in)
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
 #   agent-alert.html -> ~/.claude           (the alert shown when a session waits for an answer)
 #   settings.json    <- the hook entries and statusLine (backed up first)
@@ -159,7 +159,7 @@ def install_panel():
     env = {k: v for k, v in os.environ.items()
            if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
     subprocess.Popen([pythonw, PANEL], creationflags=0x00000008, env=env)  # DETACHED_PROCESS
-    print("started the Agent Panel on the right edge of the screen (Ctrl+Alt+C shows or hides it)")
+    print("started the Agent Panel (Ctrl+Alt+C shows or hides it; drag its header to the top or the right edge)")
 
 
 def stop_panel():

@@ -15,7 +15,13 @@
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
      one shape": the header's logo (36, the octopus), count pill (18, pill radius) and hide button (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
-     16 px edge; card text sits inside its card. -->
+     16 px edge; card text sits inside its card.
+     Top dock (2026-11-10, the maintainer): the same page as a strip over the top edge (body.top): a grip,
+     the octopus and the count, the search, the cards as one row of 28 px tabs scrolling sideways, the
+     set-aside link opening its section as a list under the strip (#drop), the usage bars, the hide
+     button. The window is taller than the strip; agent-panel.pyw clips it to the strip plus whatever is
+     open under it (menus, tooltips, messages, #drop), which this page reports every frame (syncRegion).
+     The header (the grip on top) drags the panel between the two docks. -->
 <style>
 :root {
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
@@ -31,6 +37,8 @@
   --r-card: 14px; --r-ctl: 10px; --r-pill: 20px; --r-small: 6px;
   --edge: 16px;              /* every box and every heading starts here */
   --ease: cubic-bezier(.23, 1, .32, 1);
+  --strip: 36px;             /* the top dock's height: agent-panel.pyw STRIP */
+  --card-shadow: var(--shadow);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
@@ -42,7 +50,10 @@ body {
 button { font: inherit; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
-header { flex: none; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 var(--edge); }
+header { flex: none; height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 var(--edge); cursor: grab; }
+header button { cursor: pointer; }
+body.dragging, body.dragging * { cursor: grabbing !important; }
+#grip { display: none; flex: none; color: var(--faint); }
 .logo { flex: none; width: 26px; height: 26px; }
 /* a mascot strip: its frames side by side, the frame shown picked by background-position */
 .mascot { flex: none; background-repeat: no-repeat; background-position: 0 0; }
@@ -88,12 +99,12 @@ h1 { font-size: 15px; font-weight: 600; }
 
 .card {
   height: 56px; margin-bottom: 8px; padding: 9px 14px 9px 8px; display: flex; gap: 8px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--shadow);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--card-shadow);
   transition: transform .16s ease-out;
 }
 /* only a card that does something on a click reacts to the pointer */
 .card.here { cursor: pointer; }
-.card.here:hover, .card.target { border-color: var(--blue); box-shadow: var(--shadow), 0 0 0 .5px var(--blue); }
+.card.here:hover, .card.target { border-color: var(--blue); box-shadow: var(--card-shadow), 0 0 0 .5px var(--blue); }
 .card.here:active { transform: scale(.98); }
 .card:focus-visible { outline-offset: 1px; }
 .t { display: flex; align-items: center; gap: 6px; height: 18px; }
@@ -105,8 +116,8 @@ h1 { font-size: 15px; font-weight: 600; }
    Background and ring only, so the hover's blue border still shows over it. */
 .card.busy { animation: breathe 2.4s ease-in-out infinite; }
 .card.ask { animation: alarm 1.2s ease-in-out infinite; }
-@keyframes breathe { 50% { background: var(--green-tint); box-shadow: var(--shadow), 0 0 0 1.5px var(--green); } }
-@keyframes alarm { 50% { background: var(--red-tint); box-shadow: var(--shadow), 0 0 0 2px var(--red); } }
+@keyframes breathe { 50% { background: var(--green-tint); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--green); } }
+@keyframes alarm { 50% { background: var(--red-tint); box-shadow: var(--card-shadow), 0 0 0 2px var(--red); } }
 .dot.idle { background: var(--green); }
 .name { min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arrow { flex: none; visibility: hidden; color: var(--blue); font-size: 12px; }
@@ -231,13 +242,85 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   .dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--green); }
   .dot.ask { box-shadow: 0 0 0 2px var(--red-tint); }
   /* the card keeps its state as a still tint instead of breathing */
-  .card.busy { background: var(--green-tint); box-shadow: var(--shadow), 0 0 0 1.5px var(--green); }
-  .card.ask { background: var(--red-tint); box-shadow: var(--shadow), 0 0 0 2px var(--red); }
+  .card.busy { background: var(--green-tint); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--green); }
+  .card.ask { background: var(--red-tint); box-shadow: var(--card-shadow), 0 0 0 2px var(--red); }
 }
+
+/* ----- the top dock: one strip, --strip high, over the top edge ----- */
+body.top {
+  height: var(--strip); flex-direction: row; align-items: center; gap: 8px; padding: 0 8px 0 10px;
+  box-shadow: inset 0 -1px var(--line);
+}
+body.top header, body.top #bottom { display: contents; }
+body.top #grip { display: block; cursor: grab; }
+body.top h1 { display: none; }
+body.top .logo.mascot { width: 28px; height: 28px; }
+body.top svg.logo { width: 24px; height: 24px; }
+body.top #hide { margin-left: 0; min-width: 28px; min-height: 28px; }
+body.top .search { margin: 0; flex: 0 1 210px; min-width: 120px; min-height: 28px; }
+/* a narrow screen gives the tabs the room the reset times took */
+@media (max-width: 1400px) { body.top .rt { display: none; } }
+/* the cards are tabs in one row that scrolls sideways; the wheel scrolls it too */
+body.top #list {
+  flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: flex-start; gap: 6px;
+  overflow-x: scroll; overflow-y: hidden; padding: 4px 4px 0; scrollbar-gutter: auto;
+}
+/* a row cut by the strip's end fades out there, so more tabs read as more to scroll to */
+body.top #list.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+body.top #list.less { -webkit-mask-image: linear-gradient(to right, transparent, #000 32px); }
+body.top #list.more.less { -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); }
+body.top #list::-webkit-scrollbar { height: 4px; }
+body.top #list::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; }
+body.top #list .card {
+  flex: none; width: 236px; height: 28px; margin: 0; padding: 0 10px 0 4px; gap: 6px; align-items: center;
+  border-radius: var(--r-ctl); --card-shadow: 0 0 0 0 transparent;
+}
+body.top #list .card:focus-visible { outline-offset: -2px; }
+body.top #list .av { width: 24px; height: 24px; }
+body.top #list .body { flex-direction: row; align-items: center; gap: 8px; }
+body.top #list .t { flex: 1; min-width: 0; }
+body.top #list .name { font-size: 12px; }
+body.top #list .age, body.top #list .arrow, body.top #list .cx, body.top #list .flags { display: none; }
+/* the octopus already shows the state in its colour; the dot stands in only when there is no octopus */
+body.top #list .av:not([hidden]) + .body .dot { display: none; }
+body.top #list .meta { flex: none; padding-left: 0; gap: 4px; }
+body.top #list .meta .bar { width: 20px; }
+body.top #list .card.sk { display: block; padding: 5px 10px; }
+body.top #list .sk i { margin: 2px 0 3px; }
+body.top .empty { flex: none; align-self: center; display: flex; align-items: center; gap: 10px; padding: 0 6px; white-space: nowrap; }
+body.top .empty button { display: inline; margin: 0; }
+body.top #footer {
+  flex: none; margin: 0; min-height: 28px; padding: 0 10px; border-radius: var(--r-ctl); white-space: nowrap;
+  display: flex; align-items: center; gap: 4px;
+}
+body.top #footer:empty { display: none; }
+body.top #footer:hover { text-decoration: none; background: var(--surface2); }
+body.top #footer[aria-expanded="true"] { color: var(--blue); background: var(--surface2); }
+body.top #usage { flex: none; margin: 0; padding: 0; border: 0; display: flex; gap: 14px; }
+body.top .u { grid-template-columns: auto 28px auto; gap: 6px; height: 28px; }
+body.top .u span:last-child { min-width: 0; }
+/* a message about the whole panel, and one about a card, float under the strip */
+body.top #note { position: fixed; top: calc(var(--strip) + 6px); right: 16px; max-width: 420px; margin: 0; }
+body.top .say { position: fixed; }
+body.top .say::before { display: none; }
+/* the hidden, deleted and headless sessions: a list under the strip, opened by its link */
+#drop { display: none; }
+body.top #drop.open {
+  display: block; position: fixed; z-index: 4; top: calc(var(--strip) + 6px); width: 300px; max-height: 400px;
+  overflow-y: auto; padding: 0 8px 0 12px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r-card); animation: drop .16s var(--ease); transform-origin: top right;
+}
+#drop { padding-top: 8px; }
+#drop .card:last-child { margin-bottom: 8px; }
+#drop .empty { padding: 12px 2px; white-space: normal; }
 </style>
 </head>
 <body>
 <header>
+  <svg id="grip" width="8" height="14" viewBox="0 0 8 14" aria-hidden="true" data-tip
+    data-full="Drag down to dock the panel on the right"><g fill="currentColor">
+    <circle cx="2" cy="2" r="1.3"/><circle cx="6" cy="2" r="1.3"/><circle cx="2" cy="7" r="1.3"/>
+    <circle cx="6" cy="7" r="1.3"/><circle cx="2" cy="12" r="1.3"/><circle cx="6" cy="12" r="1.3"/></g></svg>
   <span class="logo mascot" id="me" aria-hidden="true" hidden></span>
   <svg class="logo" id="mark" viewBox="0 0 256 256" aria-hidden="true">
     <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
@@ -249,7 +332,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
       <circle cx="75" cy="178" r="13"/><rect x="104" y="167" width="56" height="22" rx="11"/>
     </g>
   </svg>
-  <h1>Agent Panel</h1>
+  <h1 data-tip data-full="Drag to the top edge to dock the panel there">Agent Panel</h1>
   <span id="count" data-tip data-full="Sessions in the main list"></span>
   <button id="hide" aria-label="Hide the panel (Ctrl+Alt+C)" data-tip data-full="Hide the panel (Ctrl+Alt+C)">
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"
@@ -273,6 +356,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   <button id="footer" type="button" data-tip data-full="Lists the sessions kept out of the main list"></button>
   <div id="usage"></div>
 </div>
+<div id="drop" role="region" aria-label="Hidden, deleted and headless sessions"></div>
 <div id="live" class="sr" role="status" aria-live="polite"></div>
 
 <script>window.MASCOT = window.MASCOT || {}; /*MASCOT*/</script>
@@ -282,6 +366,8 @@ const api = () => window.pywebview.api;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const still = matchMedia("(prefers-reduced-motion: reduce)");
 let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = false, revealing = false, lastKey = null;
+// docked at the top (a strip of tabs) or on the right (the column); agent-panel.pyw sets it at load and on a drag
+const onTop = () => document.body.classList.contains("top");
 
 // ----- the mascot (mindmap mascot.md: frame 0 the rest, frame 0 only under reduced motion). The
 // octopus sheet's frames are poses, not in-betweens, so each one holds about half a second. -----
@@ -316,7 +402,21 @@ function tick(now) {
     s.at = now + (s.f === 0 && s.mode === "idle" ? 5000 : s.ms);
     el.style.backgroundPosition = s.f * 100 / (s.n - 1) + "% 0";
   }
+  if (onTop()) syncRegion();
   requestAnimationFrame(tick);
+}
+// On top the window shows only the strip and what is open under it: everything that floats there is
+// reported, at its laid-out place and corner radius, whenever it changes
+let regionKey = "";
+function syncRegion() {
+  const rs = [...document.querySelectorAll(".pop, .tip, .say, #note:not(:empty), #drop.open")].map(e => {
+    const r = parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0;
+    return [e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight, r].map(Math.round);
+  });
+  const k = JSON.stringify(rs);
+  if (k === regionKey || !window.pywebview || !window.pywebview.api) return;
+  regionKey = k;
+  api().region(rs);
 }
 requestAnimationFrame(tick);
 // the header's octopus shows the most pressing state in the list
@@ -443,8 +543,8 @@ function glide(els, was) {
       e.animate([{opacity: 0, transform: "translateY(-4px)"}, {opacity: 1, transform: "none"}], MOVE);
       continue;
     }
-    const dy = from - e.getBoundingClientRect().top;
-    if (Math.abs(dy) > 1) e.animate([{transform: `translateY(${dy}px)`}, {transform: "none"}], MOVE);
+    const r = e.getBoundingClientRect(), dx = from.left - r.left, dy = from.top - r.top;
+    if (Math.abs(dx) > 1 || Math.abs(dy) > 1) e.animate([{transform: `translate(${dx}px, ${dy}px)`}, {transform: "none"}], MOVE);
   }
 }
 
@@ -469,15 +569,27 @@ function render() {
   $("footer").dataset.full = showHidden ? "Takes those sessions out of the list again" : "Lists the sessions kept out of the main list";
   const nShown = q ? hits.length : nAside;
   // while a search finds nothing set aside, the link would only open an empty section
-  $("footer").textContent = !nAside || (q && !hits.length && !showHidden) ? "" : showHidden ? "Fold Hidden, Deleted and Headless"
-                                                      : `Show Hidden, Deleted and Headless (${nShown})`;
-  const key = JSON.stringify([q, rows, rest, state.ready, menuFor]);
-  const list = $("list");
+  // on top the link opens a list under the strip and keeps its words, so the strip does not shift
+  $("footer").textContent = !nAside || (q && !hits.length && !showHidden) ? ""
+    : onTop() ? `Hidden, Deleted and Headless (${nShown}) ${showHidden ? "▴" : "▾"}`
+    : showHidden ? "Fold Hidden, Deleted and Headless" : `Show Hidden, Deleted and Headless (${nShown})`;
+  const top = onTop(), key = JSON.stringify([q, rows, rest, state.ready, menuFor, top, showHidden]);
+  const list = $("list"), drop = $("drop");
   if (key !== lastKey) {
     lastKey = key;
-    const old = new Map([...list.querySelectorAll(".card[data-id]")].map(e => [e.dataset.id, e]));
+    const old = new Map([...document.querySelectorAll("#list .card[data-id], #drop .card[data-id]")].map(e => [e.dataset.id, e]));
     let els = rows.map(s => cardEl(s, old, q));
-    if (rest.length) els.push($("sect") || note("sect", "HIDDEN, DELETED AND HEADLESS", "sect", "h2"), ...rest.map(s => cardEl(s, old, q)));
+    // the set-aside section follows the main list on the right, and is the list under the strip on top
+    // (on top the link that opens the list names it, so the list carries no heading of its own)
+    const cards = rest.map(s => cardEl(s, old, q));
+    const sect = !rest.length ? [] : top ? cards : [$("sect") || note("sect", "HIDDEN, DELETED AND HEADLESS", "sect", "h2"), ...cards];
+    if (!top) els.push(...sect);
+    drop.classList.toggle("open", top && showHidden);
+    if (top && showHidden) {
+      const was = new Set(drop.children);
+      drop.replaceChildren(...(sect.length ? sect : [note("empty", "None of them match the search.")]));
+      if (!was.size) drop.scrollTop = 0;
+    } else if (drop.firstChild) drop.replaceChildren();
     if (!state.ready) els = [skeleton(), skeleton(), skeleton()];
     else if (!els.length) {
       const offAside = !showHidden && (q ? hits.length : nAside);
@@ -495,10 +607,10 @@ function render() {
     const kids = rowsOf(list);
     const same = els.length === kids.length && els.every((e, i) => e === kids[i]);
     if (!same) {
-      const bubble = list.querySelector(".say"), before = new Set(list.children);
+      const bubble = document.querySelector(".say"), before = new Set(list.children);
       // where each card stood, so a card that changes place glides there instead of jumping
       // (real cards only: the first list after the loading skeletons arrives without motion)
-      const was = new Map([...list.querySelectorAll(".card[data-id]")].map(e => [e, e.getBoundingClientRect().top]));
+      const was = new Map([...list.querySelectorAll(".card[data-id]")].map(e => [e, e.getBoundingClientRect()]));
       const had = list.contains(document.activeElement) && document.activeElement.closest(".card[data-id]");
       const at = had ? [...list.querySelectorAll(".card[data-id]")].indexOf(had) : -1;
       list.replaceChildren(...els);
@@ -510,8 +622,8 @@ function render() {
         if (back) back.focus({preventScroll: true});
       }
       if (bubble) {
-        const card = [...list.querySelectorAll(".card[data-id]")].find(c => c.dataset.id === bubble.dataset.for);
-        if (card) { bubble.style.animation = "none"; list.append(bubble); placeSay(bubble, card); } else sayGone();
+        const card = [...document.querySelectorAll(".card[data-id]")].find(c => c.dataset.id === bubble.dataset.for);
+        if (card) { bubble.style.animation = "none"; if (!top) list.append(bubble); placeSay(bubble, card); } else sayGone();
       }
       if (revealing) els.forEach(e => { if (!before.has(e)) { e.classList.remove("enter"); void e.offsetWidth; e.classList.add("enter"); } });
       glide(els, was);
@@ -520,10 +632,11 @@ function render() {
     if (tip && !document.body.contains(tipTarget)) tipHide();
     fitPaths();
   }
-  if (scrollToAside && rest.length) {
+  edges();
+  if (scrollToAside && rest.length && !top) {
     scrollToAside = false;
     const r = $("sect").getBoundingClientRect(), l = list.getBoundingClientRect();
-    if (r.top < l.top || r.bottom > l.bottom) $("sect").scrollIntoView({block: "start"});
+    if (!top && (r.top < l.top || r.bottom > l.bottom)) $("sect").scrollIntoView({block: "start"});
     // the control that revealed the section may be gone; the keyboard goes to the section
     if (!document.body.contains(document.activeElement) || document.activeElement === document.body) {
       $("sect").tabIndex = -1;
@@ -533,12 +646,17 @@ function render() {
   const L = state.limits || {};
   const usage = [["5h", L.five_hour], ["Week", L.seven_day]].map(([n, v]) => {
     if (!state.ready) return `<div class="u"><span>${n}</span><span class="bar sk"></span><span></span></div>`;
-    const val = v && v.pct != null ? pct(v.pct) + (v.note ? "  ·  " + esc(v.note) : "") : "no figure yet";
+    const val = v && v.pct != null ? pct(v.pct) + (v.note ? `<span class="rt">  ·  ${esc(v.note)}</span>` : "") : "no figure yet";
     const tipText = v && v.pct != null ? "" : ' data-tip data-full="Claude Code reports it with its next reply"';
     return `<div class="u"><span>${n}</span>${bar(v && v.pct)}<span data-k="u:${n}"${tipText}>${val}</span></div>`;
   }).join("");
   if ($("usage").dataset.html !== usage) { $("usage").innerHTML = usage; $("usage").dataset.html = usage; }
   if (state.error !== standing) { standing = state.error || null; showNote(); if (standing) announce(standing); }
+  if (top && showHidden) {
+    // the list opens under its link, inside the screen
+    const f = $("footer").getBoundingClientRect();
+    drop.style.left = Math.max(8, Math.min(f.right - drop.offsetWidth, innerWidth - drop.offsetWidth - 8)) + "px";
+  }
   fadeChanged(q !== lastQ);
   lastQ = q;
 }
@@ -558,6 +676,12 @@ function fadeChanged(typed) {
   }
 }
 
+// on top: which ends of the tab row have more tabs beyond them
+function edges() {
+  const l = $("list"), top = onTop();
+  l.classList.toggle("less", top && l.scrollLeft > 1);
+  l.classList.toggle("more", top && l.scrollLeft + l.clientWidth < l.scrollWidth - 1);
+}
 function fitPaths() {
   // a title or flags that do not fit end in "…" and show in full in the tooltip
   const cut = [...document.querySelectorAll(".name, .flags")].map(el => [el, el.scrollWidth > el.clientWidth]);
@@ -566,7 +690,7 @@ function fitPaths() {
     if (el.dataset.path) el.dataset.full = c ? el.dataset.title + "\n" + el.dataset.path : el.dataset.path;
   });
 }
-addEventListener("resize", () => { fitPaths(); closeMenu(); sayGone(); });
+addEventListener("resize", () => { fitPaths(); edges(); closeMenu(); sayGone(); });
 
 // ----- messages: one about a card sits under that card; one about the whole panel floats above the link -----
 // The bottom line shows a passing message when there is one, else the standing one (a failed
@@ -585,6 +709,13 @@ function sayGone() {
 }
 // under the card, or above it when under would fall out of the visible list
 function placeSay(b, card) {
+  if (onTop()) {
+    const r = card.getBoundingClientRect(), w = Math.max(r.width, 260);
+    b.style.width = w + "px";
+    b.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
+    b.style.top = r.bottom + 6 + "px";
+    return;
+  }
   const list = $("list");
   b.style.left = card.offsetLeft + "px";
   b.style.width = card.offsetWidth + "px";
@@ -599,12 +730,12 @@ function say(card, text, err, wait) {
   announce(text);
   sayGone();
   const list = $("list");
-  if (card && list.contains(card)) {
+  if (card && document.body.contains(card) && (onTop() || list.contains(card))) {
     const b = document.createElement("div");
     b.className = "say" + (err ? " err" : "");
     b.textContent = text;
     b.dataset.for = card.dataset.id;
-    list.append(b);
+    (onTop() ? document.body : list).append(b);
     placeSay(b, card);
   } else {
     passing = {t: text, cls: err ? "err" : ""};
@@ -789,7 +920,9 @@ const find = id => state.sessions.find(s => s.id === id);
 addEventListener("mousedown", e => {
   swallow = false;
   if (menu && !menu.contains(e.target)) { closeMenu(); swallow = e.button === 0; e.stopPropagation(); }
-  const onBar = e.target === list && e.offsetX >= list.clientWidth;
+  // the list under the strip closes on a click anywhere but in it or on its link, as a dropdown does
+  else if (onTop() && showHidden && !e.target.closest("#drop, #footer, .pop")) { showHidden = false; render(); }
+  const onBar = e.target === list && (onTop() ? e.offsetY >= list.clientHeight : e.offsetX >= list.clientWidth);
   if (!e.target.closest(".say") && !onBar) sayGone();
   tipHide();
 }, true);
@@ -798,12 +931,13 @@ addEventListener("click", e => { if (swallow) { swallow = false; e.stopPropagati
 // so a stray click never starts a session.
 // the answer to a single click waits a moment, so a double click never flashes "Double-click to open it." first
 let dblAt = 0;
-list.addEventListener("click", e => {
+for (const box of [list, $("drop")]) {
+box.addEventListener("click", e => {
   const c = cardOf(e);
   if (!c) return;
   api().click(c.dataset.id).then(r => setTimeout(() => { if (Date.now() - dblAt > (state.dbl || 500) + 100) reply(c)(r); }, (state.dbl || 500) + 50));
 });
-list.addEventListener("dblclick", e => {
+box.addEventListener("dblclick", e => {
   const c = cardOf(e);
   if (!c) return;
   dblAt = Date.now();
@@ -816,9 +950,11 @@ addEventListener("contextmenu", e => {
   // the menu key fires this on key-up, after its menu is already open
   if (menu && menu.contains(e.target)) return;
   const c = cardOf(e), s = c && find(c.dataset.id);
-  if (s) openMenu(s, c, e.clientX, e.clientY); else closeMenu();
+  // a tab in the strip is too low to hold a menu: it opens just under the tab, covering none of it
+  const y = s && onTop() && list.contains(c) ? c.getBoundingClientRect().bottom + 4 : e.clientY;
+  if (s) openMenu(s, c, e.clientX, y); else closeMenu();
 });
-list.addEventListener("keydown", e => {
+box.addEventListener("keydown", e => {
   const c = e.target.closest && e.target.closest(".card[data-id]"), s = c && find(c.dataset.id);
   if (!s) return;
   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (s.status || !s.here ? api().click(s.id) : api().open(s.id)).then(reply(c)); }
@@ -829,13 +965,23 @@ list.addEventListener("keydown", e => {
     openMenu(s, c, r.left + 16, r.bottom);
   }
 });
+}
 list.addEventListener("pointerenter", () => { hovering = true; });
 // a pointer still over the list after the window lost focus holds the order again once it moves
 list.addEventListener("pointermove", () => { hovering = true; });
 list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
-list.addEventListener("scroll", () => { tipHide(); if (quiet) quiet = false; else closeMenu(); });
-// a window raised over the panel sends no pointerleave, so losing focus ends the hold as well
-addEventListener("blur", () => { tipHide(); closeMenu(); hovering = false; lastKey = null; render(); });
+// on top a message under a tab cannot follow it sideways, so scrolling the strip takes it away
+list.addEventListener("scroll", () => { tipHide(); edges(); if (onTop()) sayGone(); if (quiet) quiet = false; else closeMenu(); });
+$("drop").addEventListener("scroll", () => { tipHide(); sayGone(); closeMenu(); });
+// the mouse wheel scrolls the strip's tabs sideways
+list.addEventListener("wheel", e => {
+  if (!onTop() || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+  e.preventDefault();
+  list.scrollLeft += e.deltaY;
+}, {passive: false});
+// a window raised over the panel sends no pointerleave, so losing focus ends the hold as well;
+// on top it also closes the list under the strip, as a dropdown does
+addEventListener("blur", () => { tipHide(); closeMenu(); hovering = false; if (onTop()) showHidden = false; lastKey = null; render(); });
 // Tab closes the menu and gives the keyboard back to its card; inside the confirm it stays on the two buttons
 addEventListener("keydown", e => {
   if (!menu || e.key !== "Tab") return;
@@ -859,6 +1005,7 @@ addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (menu || tip || document.querySelector(".say")) { e.preventDefault(); tipHide(); closeMenu(); sayGone(); return; }
   if (passing) { e.preventDefault(); sayGone(); return; }
+  if (onTop() && showHidden) { e.preventDefault(); showHidden = false; render(); $("footer").focus(); return; }
   if (document.activeElement === $("q") && $("q").value) { e.preventDefault(); setQ(""); }
 });
 // the search clears in one step: its × or Escape
@@ -872,7 +1019,45 @@ $("footer").onclick = toggleAside;
 list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(e); });
 $("hide").onclick = () => window.pywebview && api().hide();
 
-window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); } };
+// ----- docking: the header (the grip on top) drags the panel between the right edge and the top edge -----
+// agent-panel.pyw moves the window while the button is held and changes its shape on the way
+let grab = null;
+document.querySelector("header").addEventListener("pointerdown", e => {
+  if (e.button !== 0 || e.target.closest("button, input")) return;
+  grab = {x: e.clientX, y: e.clientY};
+});
+addEventListener("pointermove", e => {
+  if (!grab) return;
+  if (!(e.buttons & 1)) { grab = null; return; }
+  if (Math.hypot(e.clientX - grab.x, e.clientY - grab.y) < 4) return;
+  const g = grab;
+  grab = null;
+  tipHide(); closeMenu(); sayGone();
+  document.body.classList.add("dragging");
+  api().drag(g.x, g.y).then(() => document.body.classList.remove("dragging"));
+});
+addEventListener("pointerup", () => { grab = null; });
+function setDock(d) {
+  const top = d === "top";
+  if (top === onTop()) return;
+  tipHide(); closeMenu(); sayGone();
+  document.body.classList.toggle("top", top);
+  placeHide();
+  showHidden = false;
+  regionKey = "";
+  lastKey = null;
+  render();
+}
+
+// the hide button ends the strip on top, in the reading order as well as on screen; on the right it is in the header
+function placeHide() {
+  if (onTop()) document.body.insertBefore($("hide"), $("drop"));
+  else document.querySelector("header").append($("hide"));
+}
+
+window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); }, dock: setDock };
+document.body.classList.toggle("top", window.DOCK === "top");
+placeHide();
 render();
 addEventListener("pywebviewready", () => api().ready());
 </script>
