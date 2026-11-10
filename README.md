@@ -44,7 +44,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 <img src="docs/agent-panel.png" alt="The Agent Panel: seven sessions, two working, one asking, one open and three closed, with the 5-hour and weekly usage at the bottom" width="280">
 
-- Every Claude Code session on your PC, old and current, in a narrow list over the right edge of the screen, newest first, with a search box. It takes no screen space: desktop icons and maximised windows keep their place, and the window you are working in covers it.
+- Every Claude Code session on your PC, old and current, in a narrow list over the right edge of the screen, newest first, with a search box. Drag its header to the top edge and it becomes a strip of tabs there, one per session, that scrolls sideways; drag it down again and it is the list once more (the tray menu switches it too, and the choice is kept). It takes no screen space either way: desktop icons and maximised windows keep their place, and the window you are working in covers it.
 - Each session shows its title (point at it to see the session's full folder path) and a `ctx` bar with how much of its context is used, as on the status line. The bottom of the panel shows your `5h` and `week` usage and when each resets. Both come from the claude-plus-fa status line, so a session that never ran with it shows no bar, and a usage figure not reported yet says *no figure yet*.
 - Double-click a closed session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
 - A little octopus sits beside every session, in the colour of the session's dot: green, it reads a tablet while the session works and blinks now and then while it is open; red, it looks puzzled with a question mark when the session asks you something; grey, it sleeps when the session is closed. The one beside the panel's title keeps its own purple.
@@ -139,7 +139,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `context-guard.py` | Handles the 90 % auto save, the compaction notes and the read-back |
 | `glm-fallback.py` | Shows the free-model switch dialog when the usage limit is reached |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
-| `agent-panel.pyw` | The Agent Panel on the right edge of the screen |
+| `agent-panel.pyw` | The Agent Panel on the right or the top edge of the screen |
 | `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
 | `agent-alert.html` | The alert shown when a session waits for your answer |
 | `mascot/` | The octopus: the logo (also the tray icon) and the panel's animation strips |
