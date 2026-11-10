@@ -39,9 +39,10 @@ ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
-STRIP = 45             # logical pixels: the top dock's strip, a 33 px tab centred in it (6 px above and below);
-                       # its bottom edge sits one pixel above a maximised Chrome's address box
-                       # (toolbar top y = 40, box top y = 46 at 100 %), so none of Chrome's tab strip shows under it
+STRIP = 46             # logical pixels: the top dock's strip, a 34 px tab centred in it (6 px above and below);
+                       # its bottom edge meets a maximised Chrome's address box (toolbar top y = 40, box top y = 46
+                       # at 100 %), so none of Chrome's tab strip shows under it
+SHADE = 8              # logical pixels: the drop shadow under the strip (see Shade)
 DROP_ROOM = 440        # logical pixels under the strip where its menus, tooltips and the set-aside list may open;
                        # the window region shows only the strip and whatever is open there
 TOP_ZONE = 120         # logical pixels: a drag released this close to the top edge docks the panel there
@@ -502,6 +503,142 @@ class Edge:
         pass
 
 
+# ---------- the top strip's drop shadow ----------
+WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
+# bound as prototypes of their own, so the argtypes pystray sets on the shared user32 functions never clash
+DefWindowProc = WNDPROC(("DefWindowProcW", user32))
+CreateWindowEx = ctypes.WINFUNCTYPE(wt.HWND, wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID)(
+    ("CreateWindowExW", user32))
+CreateDIBSection = ctypes.WINFUNCTYPE(ctypes.c_void_p, wt.HDC, ctypes.c_void_p, wt.UINT,
+                                      ctypes.POINTER(ctypes.c_void_p), wt.HANDLE, wt.DWORD)(("CreateDIBSection", gdi32))
+UpdateLayeredWindow = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.HDC, ctypes.c_void_p, ctypes.c_void_p, wt.HDC,
+                                         ctypes.c_void_p, wt.DWORD, ctypes.c_void_p, wt.DWORD)(
+    ("UpdateLayeredWindow", user32))
+SelectObject = ctypes.WINFUNCTYPE(ctypes.c_void_p, wt.HDC, ctypes.c_void_p)(("SelectObject", gdi32))
+CreateCompatibleDC = ctypes.WINFUNCTYPE(wt.HDC, wt.HDC)(("CreateCompatibleDC", gdi32))
+DeleteDC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HDC)(("DeleteDC", gdi32))
+GetDC = ctypes.WINFUNCTYPE(wt.HDC, wt.HWND)(("GetDC", user32))
+ReleaseDC = ctypes.WINFUNCTYPE(ctypes.c_int, wt.HWND, wt.HDC)(("ReleaseDC", user32))
+SHADE_RGB = (0, 0, 0)     # black, not Spark's navy: over a dark window the navy turned the shadow bluish, lighter
+                          # than what lay under it; a shadow may only darken
+SHADE_PEAK = 0.30         # its opacity right at the strip's edge; it fades to nothing SHADE px below
+
+
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [("style", wt.UINT), ("lpfnWndProc", WNDPROC), ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int), ("hInstance", wt.HINSTANCE), ("hIcon", wt.HICON),
+                ("hCursor", wt.HANDLE), ("hbrBackground", wt.HBRUSH), ("lpszMenuName", wt.LPCWSTR),
+                ("lpszClassName", wt.LPCWSTR)]
+
+
+class BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+                ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                ("biClrImportant", wt.DWORD)]
+
+
+class BLENDFUNCTION(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte), ("SourceConstantAlpha", ctypes.c_ubyte),
+                ("AlphaFormat", ctypes.c_ubyte)]
+
+
+class Shade:
+    """The drop shadow under the top strip. WebView2 draws no see-through pixels, so the shadow is a window of
+    its own: layered with per-pixel alpha (UpdateLayeredWindow), so whatever is below shows through it;
+    click-through (WS_EX_TRANSPARENT), never activated (WS_EX_NOACTIVATE), out of the taskbar and Alt+Tab
+    (WS_EX_TOOLWINDOW). It is owned by the panel, so it rises and sinks with it; an owned window sits above its
+    owner, so where the panel has something open under the strip (a menu, the hidden list) the shadow leaves
+    those pixels clear, and it looks as if it lay under the panel. Its own thread creates it and pumps its
+    messages."""
+
+    CLASS = "ClaudePlusFAAgentPanelShadow"
+
+    def __init__(self, owner):
+        self.owner, self.hwnd, self.lock = owner, None, threading.Lock()
+        self.shown, self.drawn = False, None
+        up = threading.Event()
+        threading.Thread(target=self.loop, args=(up,), daemon=True).start()
+        up.wait(5)
+
+    def loop(self, up):
+        try:
+            self.proc = WNDPROC(lambda h, m, w, l: DefWindowProc(h, m, w, l))  # kept alive with the window
+            inst = kernel32.GetModuleHandleW(None)
+            wc = WNDCLASSW(lpfnWndProc=self.proc, hInstance=inst, lpszClassName=self.CLASS)
+            user32.RegisterClassW(ctypes.byref(wc))
+            # WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE; WS_POPUP
+            self.hwnd = CreateWindowEx(0x80000 | 0x20 | 0x80 | 0x8000000, self.CLASS, "Agent Panel Shadow",
+                                       0x80000000, 0, 0, 1, 1, self.owner, None, inst, None)
+        finally:
+            up.set()
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    def set(self, place, holes=(), scale=1.0):
+        """place: (x, y, width) on screen of the strip's bottom edge, or None to hide the shadow. holes: what the
+        panel has open under the strip, as the page reports it ([x, y, w, h, radius], css px, window-relative)."""
+        with self.lock:
+            if not self.hwnd:
+                return
+            if place is None:
+                if self.shown:
+                    user32.ShowWindow(self.hwnd, 0)  # SW_HIDE
+                    self.shown = False
+                return
+            key = (tuple(place), tuple(tuple(h) for h in holes), scale)
+            if key != self.drawn:
+                self.draw(place, holes, scale)
+                self.drawn = key
+            if not self.shown:
+                user32.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE
+                self.shown = True
+
+    def draw(self, place, holes, s):
+        x, y, w = place
+        h = max(1, int(round(SHADE * s)))
+        r, g, b = SHADE_RGB
+        rows = []
+        for j in range(h):
+            # darkest at the strip's edge, easing out to nothing; premultiplied by alpha, as ULW_ALPHA needs
+            a = SHADE_PEAK * (1 - (j + 0.5) / h) ** 2
+            row = bytearray(bytes((round(b * a), round(g * a), round(r * a), round(255 * a))) * w)
+            mid = STRIP * s + j + 0.5  # this row's centre, in the panel window's pixels
+            for hx, hy, hw, hh, rad in holes:
+                x0, y0, x1, y1, rr = hx * s, hy * s, (hx + hw) * s, (hy + hh) * s, rad * s
+                if not y0 <= mid < y1:
+                    continue
+                dy = max(y0 + rr - mid, mid - (y1 - rr), 0)  # how far into a rounded corner this row is
+                inset = rr - max(rr * rr - dy * dy, 0) ** 0.5 if dy else 0
+                c0, c1 = max(int(x0 + inset), 0), min(int(round(x1 - inset)), w)
+                if c1 > c0:
+                    row[c0 * 4:c1 * 4] = bytes((c1 - c0) * 4)
+            rows.append(bytes(row))
+        bits = b"".join(rows)
+        bmi = BITMAPINFOHEADER(biSize=ctypes.sizeof(BITMAPINFOHEADER), biWidth=w, biHeight=-h, biPlanes=1,
+                               biBitCount=32)  # top-down, BI_RGB
+        screen = GetDC(None)
+        mem = CreateCompatibleDC(screen)
+        ptr = ctypes.c_void_p()
+        bmp = CreateDIBSection(mem, ctypes.byref(bmi), 0, ctypes.byref(ptr), None, 0)
+        ctypes.memmove(ptr, bits, len(bits))
+        old = SelectObject(mem, bmp)
+        blend = BLENDFUNCTION(0, 0, 255, 1)  # AC_SRC_OVER, no extra fade, AC_SRC_ALPHA
+        UpdateLayeredWindow(self.hwnd, screen, ctypes.byref(wt.POINT(x, y)), ctypes.byref(wt.SIZE(w, h)), mem,
+                            ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(blend), 2)  # ULW_ALPHA
+        SelectObject(mem, old)
+        gdi32.DeleteObject(bmp)
+        DeleteDC(mem)
+        ReleaseDC(None, screen)
+
+    def close(self):
+        if self.hwnd:
+            user32.PostMessageW(self.hwnd, 0x0010, 0, 0)  # WM_CLOSE: destroyed on its own thread
+
+
 # ---------- hotkey and tray, each on its own thread ----------
 def hotkey_loop(events):
     if not user32.RegisterHotKey(None, 1, 0x0002 | 0x0001 | 0x4000, ord("C")):  # Ctrl+Alt, no repeat
@@ -730,6 +867,7 @@ class Panel:
         ex = user32.GetWindowLongW(self.hwnd, -20)  # GWL_EXSTYLE
         user32.SetWindowLongW(self.hwnd, -20, (ex | 0x80) & ~0x40000)  # WS_EX_TOOLWINDOW, not WS_EX_APPWINDOW
         self.dock = Edge(self.hwnd)
+        self.shadow = Shade(self.hwnd)
         self.place()
         user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
@@ -810,6 +948,7 @@ class Panel:
         self.frame(dock)
         if dock != "top":
             user32.SetWindowRgn(self.hwnd, None, True)
+            self.shade(None)
             return
         s = self.scale()
         if width is None:
@@ -823,6 +962,17 @@ class Panel:
             gdi32.CombineRgn(rgn, rgn, part, 2)  # RGN_OR
             gdi32.DeleteObject(part)
         user32.SetWindowRgn(self.hwnd, rgn, True)  # the system owns the region from here
+        self.shade("top")
+
+    def shade(self, dock):
+        """The strip's drop shadow follows the strip: under its bottom edge while the panel shows on top, gone
+        while it is hidden, dragged as a column or docked on the right."""
+        if not getattr(self, "shadow", None):
+            return
+        if dock != "top" or not self.visible:
+            return self.shadow.set(None)
+        s, work = self.scale(), self.dock.work()
+        self.shadow.set((work.left, work.top + int(round(STRIP * s)), work.right - work.left), self.rects, s)
 
     def region(self, rects):
         """The page reports what it has open under the strip."""
@@ -905,13 +1055,14 @@ class Panel:
         if self.visible and user32.GetForegroundWindow() != self.hwnd:
             self.raise_panel()
             return
-        if self.visible:
+        self.visible = not self.visible
+        if not self.visible:
             user32.ShowWindow(self.hwnd, 0)  # SW_HIDE
+            self.shade(None)
         else:
             self.place()
             user32.ShowWindow(self.hwnd, 5)
             self.raise_panel()
-        self.visible = not self.visible
 
     def raise_panel(self):
         user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)  # HWND_TOPMOST, no move or size
@@ -1124,6 +1275,8 @@ class Panel:
             self.dock.release()
         if self.icon:
             self.icon.stop()
+        if getattr(self, "shadow", None):
+            self.shadow.close()
         self.alert.destroy()  # a hidden window left behind keeps the program running
         self.window.destroy()
 
