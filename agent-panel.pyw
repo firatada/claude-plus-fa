@@ -39,7 +39,9 @@ ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
-STRIP = 36             # logical pixels: the top dock's strip, a 28 px tab with 4 px above and a 4 px scrollbar below
+STRIP = 43             # logical pixels: the top dock's strip, a 33 px tab centred in it with its 4 px scrollbar below;
+                       # its bottom edge sits mid-way down the light gap over a maximised Chrome's address box
+                       # (toolbar top y = 40, box top y = 46 at 100 %), so none of Chrome's tab strip shows under it
 DROP_ROOM = 440        # logical pixels under the strip where its menus, tooltips and the set-aside list may open;
                        # the window region shows only the strip and whatever is open there
 TOP_ZONE = 120         # logical pixels: a drag released this close to the top edge docks the panel there

@@ -37,7 +37,8 @@
   --r-card: 14px; --r-ctl: 10px; --r-pill: 20px; --r-small: 6px;
   --edge: 16px;              /* every box and every heading starts here */
   --ease: cubic-bezier(.23, 1, .32, 1);
-  --strip: 36px;             /* the top dock's height: agent-panel.pyw STRIP */
+  --strip: 43px;             /* the top dock's height: agent-panel.pyw STRIP */
+  --tab: 33px;               /* the top dock's tabs and controls, centred in the strip */
   --card-shadow: var(--shadow);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
@@ -254,16 +255,17 @@ body.top {
 body.top header, body.top #bottom { display: contents; }
 body.top #grip { display: block; cursor: grab; }
 body.top h1 { display: none; }
-body.top .logo.mascot { width: 28px; height: 28px; }
-body.top svg.logo { width: 24px; height: 24px; }
-body.top #hide { margin-left: 0; min-width: 28px; min-height: 28px; }
-body.top .search { margin: 0; flex: 0 1 210px; min-width: 120px; min-height: 28px; }
+body.top .logo.mascot { width: 32px; height: 32px; }
+body.top svg.logo { width: 28px; height: 28px; }
+body.top #hide { margin-left: 0; min-width: var(--tab); min-height: var(--tab); }
+body.top .search { margin: 0; flex: 0 1 210px; min-width: 120px; min-height: var(--tab); }
 /* a narrow screen gives the tabs the room the reset times took */
 @media (max-width: 1400px) { body.top .rt { display: none; } }
-/* the cards are tabs in one row that scrolls sideways; the wheel scrolls it too */
+/* the cards are tabs in one row that scrolls sideways; the wheel scrolls it too. The tabs sit as
+   centred as the other controls; their 4 px scrollbar fits in the room below them */
 body.top #list {
   flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: flex-start; gap: 6px;
-  overflow-x: scroll; overflow-y: hidden; padding: 4px 4px 0; scrollbar-gutter: auto;
+  overflow-x: scroll; overflow-y: hidden; padding: calc((var(--strip) - var(--tab)) / 2) 4px 0; scrollbar-gutter: auto;
 }
 /* a row cut by the strip's end fades out there, so more tabs read as more to scroll to */
 body.top #list.more { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent); }
@@ -272,11 +274,11 @@ body.top #list.more.less { -webkit-mask-image: linear-gradient(to right, transpa
 body.top #list::-webkit-scrollbar { height: 4px; }
 body.top #list::-webkit-scrollbar-thumb { border: 0; border-radius: 2px; }
 body.top #list .card {
-  flex: none; width: 236px; height: 28px; margin: 0; padding: 0 10px 0 4px; gap: 6px; align-items: center;
+  flex: none; width: 236px; height: var(--tab); margin: 0; padding: 0 10px 0 4px; gap: 6px; align-items: center;
   border-radius: var(--r-ctl); --card-shadow: 0 0 0 0 transparent;
 }
 body.top #list .card:focus-visible { outline-offset: -2px; }
-body.top #list .av { width: 24px; height: 24px; }
+body.top #list .av { width: 28px; height: 28px; }
 body.top #list .body { flex-direction: row; align-items: center; gap: 8px; }
 body.top #list .t { flex: 1; min-width: 0; }
 body.top #list .name { font-size: 12px; }
@@ -290,14 +292,14 @@ body.top #list .sk i { margin: 2px 0 3px; }
 body.top .empty { flex: none; align-self: center; display: flex; align-items: center; gap: 10px; padding: 0 6px; white-space: nowrap; }
 body.top .empty button { display: inline; margin: 0; }
 body.top #footer {
-  flex: none; margin: 0; min-height: 28px; padding: 0 10px; border-radius: var(--r-ctl); white-space: nowrap;
+  flex: none; margin: 0; min-height: var(--tab); padding: 0 10px; border-radius: var(--r-ctl); white-space: nowrap;
   display: flex; align-items: center; gap: 4px;
 }
 body.top #footer:empty { display: none; }
 body.top #footer:hover { text-decoration: none; background: var(--surface2); }
 body.top #footer[aria-expanded="true"] { color: var(--blue); background: var(--surface2); }
 body.top #usage { flex: none; margin: 0; padding: 0; border: 0; display: flex; gap: 14px; }
-body.top .u { grid-template-columns: auto 28px auto; gap: 6px; height: 28px; }
+body.top .u { grid-template-columns: auto 28px auto; gap: 6px; height: var(--tab); }
 body.top .u span:last-child { min-width: 0; }
 /* a message about the whole panel, and one about a card, float under the strip */
 body.top #note { position: fixed; top: calc(var(--strip) + 6px); right: 16px; max-width: 420px; margin: 0; }
@@ -407,14 +409,17 @@ function tick(now) {
 }
 // On top the window shows only the strip and what is open under it: everything that floats there is
 // reported, at its laid-out place and corner radius, whenever it changes
-let regionKey = "";
+let regionKey = "", bridged = false;
 function syncRegion() {
   const rs = [...document.querySelectorAll(".pop, .tip, .say, #note:not(:empty), #drop.open")].map(e => {
     const r = parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0;
     return [e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight, r].map(Math.round);
   });
   const k = JSON.stringify(rs);
-  if (k === regionKey || !window.pywebview || !window.pywebview.api) return;
+  // pywebview puts an empty window.pywebview.api in place before it adds the methods: calling region()
+  // in that gap threw inside the frame loop, which then stopped for good (no menu, list or tooltip
+  // could show again, and the octopuses froze), so the bridge is used only once pywebviewready has fired
+  if (k === regionKey || !bridged) return;
   regionKey = k;
   api().region(rs);
 }
@@ -950,8 +955,8 @@ addEventListener("contextmenu", e => {
   // the menu key fires this on key-up, after its menu is already open
   if (menu && menu.contains(e.target)) return;
   const c = cardOf(e), s = c && find(c.dataset.id);
-  // a tab in the strip is too low to hold a menu: it opens just under the tab, covering none of it
-  const y = s && onTop() && list.contains(c) ? c.getBoundingClientRect().bottom + 4 : e.clientY;
+  // a tab in the strip is too low to hold a menu: it opens at the strip's bottom edge, covering none of it
+  const y = s && onTop() && list.contains(c) ? document.body.getBoundingClientRect().bottom : e.clientY;
   if (s) openMenu(s, c, e.clientX, y); else closeMenu();
 });
 box.addEventListener("keydown", e => {
@@ -1059,7 +1064,7 @@ window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); re
 document.body.classList.toggle("top", window.DOCK === "top");
 placeHide();
 render();
-addEventListener("pywebviewready", () => api().ready());
+addEventListener("pywebviewready", () => { bridged = true; api().ready(); });
 </script>
 </body>
 </html>
