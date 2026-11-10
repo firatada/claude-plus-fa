@@ -198,9 +198,9 @@ def running():
             continue
         if o.get("sessionId") and o.get("pid") and alive(o["pid"]):
             # waitingFor is set while a prompt in the session (a permission question, a dialog) waits
-            # for an answer; the status alone still says "busy" then
+            # for an answer; the status then says "busy" (older versions) or "waiting" (2.1.319)
             out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"],
-                                   "waiting": o.get("waitingFor")}
+                                   "waiting": o.get("waitingFor") or (o.get("status") == "waiting" or None)}
     return out
 
 
@@ -636,7 +636,7 @@ class AlertApi:
         self._p = panel
 
     def ready(self):
-        self._p.alert_ready = True
+        self._p.alert_up()
 
     def go(self, sid):
         self._p.alert_go(sid)
@@ -691,11 +691,6 @@ class Panel:
         user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
         self.icon = tray(self.events, self.opts)
-        self.alert_hwnd = own_window(ALERT_TITLE, visible=False)
-        if self.alert_hwnd:
-            ex = user32.GetWindowLongW(self.alert_hwnd, -20)
-            # a tool window (no taskbar button) that never takes the keyboard: WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-            user32.SetWindowLongW(self.alert_hwnd, -20, (ex | 0x80 | 0x08000000) & ~0x40000)
         self.last_scan = self.last_live = 0
         while True:
             try:
@@ -798,8 +793,13 @@ class Panel:
         already in front is not announced: its question is on screen."""
         waiting = [s for s in self.sessions if s["status"] and s.get("waiting")]
         ids = {s["id"] for s in waiting}
+        self.alerted &= ids  # a session that stops waiting and asks again is announced again
+        if not self.alert_ready:
+            return  # nothing counts as announced before the alert can show it (a session waiting at start)
+        # one whose window is in front is not marked announced, so it is announced once that window
+        # is no longer in front, if it still waits
         fresh = [s for s in waiting if s["id"] not in self.alerted and not self.in_front(s)]
-        self.alerted = ids  # a session that stops waiting and asks again is announced again
+        self.alerted |= {s["id"] for s in fresh}
         before = list(self.alert_ids)
         self.alert_ids = [i for i in self.alert_ids if i in ids]
         if self.opts["alerts"]:
@@ -813,6 +813,16 @@ class Panel:
             return False
         name = s.get("name")
         return not name or name in window_title(hwnd)  # a terminal showing another tab does not count
+
+    def alert_up(self):
+        """The alert page has loaded. Its window is looked up only now: pywebview makes a second window
+        on another thread while main() runs, so at main()'s start it may not exist yet."""
+        self.alert_hwnd = own_window(ALERT_TITLE, visible=False)
+        if self.alert_hwnd:
+            ex = user32.GetWindowLongW(self.alert_hwnd, -20)
+            # a tool window (no taskbar button) that never takes the keyboard: WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+            user32.SetWindowLongW(self.alert_hwnd, -20, (ex | 0x80 | 0x08000000) & ~0x40000)
+            self.alert_ready = True
 
     def show_alert(self, knock=False):
         if not self.alert_hwnd or not self.alert_ready:

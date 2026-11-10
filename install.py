@@ -9,7 +9,7 @@
 #   agent-alert.html -> ~/.claude           (the alert shown when a session waits for an answer)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
-import ctypes, json, os, shutil, subprocess, sys, time, winreg
+import ctypes, json, os, shutil, stat, subprocess, sys, time, winreg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -23,6 +23,18 @@ HOOK_TIMEOUT = 3600  # the Yes/No dialog waits inside the hook
 PANEL = os.path.join(CLAUDE_DIR, "agent-panel.pyw")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "ClaudePlusFA agent panel"
+
+
+def remove_tree(path):
+    """A folder deleted whole, read-only parts too: copytree gives the copy its source's read-only
+    flag, and shutil.rmtree cannot delete a read-only folder, so a reinstall then failed to copy."""
+    def again(func, p, _):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, **({"onexc": again} if sys.version_info >= (3, 12) else {"onerror": again}))
 
 
 def copy_files():
@@ -126,7 +138,7 @@ def install_panel():
     shutil.copy2(os.path.join(HERE, "agent-panel.html"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-alert.html"), CLAUDE_DIR)
     # replaced whole, so strips of an earlier mascot do not linger
-    shutil.rmtree(os.path.join(CLAUDE_DIR, "agent-panel-mascot"), ignore_errors=True)
+    remove_tree(os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
     shutil.copytree(os.path.join(HERE, "mascot"), os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
     print("copied  agent-panel.pyw, agent-panel.html, agent-alert.html and agent-panel-mascot -> %s" % CLAUDE_DIR)
     r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywebview", "pystray", "pillow"],
