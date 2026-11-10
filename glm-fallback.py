@@ -31,7 +31,7 @@ BACK = {"window": RETURN_TITLE, "title": "Usage Limit Reset: %(folder)s",
         "no": "Not Now", "yes": "Continue With Claude"}
 
 # The question is the app's own themed modal (mindmap design.md "No Native Popups"), drawn in a
-# WebView2 window by pywebview, which the installer puts in for the Agent Panel. Same Afiniti
+# WebView2 window by pywebview, which the installer puts in for the Agent Panel. Same
 # Spark tokens as agent-panel.html. Shape per design-dashboard.md "Modals": a title naming the
 # thing, an X, the body with an amber callout for the side effect, Cancel and a confirm that
 # names its action, side by side and equally wide. Above the title a brand line says the window
