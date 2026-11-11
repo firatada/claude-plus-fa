@@ -387,9 +387,16 @@ def press(*keys):
         user32.keybd_event(k, 0, 2, 0)
 
 
-def focus_session(s):
-    """Raise the window of an open session where it was (restored if minimised). In a terminal holding several tabs,
-    step through them until the one titled with the session's name is showing."""
+def shown_name(title):
+    """The name a terminal title shows: Claude Code titles its tab "<status glyph> <name>"."""
+    return re.sub(r"^\W+", "", title or "").strip()
+
+
+def focus_session(s, others=()):
+    """Raise the window of an open session where it was (restored if minimised). When its title shows another
+    listed session's name (others: those names, through shown_name), the window is a terminal holding several
+    session tabs: step through them until the one titled with this session's name is showing. Any other title
+    (a new session's "✳ Claude Code", or anything else) sends no key: the window is only raised."""
     hwnd = s.get("pid") and window_of(s["pid"])
     if not hwnd:
         return False
@@ -400,7 +407,8 @@ def focus_session(s):
         press(0x12)  # a lone Alt lets this process take the foreground
         user32.SetForegroundWindow(hwnd)
     name = s.get("name")
-    if name and name not in window_title(hwnd):
+    title = window_title(hwnd)
+    if name and name not in title and shown_name(title) in others:
         for _ in range(20):
             if user32.GetForegroundWindow() != hwnd:
                 break
@@ -1362,6 +1370,11 @@ class Panel:
         name = s.get("name")
         return not self.shared(s, hwnd) or not name or name in window_title(hwnd)
 
+    def other_names(self, s):
+        """The names every other listed session goes by (its name, its title), as a terminal tab would show them."""
+        names = {shown_name(n) for o in self.sessions if o["id"] != s["id"] for n in (o.get("name"), o.get("title"))}
+        return names - {"", shown_name(s.get("name"))}
+
     def shared(self, s, hwnd):
         """Another open session shows in the same window (tabs of one terminal). Only then does the title tell which
         tab shows: a terminal holding one session may carry any title (a new session's says "Claude Code")."""
@@ -1555,7 +1568,7 @@ class Panel:
         self.alert_ids = [i for i in self.alert_ids if i != sid]
         self.show_alert()
         if s and s["status"]:
-            focus_session(s)
+            focus_session(s, self.other_names(s))
 
     def alert_dismiss(self):
         self.alert_ids = []
@@ -1609,7 +1622,7 @@ class Panel:
             if hwnd and self.shown_in_front(s, hwnd):
                 user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
                 return None
-            return None if focus_session(s) else err("Already open, but its window was not found. Look for it on the taskbar.")
+            return None if focus_session(s, self.other_names(s)) else err("Already open, but its window was not found. Look for it on the taskbar.")
         return ok("Double-click to open it.")
 
     def open(self, sid):
