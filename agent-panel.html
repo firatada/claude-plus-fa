@@ -935,19 +935,24 @@ addEventListener("click", e => { if (swallow) { swallow = false; e.stopPropagati
 // An open session comes forward on a single click; a closed one opens only on a double click,
 // so a stray click never starts a session.
 // the answer to a single click waits a moment, so a double click never flashes "Double-click to open it." first
-let dblAt = 0;
+// A click on an open session whose window is already in front minimises it, so the second click of a double
+// click is ignored: a double click counts as one click there, not as raise and minimise.
+let dblAt = 0, firstClick = null;
 for (const box of [list, $("drop")]) {
 box.addEventListener("click", e => {
   const c = cardOf(e);
-  if (!c) return;
-  api().click(c.dataset.id).then(r => setTimeout(() => { if (Date.now() - dblAt > (state.dbl || 500) + 100) reply(c)(r); }, (state.dbl || 500) + 50));
+  if (!c || e.detail > 1) return;
+  const p = api().click(c.dataset.id);
+  firstClick = {id: c.dataset.id, p};
+  p.then(r => setTimeout(() => { if (Date.now() - dblAt > (state.dbl || 500) + 100) reply(c)(r); }, (state.dbl || 500) + 50));
 });
 box.addEventListener("dblclick", e => {
   const c = cardOf(e);
   if (!c) return;
   dblAt = Date.now();
   // nothing to open (its folder is gone, or it is open already): the single click's answer stands
-  api().open(c.dataset.id).then(r => r ? reply(c)(r) : api().click(c.dataset.id).then(reply(c)));
+  const first = firstClick && firstClick.id === c.dataset.id ? firstClick.p : Promise.resolve(null);
+  api().open(c.dataset.id).then(r => r ? reply(c)(r) : first.then(reply(c)));
 });
 addEventListener("contextmenu", e => {
   if (e.target.closest && e.target.closest("input")) return;  // the search box keeps its own Cut/Copy/Paste
