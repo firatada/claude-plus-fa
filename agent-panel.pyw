@@ -1,6 +1,7 @@
 # Agent Panel: every Claude Code session on this PC, in a narrow list over the right
 # edge of the screen, or in a strip of tabs over the top edge (drag its header there; tray: Dock). Double-click a closed session to resume it in its own folder, in a new
-# terminal; click an open one to bring its window forward. Tray icon: click to show or hide;
+# terminal; click an open one to bring its window forward, click it again to minimise it. While a session's own
+# window is in front the panel stays over it, as if that window were part of the panel. Tray icon: click to show or hide;
 # Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
 # sounds (tray menu: Alerts, Alert Sound).
@@ -48,6 +49,7 @@ DROP_ROOM = 440        # logical pixels under the strip where its menus, tooltip
 TOP_ZONE = 120         # logical pixels: a drag released this close to the top edge docks the panel there
 SCAN_EVERY = 15        # seconds
 LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
+LIFT_AGAIN = (0.1, 0.2, 0.4, 0.8)  # seconds between looks after a session's window comes to the front (stay_over)
 CREATE_NEW_CONSOLE = 0x10
 CREATE_NO_WINDOW = 0x08000000
 
@@ -361,14 +363,18 @@ def window_title(hwnd):
     return buf.value
 
 
+console_lock = threading.Lock()  # a process has one console: attaching to two at once from two threads mixes them
+
+
 def window_of(pid):
     """The top window showing a console process: the console itself, or the terminal
     (Windows Terminal) that owns its pseudo console."""
-    kernel32.FreeConsole()
-    if not kernel32.AttachConsole(int(pid)):
-        return None
-    hwnd = kernel32.GetConsoleWindow()
-    kernel32.FreeConsole()
+    with console_lock:
+        kernel32.FreeConsole()
+        if not kernel32.AttachConsole(int(pid)):
+            return None
+        hwnd = kernel32.GetConsoleWindow()
+        kernel32.FreeConsole()
     if not hwnd:
         return None
     return user32.GetAncestor(hwnd, 3) or hwnd  # GA_ROOTOWNER
@@ -403,6 +409,42 @@ def focus_session(s):
             if name in window_title(hwnd):
                 break
     return True
+
+
+def own(hwnd):
+    """A window of this process: the panel, its shadow, the alert."""
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value == os.getpid()
+
+
+def top_window():
+    """The window on top of the ordinary (not topmost) windows, leaving out this process's own: the one the user
+    sees in front. Hidden, cloaked (a background UWP frame), minimised and empty windows do not count."""
+    h = user32.GetTopWindow(None)
+    while h:
+        r = wt.RECT()
+        cloaked = ctypes.c_int(0)
+        dwmapi.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)  # DWMWA_CLOAKED
+        if (user32.IsWindowVisible(h) and not cloaked.value and not user32.IsIconic(h) and not own(h)
+                and not user32.GetWindowLongW(h, -20) & 0x8  # WS_EX_TOPMOST: the taskbar, the alert
+                and user32.GetWindowRect(h, ctypes.byref(r)) and r.right > r.left and r.bottom > r.top):
+            return h
+        h = user32.GetWindow(h, 2)  # GW_HWNDNEXT
+    return None
+
+
+# Following the foreground window: a WinEvent hook (no polling) tells the panel each time another window comes to
+# the front, so it knows which window was in front before a click on the panel took the foreground, and can stay
+# over a session's own window.
+WINEVENTPROC = ctypes.WINFUNCTYPE(None, wt.HANDLE, wt.DWORD, wt.HWND, wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)
+SetWinEventHook = ctypes.WINFUNCTYPE(wt.HANDLE, wt.DWORD, wt.DWORD, wt.HMODULE, WINEVENTPROC, wt.DWORD, wt.DWORD,
+                                     wt.DWORD)(("SetWinEventHook", user32))
+user32.UnhookWinEvent.argtypes = [wt.HANDLE]
+user32.GetTopWindow.restype = user32.GetWindow.restype = wt.HWND
+user32.GetTopWindow.argtypes = [wt.HWND]
+user32.GetWindow.argtypes = [wt.HWND, wt.UINT]
+dwmapi.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
 
 
 # ---------- hide, delete, close ----------
@@ -949,6 +991,8 @@ class Panel:
         self.rects = []  # what the page has open under the strip, in css px: [x, y, w, h, radius]
         self.idle_since = {}  # GLM sessions on their way back to Claude: since when each has been idle
         self.nc = None  # the DWM frame policy last set (see frame())
+        self.front = None  # the last window that came to the front, not counting the panel's own (follow_front())
+        self.wins = {}  # pid of an open session -> the window showing it (window_of), kept between scans
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
@@ -981,6 +1025,7 @@ class Panel:
         self.shadow = Shade(self.hwnd)
         self.place()
         user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
+        threading.Thread(target=self.follow_front, daemon=True).start()
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
         self.icon = tray(self.events, self.opts)
         self.last_scan = self.last_live = 0
@@ -1023,6 +1068,8 @@ class Panel:
                             time.strftime("%H:%M"), e,
                             "The list is from the last good read" if self.sessions else "No read has worked yet",
                             SCAN_EVERY))
+                self.wins = {}  # every scan looks each window up afresh (a tab dragged into another window)
+                self.find_windows()
                 self.push()
                 self.check_alerts()
                 self.watch_return()
@@ -1203,9 +1250,122 @@ class Panel:
                 except OSError:
                     pass
         self.sessions.sort(key=lambda s: s["mtime"], reverse=True)
+        self.find_windows()
         self.push()
         self.check_alerts()
         self.watch_return()
+
+    # ----- a session's own window counts as part of the panel -----
+    def follow_front(self):
+        """Its own thread: a WinEvent hook on the foreground window. Out of context, so Windows calls back on this
+        thread's message loop; the panel's own windows are skipped, so self.front keeps the window that was in front
+        before a click on the panel made the panel the foreground window. Not WINEVENT_SKIPOWNPROCESS: that also
+        drops the event when the panel itself brings a session's window forward (a card click), the very case
+        where the panel must stay over it."""
+        moves = [None]  # the hook on the front session window's moves, while one is in front
+
+        def on_front(hook, event, hwnd, obj, child, thread, ms):
+            if not hwnd or own(hwnd):
+                return
+            self.front = hwnd
+            if moves[0]:
+                user32.UnhookWinEvent(moves[0])
+                moves[0] = None
+            if hwnd in self.wins.values():
+                self.lift()
+                threading.Thread(target=self.stay_over, args=(hwnd,), daemon=True).start()
+                # maximising or restoring the window already in front raises it again without a foreground event;
+                # Windows reports it as a location change. Only that window's process is followed, and only while
+                # it is in front, as location changes come by the hundred while anything moves.
+                pid = wt.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                moves[0] = SetWinEventHook(0x800B, 0x800B, None, self.move_proc, pid.value, 0, 0)  # LOCATIONCHANGE
+
+        def on_move(hook, event, hwnd, obj, child, thread, ms):
+            if obj == 0 and hwnd == self.front and self.under(hwnd):  # OBJID_WINDOW
+                self.lift()
+        self.front_proc, self.move_proc = WINEVENTPROC(on_front), WINEVENTPROC(on_move)  # kept alive with the hooks
+        fg = user32.GetForegroundWindow()
+        self.front = None if not fg or own(fg) else fg
+        if not SetWinEventHook(3, 3, None, self.front_proc, 0, 0, 0):  # EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT
+            return
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    def lift(self):
+        """Over a session's own window that has just come to the front: the panel, and with it the shadow it owns,
+        rise to the top of the ordinary windows without being activated, so the keyboard stays in the terminal.
+        Any other window in front covers the panel as before (it is not topmost)."""
+        if not self.visible or self.dragging:
+            return
+        flags = 0x0001 | 0x0002 | 0x0010  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST, then
+        user32.SetWindowPos(self.hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST: the top of the ordinary windows
+
+    def stay_over(self, hwnd):
+        """The foreground event can arrive before the terminal has raised itself (its own thread does that, a moment
+        later), so the window can still end up over the panel. Look again a few times in the next 1.5 s, while that
+        window stays in front, and lift the panel whenever it is under it."""
+        for wait in LIFT_AGAIN:
+            time.sleep(wait)
+            if user32.GetForegroundWindow() != hwnd:
+                return
+            if self.under(hwnd):
+                self.lift()
+
+    def under(self, hwnd):
+        """The panel is below this window in z-order."""
+        h = user32.GetWindow(hwnd, 2)  # GW_HWNDNEXT
+        while h:
+            if h == self.hwnd:
+                return True
+            h = user32.GetWindow(h, 2)
+        return False
+
+    def find_windows(self):
+        """The window of every open session, looked up once per process and kept: lift() runs inside the hook's
+        callback and must not attach to consoles. A session window already in front when it is first found (just
+        opened from the panel, before Claude Code wrote its session file) gets the panel over it at once."""
+        live = {s["pid"] for s in self.sessions if s["status"] and s.get("pid")}
+        before = set(self.wins.values())
+        wins = {p: h for p, h in self.wins.items() if p in live and user32.IsWindow(h)}
+        for pid in live - set(wins):
+            h = window_of(pid)
+            if h:
+                wins[pid] = h
+        self.wins = wins
+        fg = user32.GetForegroundWindow()
+        if fg in wins.values() and fg not in before:
+            self.lift()
+
+    def window_for(self, s):
+        h = window_of(s["pid"]) if s.get("pid") else None
+        if h:
+            wins = dict(self.wins)
+            wins[s["pid"]] = h
+            self.wins = wins
+        return h
+
+    def shown_in_front(self, s, hwnd):
+        """The session's window is showing and in front: it was the foreground window before the click on the panel
+        (or still is, when the click did not activate the panel), or it is the top ordinary window. In a terminal
+        holding several tabs, only while the session's own tab shows."""
+        if user32.IsIconic(hwnd):
+            return False
+        fg = user32.GetForegroundWindow()
+        if fg and own(fg):
+            fg = self.front
+        if fg != hwnd and top_window() != hwnd:
+            return False
+        name = s.get("name")
+        return not self.shared(s, hwnd) or not name or name in window_title(hwnd)
+
+    def shared(self, s, hwnd):
+        """Another open session shows in the same window (tabs of one terminal). Only then does the title tell which
+        tab shows: a terminal holding one session may carry any title (a new session's says "Claude Code")."""
+        return any(h == hwnd for p, h in self.wins.items() if p != s.get("pid"))
 
     # ----- back to Claude after a GLM fallback (see RETURN_DIR) -----
     def watch_return(self):
@@ -1444,6 +1604,11 @@ class Panel:
         if not folder_exists(s):
             return err("Its folder was deleted. Hide or delete it from its menu.")
         if s["status"]:
+            # a second click on the card of a window already in front puts it away again
+            hwnd = self.window_for(s)
+            if hwnd and self.shown_in_front(s, hwnd):
+                user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+                return None
             return None if focus_session(s) else err("Already open, but its window was not found. Look for it on the taskbar.")
         return ok("Double-click to open it.")
 
