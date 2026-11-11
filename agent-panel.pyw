@@ -406,6 +406,11 @@ def focus_session(s, others=()):
     if user32.GetForegroundWindow() != hwnd:
         press(0x12)  # a lone Alt lets this process take the foreground
         user32.SetForegroundWindow(hwnd)
+    # the foreground window is not always on top: another Windows Terminal window was seen staying over it, so
+    # the user saw nothing come up. Put it at the top of the ordinary windows too (topmost, then not topmost).
+    flags = 0x0001 | 0x0002 | 0x0040  # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+    user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
+    user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
     name = s.get("name")
     title = window_title(hwnd)
     if name and name not in title and shown_name(title) in others:
@@ -1358,14 +1363,15 @@ class Panel:
 
     def shown_in_front(self, s, hwnd):
         """The session's window is showing and in front: it was the foreground window before the click on the panel
-        (or still is, when the click did not activate the panel), or it is the top ordinary window. In a terminal
-        holding several tabs, only while the session's own tab shows."""
+        (or still is, when the click did not activate the panel) AND it is the top ordinary window right now. The
+        foreground alone is not enough: a raised window can be the foreground window while another one covers it.
+        In a terminal holding several tabs, only while the session's own tab shows."""
         if user32.IsIconic(hwnd):
             return False
         fg = user32.GetForegroundWindow()
         if fg and own(fg):
             fg = self.front
-        if fg != hwnd and top_window() != hwnd:
+        if fg != hwnd or top_window() != hwnd:
             return False
         name = s.get("name")
         return not self.shared(s, hwnd) or not name or name in window_title(hwnd)
@@ -1622,7 +1628,10 @@ class Panel:
             if hwnd and self.shown_in_front(s, hwnd):
                 user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
                 return None
-            return None if focus_session(s, self.other_names(s)) else err("Already open, but its window was not found. Look for it on the taskbar.")
+            if not focus_session(s, self.other_names(s)):
+                return err("Already open, but its window was not found. Look for it on the taskbar.")
+            self.lift()  # the window was just put on top of the ordinary windows: the panel goes back over it
+            return None
         return ok("Double-click to open it.")
 
     def open(self, sid):
