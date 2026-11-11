@@ -967,7 +967,8 @@ addEventListener("contextmenu", e => {
 box.addEventListener("keydown", e => {
   const c = e.target.closest && e.target.closest(".card[data-id]"), s = c && find(c.dataset.id);
   if (!s) return;
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); (s.status || !s.here ? api().click(s.id) : api().open(s.id)).then(reply(c)); }
+  // a held key repeats about 30 times a second: only its first press counts, or a closed card opened once per repeat
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (e.repeat) return; (s.status || !s.here ? api().click(s.id) : api().open(s.id)).then(reply(c)); }
   else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
     e.preventDefault();
     const r = c.getBoundingClientRect();
