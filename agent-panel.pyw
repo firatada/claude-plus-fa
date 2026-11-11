@@ -1,11 +1,11 @@
 # Agent Panel: every Claude Code session on this PC, in a narrow list over the right
 # edge of the screen, or in a strip of tabs over the top edge (drag its header there; tray: Dock). Double-click a closed session to resume it in its own folder, in a new
 # terminal; click an open one to bring its window forward, click it again to minimise it. While a session's own
-# window is in front the panel stays over it, as if that window were part of the panel. Tray icon: click to show or hide;
-# Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
+# window is in front the panel stays over it, as if that window were part of the panel. Tray icon: the 5-hour usage
+# figure in its level colour (the octopus until there is one); click it to show or hide; Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
 # sounds (tray menu: Alerts, Alert Sound).
-import base64, ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, threading, time
+import base64, ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, tempfile, threading, time
 import webview
 
 HOME = os.path.expanduser("~")
@@ -842,6 +842,89 @@ def logo_image(size):
     return tile.resize((size, size), Image.LANCZOS)
 
 
+# The 5h figure in the tray: the thresholds and colours of the 5h bar (agent-panel.html bar(): --green under
+# 50, --gold under 80, --red from 80; statusline.py bar() uses the same steps)
+LEVELS = ((50, (0x16, 0xa3, 0x4a)), (80, (0xf5, 0xa6, 0x23)), (101, (0xe1, 0x1d, 0x48)))
+INK = ((0x0a, 0x1a, 0x40), (0xff, 0xff, 0xff))  # Spark --text and white: each tile takes the one of higher contrast
+
+
+def tray_size():
+    """The small icon size Windows draws tray icons at (16 px at 100 %), at the system DPI the taskbar uses."""
+    try:
+        return user32.GetSystemMetricsForDpi(49, user32.GetDpiForSystem()) or 16  # SM_CXSMICON
+    except AttributeError:
+        return user32.GetSystemMetrics(49) or 16
+
+
+def contrast(a, b):
+    def lum(c):
+        r, g, b = ((v / 255.0) / 12.92 if v <= 10 else ((v / 255.0 + 0.055) / 1.055) ** 2.4 for v in c)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def tray_font(px):
+    """Bahnschrift Bold Condensed: its tall narrow digits keep two of them legible at 16 px; Segoe UI Bold if not."""
+    from PIL import ImageFont
+    fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    try:
+        f = ImageFont.truetype(os.path.join(fonts, "bahnschrift.ttf"), px)
+        f.set_variation_by_name("Bold Condensed")
+        return f
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        return ImageFont.truetype(os.path.join(fonts, "segoeuib.ttf"), px)
+    except OSError:
+        return ImageFont.load_default(px)
+
+
+def usage_image(pct, n):
+    """The 5h figure drawn at n px: a rounded tile in the level's colour (so it shows on light and dark taskbars),
+    the number on it, '!' once the limit is reached (three digits do not fit)."""
+    from PIL import Image, ImageDraw
+    pct = int(round(max(0, min(100, pct))))
+    bg = next(c for top, c in LEVELS if pct < top)
+    ink = max(INK, key=lambda t: contrast(bg, t))
+    text = "!" if pct >= 100 else str(pct)
+    im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle((0, 0, n - 1, n - 1), radius=max(2, n // 5), fill=bg)
+    for px in range(n * 2, 4, -1):  # the largest size that leaves 1 px each side and 2 px above and below
+        f = tray_font(px)
+        l, t, r, b = d.textbbox((0, 0), text, font=f)
+        if r - l <= n - 2 and b - t <= n - 4:
+            break
+    d.text(((n - (r - l)) / 2 - l, (n - (b - t)) / 2 - t), text, font=f, fill=ink)
+    return im
+
+
+def five_hour(lim, now):
+    """(percent, reset time) of the 5h window, or None when there is no figure or it is past its reset."""
+    v = lim.get("five_hour")
+    try:
+        if v and v.get("used_percentage") is not None and float(v.get("resets_at")) > now:
+            return float(v["used_percentage"]), time.strftime("%H:%M", time.localtime(float(v["resets_at"])))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def tray_key():
+    """What the tray shows: (icon size, 5h percent or None while there is no current figure, reset time)."""
+    u = five_hour(read_limits(), time.time())
+    return (tray_size(),) + ((None, None) if u is None else (int(round(max(0, min(100, u[0])))), u[1]))
+
+
+def tray_look(key):
+    """(image, tooltip) for a tray_key(): the 5h figure, or the octopus while there is none."""
+    n, pct, reset = key
+    if pct is None:
+        return logo_image(n), "Agent Panel: 5h no figure yet"
+    return usage_image(pct, n), "Agent Panel: 5h %d %%, resets %s" % (pct, reset)
+
+
 def load_opts():
     opts = {"alerts": True, "sound": True, "dock": "right"}
     try:
@@ -859,9 +942,24 @@ def save_opts(opts):
 def tray(events, opts):
     try:
         import pystray
-        img = logo_image(64)
+        from pystray._util import win32
     except ImportError:
         return None
+
+    class Icon(pystray.Icon):
+        def _assert_icon_handle(self):
+            """pystray asks LoadImage for the default size (SM_CXICON, 32 px at 100 %) and the tray shrinks that to
+            16; the figure is drawn at the tray's own size, so it is loaded at exactly that size."""
+            if self._icon_handle:
+                return
+            n = self.icon.width
+            fd, path = tempfile.mkstemp(".ico")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    self.icon.save(f, format="ICO", sizes=[(n, n)])
+                self._icon_handle = win32.LoadImage(None, path, win32.IMAGE_ICON, n, n, win32.LR_LOADFROMFILE)
+            finally:
+                os.remove(path)
     menu = pystray.Menu(
         pystray.MenuItem("Show or Hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
@@ -872,7 +970,9 @@ def tray(events, opts):
         pystray.MenuItem("Alerts", lambda: events.put("opt:alerts"), checked=lambda _: opts["alerts"]),
         pystray.MenuItem("Alert Sound", lambda: events.put("opt:sound"), checked=lambda _: opts["sound"]),
         pystray.MenuItem("Quit", lambda: events.put("quit")))
-    icon = pystray.Icon("agent-panel", img, "Agent Panel", menu)
+    key = tray_key()
+    icon = Icon("agent-panel", *tray_look(key), menu=menu)
+    icon.key = key
     icon.run_detached()
     return icon
 
@@ -1607,7 +1707,16 @@ class Panel:
                            "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
                 "scanned": self.scanned, "error": self.error, "dbl": user32.GetDoubleClickTime()}
 
+    def tray_update(self):
+        """The tray follows the 5h figure: redrawn only when the number, its reset or the icon size changes,
+        and back to the octopus once the figure is gone or past its reset."""
+        key = tray_key()
+        if self.icon and key != self.icon.key:
+            self.icon.key = key
+            self.icon.icon, self.icon.title = tray_look(key)
+
     def push(self, force=False):
+        self.tray_update()
         if not self.page_ready:
             return
         with self.lock:
