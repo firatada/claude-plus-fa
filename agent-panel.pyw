@@ -49,6 +49,7 @@ DROP_ROOM = 440        # logical pixels under the strip where its menus, tooltip
 TOP_ZONE = 120         # logical pixels: a drag released this close to the top edge docks the panel there
 SCAN_EVERY = 15        # seconds
 LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
+LAUNCH_WAIT = 8        # seconds a session opened from the panel is not opened again while Claude Code starts
 LIFT_AGAIN = (0.1, 0.2, 0.4, 0.8)  # seconds between looks after a session's window comes to the front (stay_over)
 CREATE_NEW_CONSOLE = 0x10
 CREATE_NO_WINDOW = 0x08000000
@@ -1006,6 +1007,8 @@ class Panel:
         self.nc = None  # the DWM frame policy last set (see frame())
         self.front = None  # the last window that came to the front, not counting the panel's own (follow_front())
         self.wins = {}  # pid of an open session -> the window showing it (window_of), kept between scans
+        self.opening = threading.Lock()  # open() calls arrive on threads of their own, at once
+        self.launched = {}  # session id -> when open() started it; cleared once ~/.claude/sessions shows it
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
@@ -1253,6 +1256,8 @@ class Panel:
         known = {s["id"] for s in self.sessions}
         if any(sid not in known for sid in live):
             self.last_scan = 0  # a session the list does not have yet: scan now, not in up to 15 s
+        for sid in [i for i in self.launched if i in live]:
+            self.launched.pop(sid, None)  # it is running now: the status guards it from here on
         for s in self.sessions:
             run = live.get(s["id"]) or {}
             s["status"], s["pid"], s["waiting"] = run.get("status"), run.get("pid"), run.get("waiting")
@@ -1635,11 +1640,19 @@ class Panel:
         return ok("Double-click to open it.")
 
     def open(self, sid):
+        """Start a closed session, once. Each call runs on its own thread, and a held Enter or Space on a card sends
+        one call per key repeat (about 30 a second), so a launch under way blocks every further call for the same
+        session until Claude Code registers it in ~/.claude/sessions (read here afresh, not the list's status, which
+        can be LIVE_EVERY old) or LAUNCH_WAIT passes."""
         s = self.find(sid)
-        if s and folder_exists(s) and not s["status"]:
+        if not s or not folder_exists(s) or s["status"]:
+            return None
+        with self.opening:
+            if sid in running() or time.time() - self.launched.get(sid, 0) < LAUNCH_WAIT:
+                return None
+            self.launched[sid] = time.time()
             open_session(s)
-            return ok("Opening " + short(s["title"], end="…"))
-        return None
+        return ok("Opening " + short(s["title"], end="…"))
 
     def set_hidden(self, sid, on):
         (self.hidden.add if on else self.hidden.discard)(sid)
