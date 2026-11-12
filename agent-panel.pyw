@@ -1379,7 +1379,7 @@ class Panel:
         thread's message loop; the panel's own windows are skipped, so self.front keeps the window that was in front
         before a click on the panel made the panel the foreground window. Not WINEVENT_SKIPOWNPROCESS: that also
         drops the event when the panel itself brings a session's window forward (a card click), the very case
-        where the panel must stay over it."""
+        where the panel must go right under it."""
         moves = [None]  # the hook on the front session window's moves, while one is in front
 
         def on_front(hook, event, hwnd, obj, child, thread, ms):
@@ -1390,18 +1390,18 @@ class Panel:
                 user32.UnhookWinEvent(moves[0])
                 moves[0] = None
             if hwnd in self.wins.values():
-                self.lift()
+                self.lift(hwnd)
                 threading.Thread(target=self.stay_over, args=(hwnd,), daemon=True).start()
-                # maximising or restoring the window already in front raises it again without a foreground event;
-                # Windows reports it as a location change. Only that window's process is followed, and only while
+                # maximising, restoring or dragging the window already in front can raise it again without a
+                # foreground event; Windows reports it as a location change. Only that window's process is followed, and only while
                 # it is in front, as location changes come by the hundred while anything moves.
                 pid = wt.DWORD()
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                 moves[0] = SetWinEventHook(0x800B, 0x800B, None, self.move_proc, pid.value, 0, 0)  # LOCATIONCHANGE
 
         def on_move(hook, event, hwnd, obj, child, thread, ms):
-            if obj == 0 and hwnd == self.front and self.under(hwnd):  # OBJID_WINDOW
-                self.lift()
+            if obj == 0 and hwnd == self.front and not self.beneath(hwnd):  # OBJID_WINDOW
+                self.lift(hwnd)
         self.front_proc, self.move_proc = WINEVENTPROC(on_front), WINEVENTPROC(on_move)  # kept alive with the hooks
         fg = user32.GetForegroundWindow()
         self.front = None if not fg or own(fg) else fg
@@ -1412,40 +1412,45 @@ class Panel:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
-    def lift(self):
-        """Over a session's own window that has just come to the front: the panel, and with it the shadow it owns,
-        rise to the top of the ordinary windows without being activated, so the keyboard stays in the terminal.
-        Any other window in front covers the panel as before (it is not topmost)."""
-        if not self.visible or self.dragging:
+    def lift(self, hwnd):
+        """A session's own window has come to the front: the panel, and with it the shadow it owns, go directly under
+        that window, over every other ordinary window, without being activated, so the keyboard stays in the
+        terminal and the terminal stays over the panel (session window > panel > the rest). Any other window in
+        front covers the panel as before (it is not topmost). Never behind a topmost window: that would make the
+        panel topmost too (focus_session sets the window topmost for a moment)."""
+        if not self.visible or self.dragging or not hwnd or user32.GetWindowLongW(hwnd, -20) & 0x8:  # WS_EX_TOPMOST
             return
         flags = 0x0001 | 0x0002 | 0x0010  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-        user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST, then
-        user32.SetWindowPos(self.hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST: the top of the ordinary windows
+        user32.SetWindowPos(self.hwnd, hwnd, 0, 0, 0, 0, flags)  # hWndInsertAfter: right below that window
 
     def stay_over(self, hwnd):
         """The foreground event can arrive before the terminal has raised itself (its own thread does that, a moment
-        later), so the window can still end up over the panel. Look again a few times in the next 1.5 s, while that
-        window stays in front, and lift the panel whenever it is under it."""
+        later), so the panel, put under the window where it still was, can end up under other windows too. Look
+        again a few times in the next 1.5 s, while that window stays in front, and put the panel back directly
+        under it whenever it is not."""
         for wait in LIFT_AGAIN:
             time.sleep(wait)
             if user32.GetForegroundWindow() != hwnd:
                 return
-            if self.under(hwnd):
-                self.lift()
+            if not self.beneath(hwnd):
+                self.lift(hwnd)
 
-    def under(self, hwnd):
-        """The panel is below this window in z-order."""
+    def beneath(self, hwnd):
+        """The panel is directly under this window: below it, with nothing between them but this process's own
+        windows (the shadow) and hidden ones."""
         h = user32.GetWindow(hwnd, 2)  # GW_HWNDNEXT
         while h:
             if h == self.hwnd:
                 return True
+            if user32.IsWindowVisible(h) and not own(h):
+                return False
             h = user32.GetWindow(h, 2)
         return False
 
     def find_windows(self):
         """The window of every open session, looked up once per process and kept: lift() runs inside the hook's
         callback and must not attach to consoles. A session window already in front when it is first found (just
-        opened from the panel, before Claude Code wrote its session file) gets the panel over it at once."""
+        opened from the panel, before Claude Code wrote its session file) gets the panel under it at once."""
         live = {s["pid"] for s in self.sessions if s["status"] and s.get("pid")}
         before = set(self.wins.values())
         wins = {p: h for p, h in self.wins.items() if p in live and user32.IsWindow(h)}
@@ -1456,7 +1461,7 @@ class Panel:
         self.wins = wins
         fg = user32.GetForegroundWindow()
         if fg in wins.values() and fg not in before:
-            self.lift()
+            self.lift(fg)
 
     def window_for(self, s):
         h = window_of(s["pid"]) if s.get("pid") else None
@@ -1744,7 +1749,7 @@ class Panel:
                 return None
             if not focus_session(s, self.other_names(s)):
                 return err("Already open, but its window was not found. Look for it on the taskbar.")
-            self.lift()  # the window was just put on top of the ordinary windows: the panel goes back over it
+            self.lift(hwnd or self.window_for(s))  # the window was just put on top: the panel goes right under it
             return None
         return ok("Double-click to open it.")
 
