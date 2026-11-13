@@ -6,8 +6,9 @@
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
 # sounds (tray menu: Alerts, Alert Sound). A card counts what its session runs in the background (child
 # `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
-# follows that page's public API.
-import base64, ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, tempfile, threading, time
+# follows that page's public API. Screenshots the user takes are kept in Desktop\screenshots and move into a
+# session's folder when pasted there (agent-panel-shots.py).
+import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, json, os, queue, re, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
 
@@ -22,7 +23,20 @@ HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel.htm
 MASCOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-mascot")
 ALERT_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-alert.html")
 KNOCK = os.path.join(MASCOT, "knock.wav")
+SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-shots.py")
 OPTS_FILE = os.path.join(STATE_DIR, "options.json")
+
+
+def load_shots():
+    """The screenshot keeper (agent-panel-shots.py beside this file), started on threads of this process;
+    None when the file is missing or fails to load, and the panel runs without it."""
+    try:
+        spec = importlib.util.spec_from_file_location("agent_panel_shots", SHOTS)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.Shots().start()
+    except Exception:
+        return None
 
 
 def mascot_js(only=None):
@@ -1377,6 +1391,7 @@ class Panel:
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
         threading.Thread(target=self.watch_status, daemon=True).start()
         self.icon = tray(self.events, self.opts)
+        self.shots = load_shots()
         self.last_scan = self.last_live = 0
         while True:
             try:
@@ -1422,6 +1437,7 @@ class Panel:
                 self.wins = {}  # every scan looks each window up afresh (a tab dragged into another window)
                 self.find_windows()
                 self.background(running())
+                self.feed_shots()
                 self.watch_update()
                 self.push()
                 self.check_alerts()
@@ -1614,6 +1630,7 @@ class Panel:
         self.sessions.sort(key=lambda s: s["mtime"], reverse=True)
         self.find_windows()
         self.background(live)
+        self.feed_shots()
         self.push()
         self.check_alerts()
         self.watch_return()
@@ -1638,6 +1655,12 @@ class Panel:
                 except Exception:
                     pass
             s["bg"] = sorted(work, key=lambda w: w["since"])
+
+    def feed_shots(self):
+        """The open sessions, for the screenshot keeper: it reads what is pasted into their transcripts."""
+        if getattr(self, "shots", None):
+            self.shots.see([{"id": s["id"], "path": s["path"], "home": where_of(s), "title": s["title"]}
+                            for s in self.sessions if s["status"] and not s["headless"]])
 
     # ----- a session's own window counts as part of the panel -----
     def follow_front(self):
@@ -2127,6 +2150,8 @@ class Panel:
             self.icon.stop()
         if getattr(self, "shadow", None):
             self.shadow.close()
+        if getattr(self, "shots", None):
+            self.shots.stop()
         self.alert.destroy()  # a hidden window left behind keeps the program running
         self.window.destroy()
 

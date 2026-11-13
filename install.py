@@ -7,6 +7,7 @@
 #   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge or a strip on the top edge; starts at sign-in)
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
 #   agent-alert.html -> ~/.claude           (the alert shown when a session waits for an answer)
+#   agent-panel-shots.py -> ~/.claude       (the panel keeps your screenshots: Desktop\screenshots, then the pasted-into project)
 #   Agent Panel.lnk  -> the user's Desktop  (starts the panel, or brings the running one up)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
@@ -139,10 +140,11 @@ def install_panel():
     shutil.copy2(os.path.join(HERE, "agent-panel.pyw"), PANEL)
     shutil.copy2(os.path.join(HERE, "agent-panel.html"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-alert.html"), CLAUDE_DIR)
+    shutil.copy2(os.path.join(HERE, "agent-panel-shots.py"), CLAUDE_DIR)
     # replaced whole, so strips of an earlier mascot do not linger
     remove_tree(os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
     shutil.copytree(os.path.join(HERE, "mascot"), os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
-    print("copied  agent-panel.pyw, agent-panel.html, agent-alert.html and agent-panel-mascot -> %s" % CLAUDE_DIR)
+    print("copied  agent-panel.pyw, agent-panel.html, agent-alert.html, agent-panel-shots.py and agent-panel-mascot -> %s" % CLAUDE_DIR)
     r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywebview", "pystray", "pillow"],
                        capture_output=True, text=True)
     if r.returncode != 0:

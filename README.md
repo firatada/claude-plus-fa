@@ -58,6 +58,12 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Hidden, Deleted and Headless* at the bottom of the panel lists them in a section of their own.
 - Delete asks once more on the spot (*Yes, Delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session is closed first; a session stored inside WSL cannot be deleted from the panel.
 
+**Screenshots, kept in one place**
+- Every screenshot you take (`Win+Shift+S`, the Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named by date and time (`2026-11-13_1405.png`). Pictures Windows itself saves on `Win+PrintScreen` are moved there too, without a second copy. Images you copy from a browser or any other program are left alone.
+- When you paste a screenshot into a Claude Code session (`Alt+V`), it moves from the desktop into a `screenshots` folder in that session's project folder, named after the session (`2026-11-13_1405_fix-login-page.png`). Pasted into a session of another project too, it is copied there. So the desktop folder keeps only the screenshots you never gave to Claude.
+- That folder never reaches git or a website: the panel adds `screenshots/` to the project's `.gitignore` (creating one only in a git repository that has none) and to its `.assetsignore` when there is one. These two files are the only project files it ever edits.
+- Nothing is ever deleted, and nothing is added to what Claude reads: the panel only watches the clipboard and the session's conversation file. To turn it off, put `"screenshots": false` in `~/.claude/claude-plus.local.json`.
+
 **Get your free z.ai API key**
 
 It is completely free!
@@ -127,7 +133,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 - It removes the claude-plus-fa hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus-fa one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
 - It closes the Agent Panel, removes it from Windows sign-in and its desktop icon, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
 - Your own hooks and your own status line are left untouched.
-- Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them.
+- Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them. Your screenshots stay where they are.
 - Restart any open Claude Code session afterwards.
 
 ## Limits
@@ -146,6 +152,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `agent-panel.pyw` | The Agent Panel on the right or the top edge of the screen |
 | `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
 | `agent-alert.html` | The alert shown when a session waits for your answer |
+| `agent-panel-shots.py` | Keeps your screenshots: the desktop folder, then the project they were pasted into |
 | `mascot/` | The octopus: the logo (also the tray icon until a 5-hour figure is known) and the panel's animation strips |
 | `tools/mascot-export.py` | Cuts `mascot/` from the octopus sheet in `tools/mascot-source/` |
 | `tools/knock-sound.py` | Synthesizes the alert's knock, `mascot/knock.wav` |
