@@ -53,7 +53,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - When a session starts waiting for your answer, an alert drops in at the top of the screen over every window, with three knocks. It lists every session still waiting; click one to go to its window. It does not take the keyboard from what you are typing, it is not shown for a session whose window is already in front, and it goes by itself once nothing waits. The tray menu turns the alert and its sound off and on.
 - Its tray icon shows how much of the 5-hour limit you have used, as a number in the status line's colours (green under 50, amber under 80, red above; `!` at 100), with the reset time in its tooltip. Until Claude Code reports a figure it shows the octopus.
 - When a Claude Code auto-update fails (on Windows it can leave a `claude` that no longer starts), the panel repairs it in the background with Claude Code's own `claude update`, without closing any session. If it cannot, its bottom line says so and gives the reinstall command.
-- It starts **automatically** when you sign in to Windows. `Ctrl+Alt+C` or its tray icon brings it to the front when it is covered, and hides or shows it otherwise.
+- It starts **automatically** when you sign in to Windows. To open it, double-click the **Agent Panel** icon on your desktop (it starts the panel, or brings it up if it already runs), press `Ctrl+Alt+C`, or click its tray icon; the last two also hide it when it is in front.
 - Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Show Hidden, Deleted and Headless* at the bottom of the panel lists them in a section of their own.
 - Delete asks once more on the spot (*Yes, Delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session is closed first; a session stored inside WSL cannot be deleted from the panel.
 
@@ -107,7 +107,7 @@ The installer:
 - registers the hooks in `~/.claude/settings.json`, after saving a backup as `settings.json.before-claude-plus`;
 - sets up the status line only if you do not already have one;
 - creates `~/.claudex/profiles/glm/.env`, where you can store the optional z.ai key;
-- installs what the Agent Panel needs (`pywebview` for its window, `pystray` for the tray icon), starts the panel and adds it to Windows sign-in.
+- installs what the Agent Panel needs (`pywebview` for its window, `pystray` for the tray icon), starts the panel, adds it to Windows sign-in and puts an **Agent Panel** icon on your desktop.
 
 ## Use your own steps
 
@@ -124,7 +124,7 @@ The installer:
 Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer the terminal, run `.\uninstall.cmd` inside that folder instead.
 
 - It removes the claude-plus-fa hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus-fa one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
-- It closes the Agent Panel, removes it from Windows sign-in, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
+- It closes the Agent Panel, removes it from Windows sign-in and its desktop icon, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
 - Your own hooks and your own status line are left untouched.
 - Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them.
 - Restart any open Claude Code session afterwards.

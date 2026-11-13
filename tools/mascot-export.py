@@ -11,7 +11,8 @@ and recoloured to its state's dot colour: only the octopus's purple changes hue 
 white and the props keep theirs), green for open and working, red for asking, grey for closed;
 the header's moods also as <name>-purple.webp, in the octopus's own colour.
 Output: mascot/<name>.webp next to this folder's parent, one horizontal strip per name, and
-mascot/logo.png, the package's logo (256 px), and mascot/tray.png, the tray icon (64 px).
+mascot/logo.png, the package's logo (256 px), mascot/tray.png, the tray icon (64 px), and
+mascot/agent-panel.ico, the desktop shortcut's icon (16 to 256 px).
 """
 import os
 import numpy as np
@@ -125,3 +126,12 @@ x = max(0, min(256 - side, (head[0] + head[-1]) // 2 - side // 2))
 logo.crop((x, top, x + side, top + side)).resize((64, 64), Image.LANCZOS).save(
     os.path.join(OUT, "tray.png"), optimize=True)
 print("wrote tray.png")
+
+# the desktop shortcut's icon, at the sizes Windows asks for: the tray cut up to 32 px (where the
+# full logo is a speck), the full logo from 40 px up (desktop icons are 48 px at 100 % scale)
+tray = Image.open(os.path.join(OUT, "tray.png")).convert("RGBA")
+ICON_SIZES = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
+icons = [(tray if n <= 32 else logo).resize((n, n), Image.LANCZOS) for n in ICON_SIZES]
+icons[-1].save(os.path.join(OUT, "agent-panel.ico"), format="ICO",
+               sizes=[(n, n) for n in ICON_SIZES], append_images=icons[:-1])
+print("wrote agent-panel.ico")

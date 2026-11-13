@@ -7,6 +7,7 @@
 #   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge or a strip on the top edge; starts at sign-in)
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
 #   agent-alert.html -> ~/.claude           (the alert shown when a session waits for an answer)
+#   Agent Panel.lnk  -> the user's Desktop  (starts the panel, or brings the running one up)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
 import ctypes, json, os, shutil, stat, subprocess, sys, time, winreg
@@ -23,6 +24,7 @@ HOOK_TIMEOUT = 3600  # the Yes/No dialog waits inside the hook
 PANEL = os.path.join(CLAUDE_DIR, "agent-panel.pyw")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "ClaudePlusFA agent panel"
+SHORTCUT = "Agent Panel.lnk"  # on the user's Desktop
 
 
 def remove_tree(path):
@@ -153,13 +155,43 @@ def install_panel():
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
         winreg.SetValueEx(k, RUN_NAME, 0, winreg.REG_SZ, command)
     print("ok      Agent Panel starts at sign-in (HKCU\\%s\\%s)" % (RUN_KEY, RUN_NAME))
+    desktop_shortcut(pythonw)
     # without the markers of a Claude session that may be running this installer: the panel
     # passes its environment to every session it opens, and an inherited
     # CLAUDE_CODE_CHILD_SESSION stops a resumed session from saving its transcript
     env = {k: v for k, v in os.environ.items()
            if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
     subprocess.Popen([pythonw, PANEL], creationflags=0x00000008, env=env)  # DETACHED_PROCESS
-    print("started the Agent Panel (Ctrl+Alt+C shows or hides it; drag its header to the top or the right edge)")
+    print("started the Agent Panel (the Agent Panel desktop icon or Ctrl+Alt+C brings it up; drag its header to the top or the right edge)")
+
+
+def desktop():
+    """The user's real Desktop folder, wherever it is redirected (OneDrive, another drive)."""
+    buf = ctypes.create_unicode_buffer(260)
+    ctypes.windll.shell32.SHGetFolderPathW(None, 0x0010, None, 0, buf)  # CSIDL_DESKTOPDIRECTORY
+    return buf.value
+
+
+def desktop_shortcut(pythonw):
+    """An "Agent Panel" icon on the Desktop: pythonw (no console) running the panel. A panel already
+    running is brought up instead of a second copy (the .pyw's single-instance check). The same
+    file is rewritten on every install, so it never doubles."""
+    if not desktop():
+        print("SKIPPED desktop shortcut: no Desktop folder found")
+        return
+    link = os.path.join(desktop(), SHORTCUT)
+    env = dict(os.environ, CPFA_LINK=link, CPFA_TARGET=pythonw, CPFA_ARGS='"%s"' % PANEL, CPFA_DIR=CLAUDE_DIR,
+               CPFA_ICON=os.path.join(CLAUDE_DIR, "agent-panel-mascot", "agent-panel.ico"))
+    r = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                        "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:CPFA_LINK); "
+                        "$s.TargetPath = $env:CPFA_TARGET; $s.Arguments = $env:CPFA_ARGS; "
+                        "$s.WorkingDirectory = $env:CPFA_DIR; $s.IconLocation = $env:CPFA_ICON + ',0'; "
+                        "$s.Description = 'Every Claude Code session on this PC (claude-plus-fa)'; $s.Save()"],
+                       env=env, capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.exists(link):
+        print("WARNING could not put the Agent Panel icon on the Desktop (%s)" % r.stderr.strip()[-200:])
+        return
+    print("ok      desktop icon %s" % link)
 
 
 def stop_panel():

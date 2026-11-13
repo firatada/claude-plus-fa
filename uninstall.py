@@ -127,10 +127,26 @@ def remove_old_name():
         pass
 
 
+def remove_shortcut():
+    """The installer's "Agent Panel" icon on the user's real Desktop, only if it starts our panel."""
+    buf = ctypes.create_unicode_buffer(260)
+    ctypes.windll.shell32.SHGetFolderPathW(None, 0x0010, None, 0, buf)  # CSIDL_DESKTOPDIRECTORY
+    link = os.path.join(buf.value, "Agent Panel.lnk")
+    try:
+        with open(link, "rb") as f:
+            if "agent-panel.pyw".encode("utf-16-le") not in f.read():
+                return
+    except OSError:
+        return
+    os.remove(link)
+    print("deleted %s" % link)
+
+
 def remove_panel():
-    """Stop the Agent Panel, remove its sign-in entry; remove_files() deletes the script."""
+    """Stop the Agent Panel, remove its sign-in entry and desktop icon; remove_files() deletes the script."""
     stop_panel()
     remove_old_name()
+    remove_shortcut()
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
             winreg.DeleteValue(k, RUN_NAME)
