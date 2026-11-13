@@ -30,13 +30,17 @@ MATCH = 6.0            # ... below which a pasted image (maybe shrunk, maybe JPE
                        # measured on a real screen: the same picture shrunk to 0.3 and saved as JPEG q20 or palette
                        # PNG <= 3.0; other regions 15 and up; the same region 20 px further over 3.0 too, so near
                        # twins are told apart by exact pixels (an unshrunk PNG) or else by time (CLOSE)
+DRAG_POLL = 0.015      # seconds between looks at the mouse while a snipping tool is in front (only then)
 CLOSE = 1.5            # matches this close to the best one are told apart by time (the latest before the paste)
 KEEP = 300             # screenshots remembered for matching
 TICK = 1.0             # seconds between looks at Windows' Screenshots folder and the open transcripts
 WM_CLIPBOARDUPDATE, WM_DESTROY, WM_CLOSE = 0x031D, 0x0002, 0x0010
-# A Desktop screenshot is named after the window in front before the capture started. Windows that come to the
+# A snip is named after the window under the rectangle the user dragged (followed with the mouse while a snipping
+# tool is in front), not after the window in front: the focus may be in another window than the one snipped (seen
+# 2026-11-13: a snip of one terminal named after the terminal beside it that had the focus). PrintScreen and a snip
+# whose drag was not seen are named after the window in front before the capture started. Windows that come to the
 # front but are never what was photographed (the taskbar, Alt+Tab, a snipping overlay; the panel's own windows,
-# by process) are not remembered, so the last one remembered is the window under the snip.
+# by process) are not remembered, so the last one remembered is the window in front under the overlay.
 PASSING = {"Shell_TrayWnd", "Shell_SecondaryTrayWnd", "MultitaskingViewFrame", "ForegroundStaging",
            "XamlExplorerHostIslandWindow", "TaskSwitcherWnd"}
 DESKTOP = {"Progman", "WorkerW"}
@@ -45,7 +49,13 @@ ALIAS = {"msedge": ["edge"], "winword": ["word"], "powerpnt": ["powerpoint"], "n
          "explorer": ["dosya gezgini"]}
 
 user32, kernel32, shell32 = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
-user32.GetClipboardOwner.restype = user32.GetForegroundWindow.restype = wt.HWND
+dwmapi = ctypes.windll.dwmapi
+user32.GetClipboardOwner.restype = user32.GetForegroundWindow.restype = user32.GetTopWindow.restype = wt.HWND
+user32.GetWindow.restype = wt.HWND
+user32.GetWindow.argtypes = [wt.HWND, wt.UINT]
+user32.GetTopWindow.argtypes = [wt.HWND]
+user32.GetAsyncKeyState.restype = ctypes.c_short
+dwmapi.DwmGetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.DWORD]
 user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 user32.DefWindowProcW.restype = ctypes.c_ssize_t
 user32.CreateWindowExW.restype = wt.HWND
@@ -217,6 +227,22 @@ def class_of(hwnd):
     return buf.value
 
 
+def window_at(x, y, skip=None):
+    """The window a screenshot shows at this point of the screen: the first one in z-order under it that skip()
+    does not refuse. Hidden, cloaked (a background UWP frame), minimised and click-through windows do not count."""
+    h = user32.GetTopWindow(None)
+    while h:
+        r, cloaked = wt.RECT(), ctypes.c_int(0)
+        dwmapi.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)  # DWMWA_CLOAKED
+        if (user32.IsWindowVisible(h) and not cloaked.value and not user32.IsIconic(h)
+                and not user32.GetWindowLongW(h, -20) & 0x20  # WS_EX_TRANSPARENT
+                and user32.GetWindowRect(h, ctypes.byref(r)) and r.left <= x < r.right and r.top <= y < r.bottom
+                and not (skip and skip(h))):
+            return h
+        h = user32.GetWindow(h, 2)  # GW_HWNDNEXT
+    return None
+
+
 def title_part(app, title):
     """The window title without the app's own name at its end (" - Google Chrome", " - Excel"), as a slug; empty
     when nothing else is left."""
@@ -369,6 +395,8 @@ class Shots:
         self.hwnd = None
         self.snip_at = 0.0     # when a snipping tool was last seen running at a clipboard change
         self.fronts = collections.deque(maxlen=32)  # windows that came to the front: {"at", "hwnd", "app", "title"}
+        self.drag = None       # the last rectangle dragged while a snipping tool was in front: (x, y, ended at)
+        self.tracking = False  # follow_drag() is running
 
     # ----- state -----
     def load(self):
@@ -425,18 +453,56 @@ class Shots:
             return None
 
     def front(self, hwnd, at=None):
-        """A window came to the front (the panel's foreground hook calls this)."""
+        """A window came to the front (the panel's foreground hook calls this). A snipping tool's overlay: follow
+        the mouse while it stays in front, to know where the snip was dragged."""
         f = self.describe(hwnd, at)
         if f:
             self.fronts.append(f)
+        elif hwnd and not self.tracking and self.snipping(hwnd):
+            self.tracking = True
+            threading.Thread(target=self.follow_drag, daemon=True).start()
 
-    def taken_in(self, at, fg=None):
-        """The window in front when a screenshot was taken at this time. The foreground window read at that
+    @staticmethod
+    def snipping(hwnd):
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return os.path.basename(exe_of(pid.value)).lower() in SNIP_TOOLS
+
+    def follow_drag(self):
+        """While a snipping tool is in front: the box the pointer covered with the primary button held, kept as the
+        middle of that box and when the button was let go. A click (a window snip) gives its own point."""
+        try:
+            button = 0x02 if user32.GetSystemMetrics(23) else 0x01  # SM_SWAPBUTTON: the primary button
+            pt, box, until = wt.POINT(), None, time.time() + 120
+            while time.time() < until and self.snipping(user32.GetForegroundWindow()):
+                held = bool(user32.GetAsyncKeyState(button) & 0x8000)
+                user32.GetCursorPos(ctypes.byref(pt))
+                if held:
+                    b = box or [pt.x, pt.y, pt.x, pt.y]
+                    box = [min(b[0], pt.x), min(b[1], pt.y), max(b[2], pt.x), max(b[3], pt.y)]
+                elif box:
+                    self.drag = ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2, time.time())
+                    box = None
+                time.sleep(DRAG_POLL)
+        finally:
+            self.tracking = False
+
+    def snipped(self, at):
+        """The window under the middle of the snip dragged just before this capture, or None."""
+        d = self.drag
+        if not d or not 0 <= at - d[2] < SNIP_RECENT:
+            return None
+        h = window_at(d[0], d[1], skip=lambda w: not self.describe(w, at))
+        return self.describe(h, at) if h else None
+
+    def taken_in(self, at, fg=None, snip=False):
+        """The window a screenshot taken at this time shows. A snip: the window under the rectangle dragged, when
+        the drag was seen (the focus may be elsewhere). Otherwise the foreground window read at that
         moment, when it is one a screenshot can show (PrintScreen; a snip once its overlay has closed): a
         foreground event can come for a window that never reached the front (seen: a Notepad started by another
         program). Otherwise, as while a snipping overlay is in front, the last window remembered no later than
         that, its title read again while it is still open (a browser changes it with the tab)."""
-        f = self.describe(fg, at)
+        f = (snip and self.snipped(at)) or self.describe(fg, at)
         if f:
             return f
         for f in reversed(list(self.fronts)):
@@ -519,7 +585,7 @@ class Shots:
             return  # it changed again meanwhile, or held no picture after all
         img.load()
         self.pending.append({"img": img, "at": ev["at"], "sig": sig(img), "size": img.size,
-                             "stem": shot_stem(self.taken_in(ev["at"], ev.get("fg")), ev["at"])})
+                             "stem": shot_stem(self.taken_in(ev["at"], ev.get("fg"), snip=ev["owner"]), ev["at"])})
         self.log("captured", ev["exe"] or "(no owner)", img.size)
 
     def windows_files(self):
