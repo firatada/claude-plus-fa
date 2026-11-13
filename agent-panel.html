@@ -18,7 +18,7 @@
      16 px edge; card text sits inside its card.
      Top dock (2026-11-10, the maintainer): the same page as a strip over the top edge (body.top): a grip,
      the octopus and the count, the search, the cards as one row of tabs (the ones that do not fit are not shown), the
-     set-aside link opening its section as a list under the strip (#drop), the usage bars, the hide
+     set-aside link opening its section as a list under the strip (#drop), the Status button, the usage bars, the hide
      button. The window is taller than the strip; agent-panel.pyw clips it to the strip plus whatever is
      open under it (menus, tooltips, messages, #drop), which this page reports every frame (syncRegion).
      The header (the grip on top) drags the panel between the two docks. -->
@@ -184,12 +184,26 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 #note.err { color: var(--red); border-color: var(--red-tint); }
 /* a standing fact about the whole panel, not a failure of something the reader did */
 #note.warn { color: var(--text); background: var(--amber-tint); border-color: var(--amber-line); }
+/* the set-aside link, and on its right the Status button (status.claude.com), one height */
+#foot { display: flex; align-items: stretch; gap: 8px; margin: 6px var(--edge); }
 #footer {
-  display: block; min-height: 15px; margin: 10px var(--edge); padding: 0; border: 0; background: none;
-  font-size: 11px; color: var(--faint); text-align: left;
+  flex: 0 1 auto; min-width: 0; min-height: 24px; display: flex; align-items: center; padding: 0; border: 0;
+  background: none; font-size: 11px; color: var(--faint); text-align: left;
 }
 #footer:hover { color: var(--blue); text-decoration: underline; }
 #footer:empty { visibility: hidden; }
+#status {
+  flex: none; margin-left: auto; min-height: 24px; padding: 0 8px; display: flex; align-items: center; gap: 6px;
+  border: 0; border-radius: var(--r-small); background: none; color: var(--muted); font-size: 11px;
+  transition: transform .16s ease-out;
+}
+#status:hover { color: var(--blue); background: var(--surface2); }
+/* Anthropic's own status, in the 5h bar's level colours; each kind differs by shape too: fine is a plain dot,
+   a problem carries a halo, unknown is a hollow ring */
+.sdot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--gone); }
+.sdot.none { background: var(--green); box-shadow: none; }
+.sdot.minor, .sdot.maintenance { background: var(--gold); box-shadow: 0 0 0 2px var(--amber-tint); }
+.sdot.major, .sdot.critical { background: var(--red); box-shadow: 0 0 0 2px var(--red-tint); }
 #usage { margin: 0 var(--edge); padding: 8px 0 10px; border-top: 1px solid var(--line); }
 .u { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; height: 22px;
      font-size: 11px; color: var(--muted); }
@@ -231,7 +245,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 .btn.go { background: var(--blue); border-color: var(--blue); color: var(--on-accent); box-shadow: var(--glow); }
 .btn.danger { background: var(--red); border-color: var(--red); color: var(--on-accent); box-shadow: var(--glow-red); }
 .btn.go:hover, .btn.danger:hover { filter: brightness(1.08); }
-.btn:active, .item:active, #hide:active, #qx:active, #footer:active, .empty button:active { transform: scale(.97); }
+.btn:active, .item:active, #hide:active, #qx:active, #footer:active, #status:active, .empty button:active { transform: scale(.97); }
 #footer { transition: transform .16s ease-out; }
 
 .tip {
@@ -248,7 +262,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
-  .card.here:active, .btn:active, .item:active, #hide:active, #qx:active, #footer:active { transform: none; }
+  .card.here:active, .btn:active, .item:active, #hide:active, #qx:active, #footer:active, #status:active { transform: none; }
   /* without the blink, each state still differs by shape, not by colour alone */
   .dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--green); }
   .dot.ask { box-shadow: 0 0 0 2px var(--red-tint); }
@@ -262,7 +276,7 @@ body.top {
   height: var(--strip); flex-direction: row; align-items: center; gap: 8px; padding: 0 8px 0 10px;
   box-shadow: inset 0 -1px var(--line);
 }
-body.top header, body.top #bottom { display: contents; }
+body.top header, body.top #bottom, body.top #foot { display: contents; }
 body.top #grip { display: block; cursor: grab; }
 body.top h1 { display: none; }
 body.top .logo.mascot { width: 32px; height: 32px; }
@@ -302,6 +316,7 @@ body.top #footer {
   display: flex; align-items: center; gap: 4px;
 }
 body.top #footer:empty { display: none; }
+body.top #status { margin-left: 0; min-height: var(--tab); padding: 0 10px; border-radius: var(--r-ctl); }
 body.top #footer:hover { text-decoration: none; background: var(--surface2); }
 body.top #footer[aria-expanded="true"] { color: var(--blue); background: var(--surface2); }
 body.top #usage { flex: none; margin: 0; padding: 0; border: 0; display: flex; gap: 14px; }
@@ -361,7 +376,10 @@ body.top #drop.open {
 <div id="list"></div>
 <div id="bottom">
   <div id="note"></div>
-  <button id="footer" type="button" data-tip data-full="Lists the sessions kept out of the main list"></button>
+  <div id="foot">
+    <button id="footer" type="button" data-tip data-full="Lists the sessions kept out of the main list"></button>
+    <button id="status" type="button" data-tip><span class="sdot" id="sdot"></span>Status</button>
+  </div>
   <div id="usage"></div>
 </div>
 <div id="drop" role="region" aria-label="Hidden, deleted and headless sessions"></div>
@@ -596,7 +614,8 @@ function render() {
   // on top the link opens a list under the strip and keeps its words, so the strip does not shift
   $("footer").textContent = !nAside || (q && !hits.length && !showHidden) ? ""
     : onTop() ? `Hidden, Deleted and Headless (${nShown}) ${showHidden ? "▴" : "▾"}`
-    : showHidden ? "Fold Hidden, Deleted and Headless" : `Show Hidden, Deleted and Headless (${nShown})`;
+    // on the right the Status button shares the row, so the link keeps the top dock's words, without "Show"
+    : showHidden ? "Fold Hidden, Deleted and Headless" : `Hidden, Deleted and Headless (${nShown})`;
   const top = onTop(), key = JSON.stringify([q, rows, rest, state.ready, menuFor, top, showHidden]);
   const list = $("list"), drop = $("drop");
   if (key !== lastKey) {
@@ -675,6 +694,7 @@ function render() {
     return `<div class="u"><span>${n}</span>${bar(v && v.pct)}<span data-k="u:${n}"${tipText}>${val}</span></div>`;
   }).join("");
   if ($("usage").dataset.html !== usage) { $("usage").innerHTML = usage; $("usage").dataset.html = usage; }
+  claudeStatus(state.claude);
   if (state.error !== standing) { standing = state.error || null; showNote(); if (standing) announce(standing); }
   if (top && showHidden) {
     // the list opens under its link, inside the screen
@@ -683,6 +703,19 @@ function render() {
   }
   fadeChanged(q !== lastQ);
   lastQ = q;
+}
+
+// status.claude.com as agent-panel.pyw last read it: {level, text, incidents}; false before the first read,
+// null when it could not be read (then unknown, never green)
+const LEVEL = {none: 1, minor: 1, maintenance: 1, major: 1, critical: 1};
+function claudeStatus(c) {
+  const lv = c && LEVEL[c.level] ? c.level : "";
+  const inc = c && c.incidents || [];
+  const says = c ? c.text + (inc.length ? "\n" + inc[0] + (inc.length > 1 ? ` (and ${inc.length - 1} more)` : "") : "")
+             : c === false || c === undefined ? "Checking status.claude.com…" : "Could not reach status.claude.com";
+  $("sdot").className = "sdot " + lv;
+  $("status").dataset.full = says + "\nOpens status.claude.com";
+  $("status").setAttribute("aria-label", "Claude status: " + says.replace("\n", ". ") + ". Opens status.claude.com");
 }
 
 // a figure whose text changed since it was last drawn fades in; one that did not stays still
@@ -1043,6 +1076,7 @@ $("qx").onclick = () => setQ("");
 // a click with the mouse lets the section fade in; Enter or Space shows it at once
 function toggleAside(e) { showHidden = !showHidden; scrollToAside = showHidden; revealing = showHidden && e.detail > 0; render(); }
 $("footer").onclick = toggleAside;
+$("status").onclick = () => api().status_page().then(r => r && say(null, r.t, r.err));
 list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(e); });
 $("hide").onclick = () => window.pywebview && api().hide();
 
