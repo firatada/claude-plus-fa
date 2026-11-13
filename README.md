@@ -60,7 +60,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 **Screenshots, kept in one place**
 - Every screenshot you take (`Win+Shift+S`, the Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named by date and time (`2026-11-13_1405.png`). Pictures Windows itself saves on `Win+PrintScreen` are moved there too, without a second copy. Images you copy from a browser or any other program are left alone.
-- When you paste a screenshot into a Claude Code session (`Alt+V`), it moves from the desktop into a `screenshots` folder in that session's project folder, named after the session (`2026-11-13_1405_fix-login-page.png`). Pasted into a session of another project too, it is copied there. So the desktop folder keeps only the screenshots you never gave to Claude.
+- When you paste a screenshot into a Claude Code session (`Alt+V`), it moves from the desktop into a `screenshots` folder in that session's project folder, named after the session (`fix-login-page_2026-11-13_1405.png`). Pasted into a session of another project too, it is copied there. So the desktop folder keeps only the screenshots you never gave to Claude.
 - That folder never reaches git or a website: the panel adds `screenshots/` to the project's `.gitignore` (creating one only in a git repository that has none) and to its `.assetsignore` when there is one. These two files are the only project files it ever edits.
 - Nothing is ever deleted, and nothing is added to what Claude reads: the panel only watches the clipboard and the session's conversation file. To turn it off, put `"screenshots": false` in `~/.claude/claude-plus.local.json`.
 

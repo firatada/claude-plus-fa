@@ -1,7 +1,7 @@
 # Screenshots for the Agent Panel (loaded by agent-panel.pyw; no process of its own).
 # Every screenshot the user takes (Win+Shift+S / Snipping Tool, PrintScreen) is saved at once to
 # <Desktop>\screenshots\YYYY-MM-DD_HHMM.png. When the user pastes it into a Claude Code session, the
-# file moves to <that session's folder>\screenshots\YYYY-MM-DD_HHMM_<session-title>.png and that folder
+# file moves to <that session's folder>\screenshots\<session-title>_YYYY-MM-DD_HHMM.png and that folder
 # gets screenshots/ in its .gitignore (and .assetsignore, when it has one). Pasted into a second session
 # in another folder, it is copied there. Nothing is deleted; nothing is added to Claude's input; the
 # clipboard is only read, never written.
@@ -572,7 +572,7 @@ class Shots:
         if not src:
             return
         os.makedirs(folder, exist_ok=True)
-        dest = free_name(folder, "%s_%s" % (stamp(e["at"]), slugify(s.get("title"))))
+        dest = free_name(folder, "%s_%s" % (slugify(s.get("title")), stamp(e["at"])))
         if e.get("file") and src == e["file"]:
             shutil.move(src, dest)  # first paste: it leaves the Desktop
             e["file"] = None
