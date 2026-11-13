@@ -73,7 +73,16 @@ dwmapi.DwmSetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.
 # ---------- one instance only ----------
 kernel32.CreateMutexW(None, False, "Local\\claude-plus-fa-agent-panel")
 if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    # started again (the desktop shortcut, the Run key): ask the running panel to come up, then leave.
+    # This process was started by the user, so it may hand its right to take the foreground on.
+    h = kernel32.OpenEventW(0x0002, False, "Local\\claude-plus-fa-agent-panel-show")  # EVENT_MODIFY_STATE
+    if h:
+        user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+        kernel32.SetEvent(h)
+        kernel32.CloseHandle(h)
     sys.exit(0)
+# a second start sets this event (auto-reset) to bring the running panel up
+SHOW_EVENT = kernel32.CreateEventW(None, False, False, "Local\\claude-plus-fa-agent-panel-show")
 # the installer sets this event to ask a running panel to quit and give its screen space back
 QUIT_EVENT = kernel32.CreateEventW(None, True, False, "Local\\claude-plus-fa-agent-panel-quit")
 kernel32.ResetEvent(QUIT_EVENT)
@@ -1364,6 +1373,8 @@ class Panel:
                 pass
             if kernel32.WaitForSingleObject(QUIT_EVENT, 0) == 0:
                 return self.quit()
+            if kernel32.WaitForSingleObject(SHOW_EVENT, 0) == 0:  # auto-reset: one show per start
+                self.show()
             now = time.time()
             if now - self.last_scan > SCAN_EVERY:
                 self.last_scan = self.last_live = now
@@ -1536,6 +1547,13 @@ class Panel:
             self.place()
             user32.ShowWindow(self.hwnd, 5)
             self.raise_panel()
+
+    def show(self):
+        """A second start (the desktop shortcut): as Ctrl+Alt+C, but never hides the panel."""
+        if self.visible:
+            self.raise_panel()
+        else:
+            self.toggle()
 
     def raise_panel(self):
         user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)  # HWND_TOPMOST, no move or size
