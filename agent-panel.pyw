@@ -5,8 +5,10 @@
 # figure in its level colour (the octopus until there is one); click it to show or hide; Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
 # sounds (tray menu: Alerts, Alert Sound). A card counts what its session runs in the background (child
-# `claude` runs and subagents) while any run.
+# `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
+# follows that page's public API.
 import base64, ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, tempfile, threading, time
+import urllib.request
 import webview
 
 HOME = os.path.expanduser("~")
@@ -50,6 +52,9 @@ DROP_ROOM = 440        # logical pixels under the strip where its menus, tooltip
 TOP_ZONE = 120         # logical pixels: a drag released this close to the top edge docks the panel there
 SCAN_EVERY = 15        # seconds
 LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
+STATUS_PAGE = "https://status.claude.com/"
+STATUS_API = "https://status.claude.com/api/v2/summary.json"  # Statuspage's public API: status and unresolved incidents
+STATUS_EVERY = 180     # seconds between reads of STATUS_API
 LAUNCH_WAIT = 8        # seconds a session opened from the panel is not opened again while Claude Code starts
 LIFT_AGAIN = (0.1, 0.2, 0.4, 0.8)  # seconds between looks after a session's window comes to the front (stay_over)
 CREATE_NEW_CONSOLE = 0x10
@@ -250,6 +255,20 @@ def read_limits():
         return v if isinstance(v, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def claude_status():
+    """Anthropic's status from status.claude.com, or None when it could not be read (shown as unknown, never as fine).
+    A plain GET with a generic user agent: nothing about this PC or its user goes with it."""
+    try:
+        req = urllib.request.Request(STATUS_API, headers={"User-Agent": "claude-plus-fa", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.load(r)
+        st = d["status"]
+        names = [i["name"] for i in d.get("incidents") or [] if i.get("name")]
+        return {"level": str(st["indicator"]), "text": str(st["description"]), "incidents": names}
+    except Exception:
+        return None
 
 
 def where_of(s):
@@ -1268,6 +1287,13 @@ class Api:
     def region(self, rects):
         self._p.region(rects)
 
+    def status_page(self):
+        try:
+            os.startfile(STATUS_PAGE)  # the default browser
+        except OSError:
+            return err("Could not open the browser. The page is " + STATUS_PAGE)
+        return None
+
 
 class AlertApi:
     """What the alert page may call."""
@@ -1313,6 +1339,7 @@ class Panel:
         self.opening = threading.Lock()  # open() calls arrive on threads of their own, at once
         self.launched = {}  # session id -> when open() started it; cleared once ~/.claude/sessions shows it
         self.repairing, self.update_note = False, None  # a failed Claude Code update: being repaired; what is left
+        self.claude_status = False  # status.claude.com, read every STATUS_EVERY by watch_status(); False: not read yet, None: unreadable
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
@@ -1348,6 +1375,7 @@ class Panel:
         user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
         threading.Thread(target=self.follow_front, daemon=True).start()
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
+        threading.Thread(target=self.watch_status, daemon=True).start()
         self.icon = tray(self.events, self.opts)
         self.last_scan = self.last_live = 0
         while True:
@@ -1985,7 +2013,16 @@ class Panel:
                              for s in self.sessions],
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
                            "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
-                "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime()}
+                "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime(),
+                "claude": self.claude_status}
+
+    def watch_status(self):
+        """Reads status.claude.com now and every STATUS_EVERY on a thread of its own, so a slow network never holds
+        up the list."""
+        while True:
+            self.claude_status = claude_status()
+            self.push()
+            time.sleep(STATUS_EVERY)
 
     def tray_update(self):
         """The tray follows the 5h figure: redrawn only when the number, its reset or the icon size changes,
