@@ -1675,6 +1675,8 @@ class Panel:
             if not hwnd or own(hwnd):
                 return
             self.front = hwnd
+            if getattr(self, "shots", None):
+                self.shots.front(hwnd)  # a Desktop screenshot is named after the window in front
             if moves[0]:
                 user32.UnhookWinEvent(moves[0])
                 moves[0] = None

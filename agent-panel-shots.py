@@ -1,12 +1,14 @@
 # Screenshots for the Agent Panel (loaded by agent-panel.pyw; no process of its own).
 # Every screenshot the user takes (Win+Shift+S / Snipping Tool, PrintScreen) is saved at once to
-# <Desktop>\screenshots\YYYY-MM-DD_HHMM.png. When the user pastes it into a Claude Code session, the
+# <Desktop>\screenshots\<app>_<window-title>_YYYY-MM-DD_HHMM.png, named after the window that was in front
+# when it was taken. When the user pastes it into a Claude Code session, the
 # file moves to <that session's folder>\screenshots\<session-title>_YYYY-MM-DD_HHMM.png and that folder
 # gets screenshots/ in its .gitignore (and .assetsignore, when it has one). Pasted into a second session
 # in another folder, it is copied there. Nothing is deleted; nothing is added to Claude's input; the
 # clipboard is only read, never written.
 # Off: "screenshots": false in ~/.claude/claude-plus.local.json.
-import base64, ctypes, ctypes.wintypes as wt, datetime, io, json, os, queue, re, shutil, threading, time, unicodedata
+import base64, collections, ctypes, ctypes.wintypes as wt, datetime, io, json, os, queue, re, shutil, threading, \
+    time, unicodedata
 from PIL import Image, ImageChops, ImageGrab
 
 HOME = os.path.expanduser("~")
@@ -32,9 +34,18 @@ CLOSE = 1.5            # matches this close to the best one are told apart by ti
 KEEP = 300             # screenshots remembered for matching
 TICK = 1.0             # seconds between looks at Windows' Screenshots folder and the open transcripts
 WM_CLIPBOARDUPDATE, WM_DESTROY, WM_CLOSE = 0x031D, 0x0002, 0x0010
+# A Desktop screenshot is named after the window in front before the capture started. Windows that come to the
+# front but are never what was photographed (the taskbar, Alt+Tab, a snipping overlay; the panel's own windows,
+# by process) are not remembered, so the last one remembered is the window under the snip.
+PASSING = {"Shell_TrayWnd", "Shell_SecondaryTrayWnd", "MultitaskingViewFrame", "ForegroundStaging",
+           "XamlExplorerHostIslandWindow", "TaskSwitcherWnd"}
+DESKTOP = {"Progman", "WorkerW"}
+# other names an app goes by at the end of its window titles ("... - Microsoft Edge"); its exe name is always one
+ALIAS = {"msedge": ["edge"], "winword": ["word"], "powerpnt": ["powerpoint"], "notepad": ["not defteri"],
+         "explorer": ["dosya gezgini"]}
 
 user32, kernel32, shell32 = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.shell32
-user32.GetClipboardOwner.restype = wt.HWND
+user32.GetClipboardOwner.restype = user32.GetForegroundWindow.restype = wt.HWND
 user32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 user32.DefWindowProcW.restype = ctypes.c_ssize_t
 user32.CreateWindowExW.restype = wt.HWND
@@ -146,6 +157,7 @@ def clip_event():
         user32.GetWindowThreadProcessId(owner, ctypes.byref(pid))
     exe = exe_of(pid.value) if pid.value else ""
     return {"at": time.time(), "seq": user32.GetClipboardSequenceNumber(), "owner": bool(owner),
+            "fg": user32.GetForegroundWindow(),
             "exe": os.path.basename(exe).lower(), "formats": format_names(), "running": running_names()}
 
 
@@ -164,6 +176,68 @@ def is_screenshot(ev, snip_at=0.0):
     if ev["exe"] == BROKER and (ev["running"] & SNIP_TOOLS or ev["at"] - snip_at < SNIP_RECENT):
         return True
     return not ev["owner"] and set(f) <= {CF_BITMAP, CF_DIB, CF_DIBV5, CF_PALETTE}
+
+
+# ---------- the window a screenshot was taken of ----------
+ENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+
+def window_app(hwnd):
+    """The program behind a window, as (pid, short name): its exe name, lower case. A Store app's window belongs
+    to ApplicationFrameHost, so the app is the process of the child window it frames."""
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    exe = os.path.basename(exe_of(pid.value)).lower()
+    if exe == "applicationframehost.exe":
+        found = []
+
+        def child(h, _):
+            p = wt.DWORD()
+            user32.GetWindowThreadProcessId(h, ctypes.byref(p))
+            if p.value != pid.value:
+                found.append(p.value)
+                return False
+            return True
+        user32.EnumChildWindows(hwnd, ENUMPROC(child), 0)
+        if found:
+            exe = os.path.basename(exe_of(found[0])).lower()
+    return pid.value, re.sub(r"[^a-z0-9]", "", exe[:-4] if exe.endswith(".exe") else exe)
+
+
+def window_text(hwnd):
+    """The title, read without sending the window a message (a hung window cannot hold this up)."""
+    buf = ctypes.create_unicode_buffer(512)
+    user32.InternalGetWindowText(hwnd, buf, 512)
+    return buf.value
+
+
+def class_of(hwnd):
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buf, 256)
+    return buf.value
+
+
+def title_part(app, title):
+    """The window title without the app's own name at its end (" - Google Chrome", " - Excel"), as a slug; empty
+    when nothing else is left."""
+    names = [n.replace(" ", "-") for n in [app] + ALIAS.get(app, [])]
+
+    def is_app(seg):
+        s = slugify(seg, "")
+        return any(n == s or n in s.split("-") for n in names)
+    parts = re.split(r"\s+[-–—]\s+", (title or "").replace("​", "").strip())
+    while len(parts) > 1 and is_app(parts[-1]):
+        parts.pop()
+    t = " - ".join(parts)
+    return "" if is_app(t) or slugify(t, "") == app else slugify(t, "")
+
+
+def shot_stem(front, at):
+    """<app>_<title>_YYYY-MM-DD_HHMM, or <app>_YYYY-MM-DD_HHMM, or the time alone when no window is known."""
+    if not front or not front.get("app"):
+        return stamp(at)
+    t = title_part(front["app"], front.get("title"))
+    return "_".join([front["app"]] + ([t] if t else []) + [stamp(at)])
 
 
 # ---------- comparing pictures ----------
@@ -196,13 +270,13 @@ def identical(path, img):
 
 
 # ---------- names ----------
-def slugify(title):
+def slugify(title, empty="session"):
     t = (title or "").replace("ı", "i").replace("İ", "I")
     t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode("ascii").lower()
     t = re.sub(r"[^a-z0-9]+", "-", t).strip("-")
     if len(t) > 40:
         t = t[:40].rsplit("-", 1)[0] if "-" in t[:40] else t[:40]
-    return t or "session"
+    return t or empty
 
 
 def free_name(folder, stem):
@@ -294,6 +368,7 @@ class Shots:
         self.index = self.load()
         self.hwnd = None
         self.snip_at = 0.0     # when a snipping tool was last seen running at a clipboard change
+        self.fronts = collections.deque(maxlen=32)  # windows that came to the front: {"at", "hwnd", "app", "title"}
 
     # ----- state -----
     def load(self):
@@ -319,6 +394,7 @@ class Shots:
 
     # ----- threads -----
     def start(self):
+        self.front(user32.GetForegroundWindow())
         threading.Thread(target=self.listen, daemon=True).start()
         threading.Thread(target=self.work, daemon=True).start()
         return self
@@ -326,6 +402,49 @@ class Shots:
     def stop(self):
         if self.hwnd:
             user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
+
+    @staticmethod
+    def describe(hwnd, at=None):
+        """{"at", "hwnd", "app", "title"} for a window a screenshot can show; None for one it never shows: the
+        panel's own, the taskbar, Alt+Tab, a snipping overlay. The desktop is "desktop", without a title."""
+        try:
+            if not hwnd:
+                return None
+            cls = class_of(hwnd)
+            if cls in PASSING:
+                return None
+            if cls in DESKTOP:
+                app, title = "desktop", ""
+            else:
+                pid, app = window_app(hwnd)
+                if pid == os.getpid() or not app or app + ".exe" in SNIP_TOOLS:
+                    return None
+                title = window_text(hwnd)
+            return {"at": time.time() if at is None else at, "hwnd": hwnd, "app": app, "title": title}
+        except Exception:
+            return None
+
+    def front(self, hwnd, at=None):
+        """A window came to the front (the panel's foreground hook calls this)."""
+        f = self.describe(hwnd, at)
+        if f:
+            self.fronts.append(f)
+
+    def taken_in(self, at, fg=None):
+        """The window in front when a screenshot was taken at this time. The foreground window read at that
+        moment, when it is one a screenshot can show (PrintScreen; a snip once its overlay has closed): a
+        foreground event can come for a window that never reached the front (seen: a Notepad started by another
+        program). Otherwise, as while a snipping overlay is in front, the last window remembered no later than
+        that, its title read again while it is still open (a browser changes it with the tab)."""
+        f = self.describe(fg, at)
+        if f:
+            return f
+        for f in reversed(list(self.fronts)):
+            if f["at"] <= at:
+                if f["app"] != "desktop" and user32.IsWindow(f["hwnd"]):
+                    return dict(f, title=window_text(f["hwnd"]) or f["title"])
+                return f
+        return None
 
     def see(self, sessions):
         with self.lock:
@@ -399,7 +518,8 @@ class Shots:
         if user32.GetClipboardSequenceNumber() != ev["seq"] or not isinstance(img, Image.Image):
             return  # it changed again meanwhile, or held no picture after all
         img.load()
-        self.pending.append({"img": img, "at": ev["at"], "sig": sig(img), "size": img.size})
+        self.pending.append({"img": img, "at": ev["at"], "sig": sig(img), "size": img.size,
+                             "stem": shot_stem(self.taken_in(ev["at"], ev.get("fg")), ev["at"])})
         self.log("captured", ev["exe"] or "(no owner)", img.size)
 
     def windows_files(self):
@@ -442,7 +562,7 @@ class Shots:
                 self.log("file replaced clipboard copy", dup["file"])
                 continue
             os.makedirs(self.desk, exist_ok=True)
-            dest = free_name(self.desk, stamp(st.st_mtime))
+            dest = free_name(self.desk, shot_stem(self.taken_in(st.st_mtime), st.st_mtime))
             try:
                 shutil.move(p, dest)
             except OSError:
@@ -467,7 +587,7 @@ class Shots:
                 self.log("same picture again, not saved")  # set again (clipboard history, a second copy)
                 continue
             os.makedirs(self.desk, exist_ok=True)
-            dest = free_name(self.desk, stamp(c["at"]))
+            dest = free_name(self.desk, c["stem"])
             c["img"].save(dest, "PNG")
             self.remember(dest, c["at"], c["sig"], c["size"])
             self.log("saved", dest)
