@@ -124,6 +124,16 @@ h1 { font-size: 15px; font-weight: 600; }
 .arrow { flex: none; visibility: hidden; color: var(--blue); font-size: 12px; }
 .card.here:hover .arrow { visibility: visible; }
 .age { flex: none; margin-left: auto; font-size: 11px; color: var(--muted); }
+/* background work of an open session (child runs, subagents): a quiet count with a turning arc, gone when
+   they end; the list of them is its tooltip */
+.bgw {
+  flex: none; margin-left: auto; height: 16px; padding: 0 5px; display: inline-flex; align-items: center; gap: 3px;
+  border-radius: var(--r-small); background: var(--surface2); color: var(--muted); font-size: 11px; font-weight: 600;
+}
+.bgw[hidden] { display: none; }
+.bgw:not([hidden]) + .age { margin-left: 0; }
+.bgw svg { flex: none; animation: spin 1.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .meta { padding-left: 14px; height: 16px; font-size: 11px; color: var(--muted); }
 .meta { display: flex; align-items: center; gap: 6px; }
 .meta > span { flex: none; }
@@ -477,8 +487,18 @@ function fill(el, s, q) {
   a.textContent = s.age;
   a.dataset.k = "age:" + s.id;
   const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"]).join(" · ");
+  // what the session runs in the background: a count on the title row, each one listed in its tooltip
+  const bg = s.bg || [], w = el.querySelector(".bgw");
+  w.hidden = !bg.length;
+  if (bg.length) {
+    w.lastChild.textContent = bg.length;
+    w.dataset.full = "Running in the background:\n" + bg.slice(0, 8).map(b =>
+      [b.kind, b.what, b.for].filter(Boolean).join(" · ")).join("\n") +
+      (bg.length > 8 ? `\nand ${bg.length - 8} more` : "");
+  }
   el.setAttribute("aria-label", [s.title, STATUS[st].toLowerCase(), s.path, s.age,
-    s.ctx == null ? "" : "context " + pct(s.ctx), flags].filter(Boolean).join(", "));
+    s.ctx == null ? "" : "context " + pct(s.ctx), flags,
+    bg.length ? bg.length + " running in the background" : ""].filter(Boolean).join(", "));
   // the meta row is built once and patched, so a tooltip on it survives the 2 s refresh;
   // a session with no context reading shows no ctx bar at all
   const m = el.querySelector(".meta");
@@ -505,7 +525,10 @@ function cardEl(s, old, q) {
     el.setAttribute("role", "button");
     el.innerHTML = '<span class="mascot av" aria-hidden="true" hidden></span><div class="body">' +
                    '<div class="t"><span class="dot" role="img" data-tip></span><span class="name" data-tip></span>' +
-                   '<span class="arrow" aria-hidden="true">↗</span><span class="age"></span></div>' +
+                   '<span class="arrow" aria-hidden="true">↗</span><span class="bgw" data-tip hidden>' +
+                   '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 1a4 4 0 1 1-4 4" fill="none" ' +
+                   'stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><b></b></span>' +
+                   '<span class="age"></span></div>' +
                    '<div class="meta"></div></div>';
   }
   fill(el, s, q);

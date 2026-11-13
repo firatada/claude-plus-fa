@@ -4,7 +4,8 @@
 # window is in front the panel stays over it, as if that window were part of the panel. Tray icon: the 5-hour usage
 # figure in its level colour (the octopus until there is one); click it to show or hide; Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
-# sounds (tray menu: Alerts, Alert Sound).
+# sounds (tray menu: Alerts, Alert Sound). A card counts what its session runs in the background (child
+# `claude` runs and subagents) while any run.
 import base64, ctypes, ctypes.wintypes as wt, datetime, json, os, queue, re, subprocess, sys, tempfile, threading, time
 import webview
 
@@ -218,7 +219,8 @@ def running():
             # waitingFor is set while a prompt in the session (a permission question, a dialog) waits
             # for an answer; the status then says "busy" (older versions) or "waiting" (2.1.319)
             out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"],
-                                   "waiting": o.get("waitingFor") or (o.get("status") == "waiting" or None)}
+                                   "waiting": o.get("waitingFor") or (o.get("status") == "waiting" or None),
+                                   "cwd": o.get("cwd"), "started": o.get("startedAt")}
     return out
 
 
@@ -547,8 +549,8 @@ class PROCESSENTRY32W(ctypes.Structure):
 kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
 
 
-def parents():
-    """{pid: parent pid} for every running process."""
+def procs():
+    """{pid: (parent pid, exe name)} for every running process, from one Toolhelp snapshot."""
     snap = kernel32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
     out = {}
     if not snap or snap == wt.HANDLE(-1).value:
@@ -556,10 +558,15 @@ def parents():
     e = PROCESSENTRY32W(dwSize=ctypes.sizeof(PROCESSENTRY32W))
     more = kernel32.Process32FirstW(snap, ctypes.byref(e))
     while more:
-        out[e.th32ProcessID] = e.th32ParentProcessID
+        out[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile)
         more = kernel32.Process32NextW(snap, ctypes.byref(e))
     kernel32.CloseHandle(snap)
     return out
+
+
+def parents():
+    """{pid: parent pid} for every running process."""
+    return {p: v[0] for p, v in procs().items()}
 
 
 def born(pid):
@@ -625,6 +632,113 @@ def session_procs(sid):
             if o.get("sessionId") == sid and o.get("pid") and alive(o["pid"]):
                 out.append({"pid": int(o["pid"]), "status": o.get("status") or "idle"})
     return out
+
+
+# ---------- background work of an open session: child runs and subagents ----------
+CLI_EXE = os.path.normcase(os.path.join(HOME, ".local", "bin", "claude.exe"))
+CLI_VERSIONS = os.path.normcase(os.path.join(HOME, ".local", "share", "claude", "versions")) + os.sep
+VERSION_NAME = re.compile(r"^\d+\.\d+\.\d+$")  # the files in versions/ are named by version and have no .exe
+FT_EPOCH = 116444736000000000                   # 1970-01-01 as a FILETIME
+kernel32.QueryFullProcessImageNameW.argtypes = [wt.HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD)]
+
+
+def image_path(pid):
+    h = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    buf, n = ctypes.create_unicode_buffer(1024), wt.DWORD(1024)
+    got = kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+    kernel32.CloseHandle(h)
+    return buf.value if got else None
+
+
+def claude_code(pid, name):
+    """The process is Claude Code's CLI, told by its full path: the desktop app's claude.exe (under WindowsApps)
+    and anything else of that name are not. The name only skips the other processes cheaply."""
+    if name.lower() != "claude.exe" and not VERSION_NAME.match(name):
+        return False
+    p = os.path.normcase(image_path(pid) or "")
+    # claude.exe.old.<ms>.<pid>: a running copy that `claude update` renamed aside
+    return p == CLI_EXE or p.startswith(CLI_EXE + ".old.") or p.startswith(CLI_VERSIONS)
+
+
+def child_runs(live, table):
+    """{session id: [run]}: every Claude Code process whose chain of parents reaches an open session's own
+    process (the nearest one counts), e.g. a `claude -p` that session started through a shell. A process
+    started straight under a Claude Code process without a session of its own is the CLI's helper
+    (`claude mcp serve`), not a run. Each parent must be older than its child: a number Windows gave
+    again to a later process breaks the chain rather than linking a stranger."""
+    by_pid = {int(r["pid"]): sid for sid, r in live.items()}
+    cli = {p for p, (_, name) in table.items() if claude_code(p, name)}
+    out = {}
+    for pid in cli:
+        mine = by_pid.get(pid)
+        if not mine and table[pid][0] in cli:
+            continue
+        cur, t = pid, born(pid)
+        for _ in range(16):
+            up = table.get(cur, (0, ""))[0]
+            bu = born(up) if up else None
+            if not t or not bu or bu > t:
+                break
+            sid = by_pid.get(up)
+            if sid and sid != mine:  # the same session (GLM taking it over) is no child run
+                r = live.get(mine) or {}
+                out.setdefault(sid, []).append({"kind": "run", "what": os.path.basename((r.get("cwd") or "").rstrip("\\/")),
+                                                "since": (t - FT_EPOCH) / 1e7})
+                break
+            cur, t = up, bu
+    return out
+
+
+def subagents(s, started, cache):
+    """The in-process agents (Agent/Task tool, workflow agents) of an open session that are running now.
+    Claude Code writes subagents[/<subfolder>]/agent-<id>.meta.json beside the session's transcript when an
+    agent starts and rewrites it with "finished": true when it ends ("stoppedByUser": true when stopped).
+    Only files written since the session's process started count, so an agent cut off by a closed or
+    crashed session, which never got its "finished", is not shown as running. Each meta is read again
+    only when its time changes; transcripts are never opened."""
+    out, todo = [], [os.path.join(os.path.dirname(s["path"]), s["id"], "subagents")]
+    while todo:
+        try:
+            entries = list(os.scandir(todo.pop()))
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                if e.is_dir():
+                    todo.append(e.path)
+                    continue
+                if not e.name.endswith(".meta.json"):
+                    continue
+                st = e.stat()
+                if st.st_mtime < started:
+                    continue
+                hit = cache.get(e.path)
+                if not hit or hit[0] != st.st_mtime:
+                    with open(e.path, encoding="utf-8") as f:
+                        m = json.load(f)
+                    run = not m.get("finished") and not m.get("stoppedByUser")
+                    try:  # its transcript is created when it starts; the meta is rewritten at the end
+                        since = os.stat(e.path[:-10] + ".jsonl").st_birthtime
+                    except (OSError, AttributeError):
+                        since = getattr(st, "st_birthtime", st.st_ctime)
+                    hit = cache[e.path] = (st.st_mtime, run and {
+                        "kind": "subagent", "what": m.get("description") or m.get("agentType") or "", "since": since})
+                if hit[1]:
+                    out.append(hit[1])
+            except (OSError, ValueError, AttributeError):
+                continue
+    return out
+
+
+def lasted(ts):
+    d = max(0, time.time() - ts)
+    if d < 60:
+        return "under 1 min"
+    if d < 3600:
+        return "%d min" % (d // 60)
+    return "%d h %d min" % (d // 3600, d % 3600 // 60)
 
 
 def save_record(path, rec):
@@ -1190,6 +1304,7 @@ class Panel:
         self.opening = threading.Lock()  # open() calls arrive on threads of their own, at once
         self.launched = {}  # session id -> when open() started it; cleared once ~/.claude/sessions shows it
         self.repairing, self.update_note = False, None  # a failed Claude Code update: being repaired; what is left
+        self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
@@ -1267,6 +1382,7 @@ class Panel:
                             SCAN_EVERY))
                 self.wins = {}  # every scan looks each window up afresh (a tab dragged into another window)
                 self.find_windows()
+                self.background(running())
                 self.watch_update()
                 self.push()
                 self.check_alerts()
@@ -1451,9 +1567,31 @@ class Panel:
                     pass
         self.sessions.sort(key=lambda s: s["mtime"], reverse=True)
         self.find_windows()
+        self.background(live)
         self.push()
         self.check_alerts()
         self.watch_return()
+
+    def background(self, live):
+        """What each open session runs in the background, for the badge on its card: its child runs (from the
+        process snapshot) and its subagents (from their meta files). Every live pass; closed sessions have none."""
+        try:
+            runs = child_runs(live, procs())
+        except Exception:
+            runs = {}
+        for s in self.sessions:
+            run = live.get(s["id"])
+            work = list(runs.get(s["id"], []))
+            if run:
+                started = (run.get("started") or 0) / 1000.0
+                if not started:
+                    b = born(run["pid"])
+                    started = (b - FT_EPOCH) / 1e7 if b else time.time()
+                try:
+                    work += subagents(s, started - 1, self.metas)
+                except Exception:
+                    pass
+            s["bg"] = sorted(work, key=lambda w: w["since"])
 
     # ----- a session's own window counts as part of the panel -----
     def follow_front(self):
@@ -1824,7 +1962,8 @@ class Panel:
                               "status": s["status"], "waiting": bool(s["status"] and s.get("waiting")),
                               "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden,
                               "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
-                              "headless": s.get("headless", False)}
+                              "headless": s.get("headless", False),
+                              "bg": [{"kind": w["kind"], "what": w["what"], "for": lasted(w["since"])} for w in s.get("bg", [])]}
                              for s in self.sessions],
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
                            "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
