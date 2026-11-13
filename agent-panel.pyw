@@ -633,6 +633,86 @@ def save_record(path, rec):
     os.replace(path + ".tmp", path)
 
 
+# ---------- repairing a failed Claude Code update ----------
+# On Windows ~/.local/bin/claude.exe is a copy of the newest file in ~/.local/share/claude/versions, not a link.
+# `claude update` replaces it while sessions run (it renames the running copy aside first; measured 2026-11-13),
+# yet a background auto-update once failed with update_apply_exe_locked and left a claude.exe that would not
+# start. When ~/.claude/.last-update-result.json records a failure the panel has not handled, it runs `update`
+# from an intact versions file, moves claude.exe aside and reinstalls if it still does not start, and records the
+# outcome. No session is closed: none has to be. A failure it cannot repair stays in the panel's bottom line.
+UPDATE_RESULT = os.path.join(CLAUDE, ".last-update-result.json")   # Claude Code's own record; doctor reads it
+UPDATE_SEEN = os.path.join(STATE_DIR, "update.json")               # the failure last handled, and how it went
+CLI = os.path.join(HOME, ".local", "bin", "claude.exe")
+VERSIONS = os.path.join(HOME, ".local", "share", "claude", "versions")
+UPDATE_WAIT = 600      # seconds for one `update` or `install`; both download about 350 MB
+REINSTALL = "irm https://claude.ai/install.ps1 | iex"
+
+
+def vkey(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+def run_cli(exe, *args, wait=60):
+    """Run a Claude Code executable without a window. The files in versions/ have no .exe, so the path goes in
+    as the application name, which Windows takes as it is (on the command line alone it would append .exe)."""
+    try:
+        # stdin from NUL: the panel's own standard input is an invalid handle, which fails the start (OSError 9)
+        return subprocess.run([exe] + list(args), executable=exe, stdin=subprocess.DEVNULL, capture_output=True,
+                              timeout=wait, encoding="utf-8", errors="replace", creationflags=CREATE_NO_WINDOW,
+                              env=clean_env())
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def version_of(exe):
+    """The version an executable reports, or None when it does not start or prints anything else (a claude.exe
+    without its payload prints the Bun runtime's own help)."""
+    r = run_cli(exe, "--version")
+    m = r and r.returncode == 0 and re.match(r"\s*(\d+\.\d+\.\d+) \(Claude Code\)", r.stdout or "")
+    return m.group(1) if m else None
+
+
+def newest_intact():
+    """(path, version) of the newest file in versions/ that starts and reports its own version."""
+    try:
+        names = [n for n in os.listdir(VERSIONS) if re.fullmatch(r"\d+\.\d+\.\d+", n)]
+    except OSError:
+        return None, None
+    for n in sorted(names, key=vkey, reverse=True):
+        p = os.path.join(VERSIONS, n)
+        if version_of(p) == n:
+            return p, n
+    return None, None
+
+
+def repair_update(failed):
+    """After the failed attempt `failed` (the record, as read): (ok, message for the panel's bottom line)."""
+    exe, _ = newest_intact()
+    if not exe:
+        return False, "Claude Code's update failed and no installed version starts. Reinstall it in PowerShell: " + REINSTALL
+    run_cli(exe, "update", wait=UPDATE_WAIT)
+    if not version_of(CLI):
+        exe, v = newest_intact()  # the update may have added a newer one
+        if exe:
+            # `install` rewrites claude.exe only when it is missing; aside under Claude Code's own backup name
+            # (claude.exe.old.<ms>), which its updater clears later. A rename works even on a file still open.
+            try:
+                os.replace(CLI, "%s.old.%d" % (CLI, time.time() * 1000))
+            except OSError:
+                pass
+            run_cli(exe, "install", v, wait=UPDATE_WAIT)
+    now, want = version_of(CLI), failed.get("version_to")
+    if not now:
+        return False, "Claude Code's update failed and claude.exe does not start. Reinstall it in PowerShell: " + REINSTALL
+    if want and re.fullmatch(r"\d+\.\d+\.\d+", want) and vkey(now) < vkey(want):
+        return False, "Claude Code could not update to %s; %s still works and tries again by itself." % (want, now)
+    # the update is in: a success record in Claude Code's own format, so `claude doctor` stops reporting the failure
+    save_record(UPDATE_RESULT, {"timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="milliseconds").replace("+00:00", "Z"), "path": "native", "outcome": "success", "status": "success",
+        "version_from": failed.get("version_from"), "version_to": now, "error_code": None})
+    return True, "Repaired Claude Code's failed update: %s runs." % now
+
+
 # ---------- placement: over the right or the top edge, without taking any screen space ----------
 class APPBARDATA(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("hWnd", wt.HWND), ("uCallbackMessage", wt.UINT),
@@ -1109,6 +1189,7 @@ class Panel:
         self.wins = {}  # pid of an open session -> the window showing it (window_of), kept between scans
         self.opening = threading.Lock()  # open() calls arrive on threads of their own, at once
         self.launched = {}  # session id -> when open() started it; cleared once ~/.claude/sessions shows it
+        self.repairing, self.update_note = False, None  # a failed Claude Code update: being repaired; what is left
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
@@ -1186,6 +1267,7 @@ class Panel:
                             SCAN_EVERY))
                 self.wins = {}  # every scan looks each window up afresh (a tab dragged into another window)
                 self.find_windows()
+                self.watch_update()
                 self.push()
                 self.check_alerts()
                 self.watch_return()
@@ -1519,6 +1601,42 @@ class Panel:
             except Exception:
                 pass  # never let it stop the panel's loop; the next pass tries again
 
+    def watch_update(self):
+        """Every scan: a failed Claude Code update not handled yet starts repair_update() on a thread of its own;
+        one it could not repair keeps its message in the bottom line until Claude Code records a newer attempt."""
+        if self.repairing:
+            return
+        try:
+            with open(UPDATE_RESULT, encoding="utf-8") as f:
+                rec = json.load(f)
+        except Exception:
+            rec = {}
+        if rec.get("outcome") != "failed":
+            self.update_note = None
+            return
+        try:
+            with open(UPDATE_SEEN, encoding="utf-8") as f:
+                seen = json.load(f)
+        except Exception:
+            seen = {}
+        if seen.get("timestamp") == rec.get("timestamp"):
+            self.update_note = None if seen.get("ok") else seen.get("message")
+            return
+        self.repairing, self.update_note = True, "Claude Code's last update failed; repairing it in the background."
+
+        def work():
+            try:
+                good, msg = repair_update(rec)
+            except Exception as e:
+                good, msg = False, "Could not repair Claude Code's failed update (%s). Reinstall it in PowerShell: %s" % (
+                    e, REINSTALL)
+            os.makedirs(STATE_DIR, exist_ok=True)
+            save_record(UPDATE_SEEN, {"timestamp": rec.get("timestamp"), "ok": good, "message": msg, "at": time.time()})
+            self.update_note = None if good else msg
+            self.repairing = False
+            self.last_scan = 0  # the next pass pushes the bottom line at once
+        threading.Thread(target=work, daemon=True).start()
+
     def step_return(self, path, rec, par):
         sid, now = rec["session"], time.time()
         answer_file = path[:-len(".json")] + ".answer"
@@ -1710,7 +1828,7 @@ class Panel:
                              for s in self.sessions],
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
                            "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
-                "scanned": self.scanned, "error": self.error, "dbl": user32.GetDoubleClickTime()}
+                "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime()}
 
     def tray_update(self):
         """The tray follows the 5h figure: redrawn only when the number, its reset or the icon size changes,
