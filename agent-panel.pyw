@@ -8,7 +8,7 @@
 # `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
 # follows that page's public API. Screenshots the user takes are kept in Desktop\screenshots and move into a
 # session's folder when pasted there (agent-panel-shots.py); the last three stay on screen in a strip over every
-# window (agent-shots.html), switched by a header button.
+# window (agent-shots.html), switched by a header button, dragged anywhere; a click shows one large at once.
 import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, io, json, os, queue, re, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
@@ -30,19 +30,34 @@ OPTS_FILE = os.path.join(STATE_DIR, "options.json")
 LOCAL = os.path.join(CLAUDE, "claude-plus.local.json")  # the user's own settings, outside the repo
 
 
-def strip_wanted():
-    """The strip of the last three screenshots: shown unless claude-plus.local.json says "shot_strip": false."""
+def local(key):
+    """A key of claude-plus.local.json, or None."""
     try:
         with open(LOCAL, encoding="utf-8") as f:
             v = json.load(f)
-        return not (isinstance(v, dict) and v.get("shot_strip") is False)
+        return v.get(key) if isinstance(v, dict) else None
     except (OSError, ValueError):
-        return True
+        return None
 
 
-def save_strip_wanted(on):
-    """The header button's choice, kept in claude-plus.local.json beside the user's other keys. A file that cannot
-    be read as JSON is left alone (the choice then lasts until the panel restarts)."""
+def strip_wanted():
+    """The strip of the last three screenshots: shown unless claude-plus.local.json says "shot_strip": false."""
+    return local("shot_strip") is not False
+
+
+def strip_at():
+    """Where the user dropped the strip: its top-right corner in screen pixels ("shot_strip_at": [right, top]), or
+    None while it has never been dragged."""
+    v = local("shot_strip_at")
+    try:
+        return int(v[0]), int(v[1])
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+
+
+def save_local(key, value):
+    """The user's choice, kept in claude-plus.local.json beside the user's other keys. A file that cannot be read
+    as JSON is left alone (the choice then lasts until the panel restarts)."""
     try:
         with open(LOCAL, encoding="utf-8") as f:
             v = json.load(f)
@@ -52,7 +67,7 @@ def save_strip_wanted(on):
         return
     if not isinstance(v, dict):
         return
-    v["shot_strip"] = bool(on)
+    v[key] = value
     tmp = LOCAL + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(v, f, indent=2, ensure_ascii=False)
@@ -79,6 +94,26 @@ def thumb_src(path, cache={}):
         return cache[key]
     except Exception:
         return ""
+
+
+def full_src(path, cache={}):
+    """A strip picture at full size, as a data URL of the file itself, and its size in pixels; cached by path, size
+    and time (the strip's three, and a few that just left it)."""
+    from PIL import Image
+    try:
+        st = os.stat(path)
+        key = (path, st.st_size, st.st_mtime)
+        if key not in cache:
+            with open(path, "rb") as f:
+                raw = f.read()
+            with Image.open(io.BytesIO(raw)) as im:
+                size, mime = im.size, Image.MIME.get(im.format, "image/png")
+            if len(cache) > 6:
+                cache.clear()
+            cache[key] = ("data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii")), size)
+        return cache[key]
+    except Exception:
+        return "", (0, 0)
 
 
 def load_shots():
@@ -112,6 +147,12 @@ SHOTS_TITLE = "Agent Panel Screenshots"
 SHOT_W, SHOT_H, SHOT_PAD = 112, 70, 6  # logical pixels: a strip thumbnail and the space around and between them,
                        # as agent-shots.html lays them out
 SHOT_N = 3             # screenshots in the strip
+SHOT_GAP = 8           # logical pixels between the strip and the screen's edge or the panel
+SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
+VIEW_TITLE = "Agent Panel Screenshot"
+VIEW_HEAD, VIEW_PAD = 36, 8  # logical pixels: the preview's head row and the space round its picture
+VIEW_MIN_W = 320       # logical pixels: the preview is never narrower (its head needs the room)
+VIEW_MARGIN = 24       # logical pixels the preview keeps from the screen's edges and from the strip
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
@@ -1395,14 +1436,37 @@ class StripApi:
     def ready(self):
         self._p.strip_up()
 
-    def open(self, at):
-        p = next((s["path"] for s in self._p.strip_items if s["at"] == at), None)
-        if p and os.path.exists(p):
-            os.startfile(p)  # the default viewer
+    def press(self):
+        return self._p.strip_press()
+
+    def release(self, n):
+        return self._p.strip_release(n)
+
+    def enlarge(self, at):
+        self._p.view_toggle(at)
 
     def copy(self, at):
         shots = getattr(self._p, "shots", None)
         return bool(shots and shots.copy_text(at))
+
+
+class ViewApi:
+    """What the large preview may call."""
+
+    def __init__(self, panel):
+        self._p = panel
+
+    def ready(self):
+        self._p.view_up()
+
+    def open(self, at):
+        p = next((s["path"] for s in self._p.strip_items if s["at"] == at), None)
+        self._p.view_close()
+        if p and os.path.exists(p):
+            os.startfile(p)  # the default viewer
+
+    def close(self):
+        self._p.view_close()
 
 
 def animations_on():
@@ -1414,6 +1478,78 @@ def animations_on():
 
 class MONITORINFO(ctypes.Structure):
     _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT), ("dwFlags", wt.DWORD)]
+
+
+# bound as prototypes of their own, so the argtypes pystray sets on the shared user32 functions never clash
+MonitorFromRect = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.POINTER(wt.RECT), wt.DWORD)(("MonitorFromRect", user32))
+MonitorFromWindow = ctypes.WINFUNCTYPE(ctypes.c_void_p, wt.HWND, wt.DWORD)(("MonitorFromWindow", user32))
+GetMonitorInfo = ctypes.WINFUNCTYPE(wt.BOOL, ctypes.c_void_p, ctypes.POINTER(MONITORINFO))(("GetMonitorInfoW", user32))
+HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+SetWindowsHookEx = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_int, HOOKPROC, ctypes.c_void_p, wt.DWORD)(
+    ("SetWindowsHookExW", user32))
+CallNextHookEx = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM)(
+    ("CallNextHookEx", user32))
+UnhookWindowsHookEx = ctypes.WINFUNCTYPE(wt.BOOL, ctypes.c_void_p)(("UnhookWindowsHookEx", user32))
+GetModuleHandle = ctypes.WINFUNCTYPE(ctypes.c_void_p, wt.LPCWSTR)(("GetModuleHandleW", kernel32))
+PostThreadMessage = ctypes.WINFUNCTYPE(wt.BOOL, wt.DWORD, wt.UINT, wt.WPARAM, wt.LPARAM)(("PostThreadMessageW", user32))
+
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("vkCode", wt.DWORD), ("scanCode", wt.DWORD), ("flags", wt.DWORD), ("time", wt.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD), ("time", wt.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class Outside:
+    """While the large preview shows, without it ever taking the keyboard: Esc closes it (and reaches no other
+    window), and so does a press of any mouse button outside the given windows (the preview and the strip; that
+    press still goes where it was aimed). Low-level hooks on a thread of their own, removed by stop()."""
+
+    def __init__(self, close, hwnds):
+        self.close, self.hwnds, self.tid, self.up = close, hwnds, None, threading.Event()
+        threading.Thread(target=self.run, daemon=True).start()
+        self.up.wait(2)
+
+    def inside(self, pt):
+        r = wt.RECT()
+        return any(h and user32.GetWindowRect(h, ctypes.byref(r)) and r.left <= pt.x < r.right
+                   and r.top <= pt.y < r.bottom for h in self.hwnds)
+
+    def later(self):
+        threading.Thread(target=self.close, daemon=True).start()  # a hook must return at once
+
+    def run(self):
+        def key(code, wp, lp):
+            if code == 0 and KBDLLHOOKSTRUCT.from_address(lp).vkCode == 0x1B:  # VK_ESCAPE
+                if wp in (0x100, 0x104):  # WM_KEYDOWN, WM_SYSKEYDOWN
+                    self.later()
+                return 1
+            return CallNextHookEx(None, code, wp, lp)
+
+        def mouse(code, wp, lp):
+            # WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN, WM_XBUTTONDOWN
+            if code == 0 and wp in (0x201, 0x204, 0x207, 0x20B) and not self.inside(MSLLHOOKSTRUCT.from_address(lp).pt):
+                self.later()
+            return CallNextHookEx(None, code, wp, lp)
+        self.procs = (HOOKPROC(key), HOOKPROC(mouse))  # kept alive as long as the hooks
+        mod = GetModuleHandle(None)
+        hooks = [SetWindowsHookEx(13, self.procs[0], mod, 0), SetWindowsHookEx(14, self.procs[1], mod, 0)]  # _LL
+        self.tid = kernel32.GetCurrentThreadId()
+        self.up.set()
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            pass
+        for h in hooks:
+            if h:
+                UnhookWindowsHookEx(h)
+
+    def stop(self):
+        if self.tid:
+            PostThreadMessage(self.tid, 0x0012, 0, 0)  # WM_QUIT
 
 
 class Panel:
@@ -1454,6 +1590,14 @@ class Panel:
         self.strip = webview.create_window(SHOTS_TITLE, html=shtml, js_api=StripApi(self), width=360, height=82,
                                            min_size=(100, 50), frameless=True, easy_drag=False, on_top=True,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
+        self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
+        # the large preview of a strip picture: the same page in view mode, its own window, never focused
+        self.view_hwnd, self.view_ready, self.view_shown, self.view_at, self.view_sent = None, False, False, None, {}
+        self.view_watch, self.view_lock = None, threading.RLock()
+        self.view = webview.create_window(VIEW_TITLE, html=shtml.replace("/*MODE*/", 'window.MODE = "view";', 1),
+                                          js_api=ViewApi(self), width=640, height=400, min_size=(100, 50),
+                                          frameless=True, easy_drag=False, on_top=True, hidden=True, focus=False,
+                                          shadow=False, background_color="#FFFFFF")
 
     def run(self):
         webview.start(self.main, gui="edgechromium", private_mode=True)
@@ -2114,80 +2258,254 @@ class Panel:
         if self.alert_hwnd:
             self.alert.hide()
 
-    # ----- the strip: the last three screenshots, over every window at the bottom corner on the panel's side -----
+    # ----- the strip: the last three screenshots, over every window, where the user dragged it -----
     def keeping(self):
         """The screenshot keeper is loaded and switched on ("screenshots" in claude-plus.local.json)."""
         shots = getattr(self, "shots", None)
         return bool(shots and shots.on())
 
+    @staticmethod
+    def float_style(hwnd):
+        """A tool window (no taskbar button) that never takes the keyboard: WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE."""
+        ex = user32.GetWindowLongW(hwnd, -20)
+        user32.SetWindowLongW(hwnd, -20, (ex | 0x80 | 0x08000000) & ~0x40000)
+
     def strip_up(self):
         """The strip's page has loaded; its window, made on pywebview's thread, is looked up only now (as alert_up)."""
         self.strip_hwnd = own_window(SHOTS_TITLE, visible=False)
         if self.strip_hwnd:
-            ex = user32.GetWindowLongW(self.strip_hwnd, -20)
-            # a tool window (no taskbar button) that never takes the keyboard: WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-            user32.SetWindowLongW(self.strip_hwnd, -20, (ex | 0x80 | 0x08000000) & ~0x40000)
+            self.float_style(self.strip_hwnd)
             self.strip_ready = True
             self.strip_seen = -1  # the poll loop draws it on its next turn
+
+    def view_up(self):
+        """The preview's page has loaded (as strip_up); the poll loop hands it the strip's pictures next."""
+        self.view_hwnd = own_window(VIEW_TITLE, visible=False)
+        if self.view_hwnd:
+            self.float_style(self.view_hwnd)
+            self.view_sent, self.view_ready = {}, True
+            self.strip_key = None
 
     def toggle_strip(self):
         """The header button: the strip on or off, the choice kept in claude-plus.local.json."""
         self.strip_on = not self.strip_on
         try:
-            save_strip_wanted(self.strip_on)
+            save_local("shot_strip", self.strip_on)
         except OSError:
             pass
         self.update_strip()
         self.push()
 
+    def wake(self, win, hwnd):
+        """pywebview's show() activates the window (Form.Activate), so it is used once per window, now, while the
+        panel is starting anyway, off screen, and the foreground handed back; from then on Win32 shows and hides it
+        without activating. Never shown by pywebview, WebView2 would draw nothing in it (see show_alert)."""
+        fg = user32.GetForegroundWindow()
+        user32.SetWindowPos(hwnd, -1, -32000, -32000, 0, 0, 0x0001 | 0x0010)  # off screen meanwhile
+        win.show()
+        user32.ShowWindow(hwnd, 0)
+        if fg and fg != hwnd:
+            user32.SetForegroundWindow(fg)
+
+    def work_area(self, rect=None):
+        """The work area of the screen nearest a rectangle (x, y, w, h), else of the panel's screen."""
+        mi = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        if rect:
+            x, y, w, h = rect
+            mon = MonitorFromRect(ctypes.byref(wt.RECT(x, y, x + w, y + h)), 2)  # MONITOR_DEFAULTTONEAREST
+        else:
+            mon = MonitorFromWindow(self.hwnd, 2)
+        GetMonitorInfo(mon, ctypes.byref(mi))
+        return mi.rcWork
+
     def strip_rect(self, n):
-        """Screen pixels for a strip of n: the bottom corner of the panel's screen on the panel's side, left of the
-        column when it is docked on the right and shows (so the strip covers none of it), else in the corner."""
+        """Screen pixels for a strip of n. Where the user dropped it, its top-right corner kept (so a strip of more
+        pictures grows to the left), pulled wholly back onto the nearest screen when it would leave it (a monitor
+        gone, a smaller resolution). Never dragged: at the top of the panel's screen, just left of the column when
+        the panel is docked on the right and shows (it covers none of it), just under the bar on the right when it is
+        docked on top, else in the top right corner."""
         s = self.scale()
         w = int(round((SHOT_PAD + n * (SHOT_W + SHOT_PAD)) * s))
         h = int(round((SHOT_H + 2 * SHOT_PAD) * s))
-        mi = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
-        user32.GetMonitorInfoW(user32.MonitorFromWindow(self.hwnd, 2), ctypes.byref(mi))
-        wa, gap = mi.rcWork, int(round(8 * s))
-        right = wa.right
-        if self.opts["dock"] != "top" and self.visible:
+        if self.strip_at:
+            x, y = self.strip_at[0] - w, self.strip_at[1]
+            wa = self.work_area((x, y, w, h))
+            return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
+        wa, gap = self.work_area(), int(round(SHOT_GAP * s))
+        right, top = wa.right, wa.top
+        if self.visible and self.opts["dock"] == "top":
+            top += int(round(STRIP * s))
+        elif self.visible:
             r = wt.RECT()
             user32.GetWindowRect(self.hwnd, ctypes.byref(r))
             right = min(right, r.left)
-        return right - gap - w, wa.bottom - gap - h, w, h
+        return right - gap - w, top + gap, w, h
 
     def update_strip(self):
         """Draws the strip again when what it shows or where it sits has changed; hides it when it is switched off,
-        the keeper is off, or no screenshot is left."""
-        if not self.strip_ready or not self.hwnd:
+        the keeper is off, or no screenshot is left. Left alone while it is being dragged."""
+        if not self.strip_ready or not self.hwnd or (self.strip_drag and self.strip_drag["thread"].is_alive()):
             return
         if not self.strip_shown:
-            # pywebview's show() activates the window (Form.Activate), so it is used once, now, while the panel is
-            # starting anyway, and the foreground handed back; from then on Win32 shows and hides it without
-            # activating. Never shown by pywebview, WebView2 would draw nothing in it (see show_alert)
-            fg = user32.GetForegroundWindow()
-            user32.SetWindowPos(self.strip_hwnd, -1, -32000, -32000, 0, 0, 0x0001 | 0x0010)  # off screen meanwhile
-            self.strip.show()
-            user32.ShowWindow(self.strip_hwnd, 0)
-            if fg and fg != self.strip_hwnd:
-                user32.SetForegroundWindow(fg)
+            self.wake(self.strip, self.strip_hwnd)
             self.strip_shown = True
+        if self.view_ready and not self.view_shown:
+            self.wake(self.view, self.view_hwnd)
+            self.view_shown = True
         items = self.shots.latest(SHOT_N) if self.strip_on and self.keeping() else []
         rect = self.strip_rect(len(items)) if items else None
         key = (json.dumps(items), rect)
         if key == self.strip_key:
             return
-        self.strip_key, self.strip_items = key, items
+        fresh = self.strip_key is None or key[0] != self.strip_key[0]
+        self.strip_key, self.strip_items, self.strip_now = key, items, rect
         if not items:
+            self.view_close()
             user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
             return
-        data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"])} for i in items]
-        self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
+        if fresh:
+            data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"])} for i in items]
+            self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
+            self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))
         x, y, w, h = rect
         r = int(round(24 * self.scale()))
         user32.SetWindowRgn(self.strip_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), True)
         # HWND_TOPMOST, SWP_NOACTIVATE | SWP_SHOWWINDOW: over everything, the keyboard stays where it was
         user32.SetWindowPos(self.strip_hwnd, -1, x, y, w, h, 0x0010 | 0x0040)
+        if fresh:
+            self.feed_view(items)  # after the strip shows: a large new picture takes a moment to hand over
+
+    # ----- dragging the strip -----
+    def strip_press(self):
+        """A press anywhere on the strip. Returns its number, which the page hands back with strip_release()."""
+        d = self.strip_drag
+        if d and d["thread"].is_alive():
+            return d["n"]
+        d = {"n": (d["n"] + 1) if d else 1, "moved": False}
+        d["thread"] = threading.Thread(target=self.strip_follow, args=(d,), daemon=True)
+        self.strip_drag = d
+        d["thread"].start()
+        return d["n"]
+
+    def strip_follow(self, d):
+        """While the button is held: once the pointer has gone SHOT_MOVE px, the strip moves with it (moved with
+        SWP_NOACTIVATE, so the keyboard stays in the window the user works in); where it is let go is kept in
+        claude-plus.local.json and used from then on."""
+        button = 0x02 if user32.GetSystemMetrics(23) else 0x01  # SM_SWAPBUTTON: the primary button
+        far = (SHOT_MOVE * self.scale()) ** 2
+        p0, pt, r = wt.POINT(), wt.POINT(), wt.RECT()
+        user32.GetCursorPos(ctypes.byref(p0))
+        user32.GetWindowRect(self.strip_hwnd, ctypes.byref(r))
+        dx = dy = 0
+        held = True
+        while held:
+            # the button first, the pointer after: a release seen late still lands where the pointer was let go
+            held = bool(user32.GetAsyncKeyState(button) & 0x8000)
+            user32.GetCursorPos(ctypes.byref(pt))
+            dx, dy = pt.x - p0.x, pt.y - p0.y
+            if not d["moved"] and dx * dx + dy * dy >= far:
+                d["moved"] = True
+                self.view_close()
+            if d["moved"]:
+                user32.SetWindowPos(self.strip_hwnd, -1, r.left + dx, r.top + dy, 0, 0, 0x0001 | 0x0010)
+            if held:
+                time.sleep(0.01)
+        if d["moved"]:
+            self.strip_at = (r.right + dx, r.top + dy)
+            try:
+                save_local("shot_strip_at", list(self.strip_at))
+            except OSError:
+                pass
+            self.strip_seen = -1  # the poll loop places it again: pulled back onto the screen if it was let go off it
+
+    def strip_release(self, n):
+        """The page's release: True when press n became a drag (then the page fires no click)."""
+        d = self.strip_drag
+        if not d or d["n"] != n:
+            return False
+        d["thread"].join(2)
+        return d["moved"]
+
+    # ----- the large preview -----
+    def feed_view(self, items):
+        """The preview holds the strip's pictures at full size, decoded, so one shows at once on a click; only a new
+        or changed file is sent."""
+        if not self.view_ready:
+            return
+        data, sent = [], {}
+        for i in items:
+            try:
+                st = os.stat(i["path"])
+                k = (i["path"], st.st_size, st.st_mtime)
+            except OSError:
+                continue
+            d = {"at": i["at"], "name": os.path.basename(i["path"])}
+            if self.view_sent.get(i["at"]) != k:
+                d["src"] = full_src(i["path"])[0]
+            sent[i["at"]] = k
+            data.append(d)
+        self.view.evaluate_js("shotView.update(%s)" % json.dumps(data))
+        self.view_sent = sent
+        if self.view_at is not None and self.view_at not in sent:
+            self.view_close()
+
+    def view_toggle(self, at):
+        """A click on a strip picture: shown large, or closed when it is the one already shown."""
+        if self.view_at == at:
+            self.view_close()
+        else:
+            self.view_show(at)
+
+    def view_show(self, at):
+        """The picture at up to its own size, in the largest free part of the strip's screen beside the strip (above,
+        below, left or right of it), so the strip stays clickable over it. Topmost, never activated."""
+        item = next((i for i in self.strip_items if i["at"] == at), None)
+        if not item or not self.view_ready or not self.strip_now:
+            return
+        iw, ih = full_src(item["path"])[1]
+        if not iw or not ih:
+            return
+        s = self.scale()
+        sx, sy, sw, sh = self.strip_now
+        wa = self.work_area(self.strip_now)
+        m, head, pad = int(round(VIEW_MARGIN * s)), VIEW_HEAD * s, VIEW_PAD * s
+        L, T, R, B = wa.left + m, wa.top + m, wa.right - m, wa.bottom - m
+        best = None
+        for l, t, r, b in ((L, T, R, sy - m), (L, sy + sh + m, R, B), (L, T, sx - m, B), (sx + sw + m, T, R, B)):
+            bw, bh = r - l - 2 * pad, b - t - head - pad
+            if bw > 0 and bh > 0:
+                f = min(bw / iw, bh / ih, 1.0)
+                if not best or f > best[0]:
+                    best = (f, l, t, r, b)
+        if not best:
+            return
+        f, l, t, r, b = best
+        w = min(max(int(iw * f + 2 * pad), int(VIEW_MIN_W * s)), r - l)
+        h = int(ih * f + head + pad)
+        x, y = l + (r - l - w) // 2, t + (b - t - h) // 2
+        with self.view_lock:
+            self.view_at = at
+            if not self.view_watch:  # watching before it shows, so an Esc right away already closes it
+                self.view_watch = Outside(self.view_close, (self.view_hwnd, self.strip_hwnd))
+            self.view.evaluate_js("shotView.show(%s)" % json.dumps(at))
+            rr = int(round(24 * s))
+            user32.SetWindowRgn(self.view_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, rr, rr), True)
+            user32.SetWindowPos(self.view_hwnd, -1, x, y, w, h, 0x0010 | 0x0040)  # topmost, shown, not activated
+            user32.SetWindowPos(self.strip_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # the strip over it
+        self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(at))
+
+    def view_close(self):
+        """Hides the preview: Esc, a click on it or outside it, a second click on its picture, Open, a drag."""
+        with self.view_lock:
+            if self.view_at is None:
+                return
+            self.view_at = None
+            user32.ShowWindow(self.view_hwnd, 0)  # SW_HIDE
+            watch, self.view_watch = self.view_watch, None
+        if watch:
+            watch.stop()
+        self.view.evaluate_js("shotView.hide()")
+        self.strip.evaluate_js("shotStrip.open(null)")
 
     def state(self):
         lim, now = read_limits(), time.time()
@@ -2325,8 +2643,10 @@ class Panel:
             self.shadow.close()
         if getattr(self, "shots", None):
             self.shots.stop()
+        self.view_close()
         self.alert.destroy()  # a hidden window left behind keeps the program running
         self.strip.destroy()
+        self.view.destroy()
         self.window.destroy()
 
 

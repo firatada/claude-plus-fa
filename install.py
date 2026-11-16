@@ -7,7 +7,7 @@
 #   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge or a strip on the top edge; starts at sign-in)
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
 #   agent-alert.html -> ~/.claude           (the alert shown when a session waits for an answer)
-#   agent-shots.html -> ~/.claude           (the strip of the last three screenshots, over every window)
+#   agent-shots.html -> ~/.claude           (the strip of the last three screenshots and their large preview, over every window)
 #   agent-panel-shots.py -> ~/.claude       (the panel keeps your screenshots: Desktop\screenshots, then the pasted-into project)
 #   Agent Panel.lnk  -> the user's Desktop  (starts the panel, or brings the running one up)
 #   settings.json    <- the hook entries and statusLine (backed up first)

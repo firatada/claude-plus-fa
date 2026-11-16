@@ -6,7 +6,8 @@
 # gets screenshots/ in its .gitignore (and .assetsignore, when it has one). Pasted into a second session
 # in another folder, it is copied there. Nothing is deleted; nothing is added to Claude's input; the
 # keeper only reads the clipboard. The panel's strip of the last three (latest()) writes TEXT to it on Copy
-# (copy_text(): the file's path and its OCR lines), never an image, so the keeper never takes it for a screenshot.
+# (copy_text(): the file's path and its OCR lines, read by a resident OCR worker), never an image, so the keeper
+# never takes it for a screenshot.
 # Off: "screenshots": false in ~/.claude/claude-plus.local.json.
 import base64, collections, ctypes, ctypes.wintypes as wt, datetime, io, json, os, queue, re, shutil, threading, \
     time, unicodedata
@@ -378,9 +379,14 @@ def keep_private(project):
 # ---------- the strip's Copy: the path and the OCR text, as text ----------
 # Windows' own OCR (Windows.Media.Ocr), driven from Windows PowerShell 5.1, which reaches WinRT without a package.
 # Turkish first: measured, it reads Turkish right and English with small l/I slips; en-US garbles Turkish letters.
+# One PowerShell stays resident (Ocr): started with the panel, it loads WinRT and makes the engine once, then waits
+# on stdin for a path and answers with the lines and END. It reads a picture only when Copy asks for one; starting a
+# PowerShell per Copy cost 1.2 to 2.8 s, the resident one answers in about 0.1 to 0.3 s.
+END = "\x1e"  # closes each answer; never in OCR text
 OCR_PS = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+[Console]::InputEncoding = [Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $as = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and
   $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
@@ -393,31 +399,101 @@ $null = [Windows.Globalization.Language, Windows.Globalization, ContentType = Wi
 $e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('tr'))
 if (-not $e) { $e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
 if (-not $e) { exit 3 }
-$f = Wait ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:CPFA_OCR)) ([Windows.Storage.StorageFile])
-$s = Wait ($f.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
-$d = Wait ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($s)) ([Windows.Graphics.Imaging.BitmapDecoder])
-$b = Wait ($d.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
-$r = Wait ($e.RecognizeAsync($b)) ([Windows.Media.Ocr.OcrResult])
-$s.Dispose()
-foreach ($l in $r.Lines) { $l.Text }
+# warm the engine on a blank bitmap made here (no picture of the user's is read): the first real read is then fast
+$w = [Windows.Graphics.Imaging.SoftwareBitmap]::new([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, 64, 64)
+$null = Wait ($e.RecognizeAsync($w)) ([Windows.Media.Ocr.OcrResult]); $w.Dispose()
+[Console]::Out.WriteLine('READY'); [Console]::Out.Flush()
+while ($null -ne ($p = [Console]::In.ReadLine())) {
+  try {
+    $f = Wait ([Windows.Storage.StorageFile]::GetFileFromPathAsync($p)) ([Windows.Storage.StorageFile])
+    $s = Wait ($f.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+    $d = Wait ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($s)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $b = Wait ($d.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    $r = Wait ($e.RecognizeAsync($b)) ([Windows.Media.Ocr.OcrResult])
+    $b.Dispose(); $s.Dispose()
+    foreach ($l in $r.Lines) { [Console]::Out.WriteLine($l.Text) }
+  } catch { }
+  [Console]::Out.WriteLine([char]0x1e); [Console]::Out.Flush()
+}
 """
 
 
-def ocr(path):
-    """The picture's text, one string per line Windows' OCR found; [] when it finds none or cannot run (it reads
-    pictures up to OcrEngine.MaxImageDimension, 10000 px here). Measured: 0.4 s a picture, 1.3 s the first."""
-    import subprocess
-    try:
+class Ocr:
+    """The resident OCR worker. start() launches it in the background; read() hands it one path and waits for the
+    answer. A worker that died or hangs is replaced at the next read (which then pays the start, 1 to 3 s)."""
+
+    def __init__(self):
+        self.proc, self.lock = None, threading.Lock()
+
+    def start(self):
+        threading.Thread(target=self._ensure_locked, daemon=True).start()
+        return self
+
+    def _ensure_locked(self):
+        with self.lock:
+            self._ensure()
+
+    def _ensure(self):
+        import subprocess
+        if self.proc and self.proc.poll() is None:
+            return True
+        self.proc = None
         enc = base64.b64encode(OCR_PS.encode("utf-16-le")).decode("ascii")
-        r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                            "-EncodedCommand", enc], capture_output=True, timeout=60,
-                           env=dict(os.environ, CPFA_OCR=os.path.abspath(path)),
-                           creationflags=0x08000000)  # CREATE_NO_WINDOW
-        if r.returncode:
+        try:
+            p = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                  "-EncodedCommand", enc], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, creationflags=0x08000000)  # CREATE_NO_WINDOW
+        except OSError:
+            return False
+        if self._line(p, 60) != "READY":
+            p.kill()
+            return False
+        self.proc = p
+        return True
+
+    @staticmethod
+    def _line(p, timeout):
+        """One line of the worker's answer, or None when it ends or says nothing for timeout seconds."""
+        out = []
+        t = threading.Thread(target=lambda: out.append(p.stdout.readline()), daemon=True)
+        t.start()
+        t.join(timeout)
+        if not out or not out[0]:
+            return None
+        return out[0].decode("utf-8", "replace").rstrip("\r\n")
+
+    def read(self, path):
+        """The picture's text, one string per line Windows' OCR found; [] when it finds none or cannot run (it
+        reads pictures up to OcrEngine.MaxImageDimension, 10000 px here)."""
+        with self.lock:
+            for _ in range(2):  # a dead worker is started again once
+                if not self._ensure():
+                    return []
+                p = self.proc
+                try:
+                    p.stdin.write(os.path.abspath(path).encode("utf-8") + b"\n")
+                    p.stdin.flush()
+                except OSError:
+                    self.proc = None
+                    continue
+                lines = []
+                while True:
+                    l = self._line(p, 30)
+                    if l is None:  # died or hangs: replaced next time
+                        p.kill()
+                        self.proc = None
+                        return [x for x in lines if x]
+                    if l == END:
+                        return [x.strip() for x in lines if x.strip()]
+                    lines.append(l)
             return []
-        return [l.strip() for l in r.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
-    except Exception:
-        return []
+
+    def stop(self):
+        if self.proc:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
 
 
 kernel32.GlobalAlloc.restype = kernel32.GlobalLock.restype = ctypes.c_void_p
@@ -478,6 +554,7 @@ class Shots:
         self.drag = None       # the last rectangle dragged while a snipping tool was in front: (x, y, ended at)
         self.tracking = False  # follow_drag() is running
         self.version = 0       # goes up on every change to the index: the panel's strip redraws then
+        self.ocr = Ocr()       # the resident OCR worker: Copy's reading
 
     # ----- state -----
     def load(self):
@@ -520,18 +597,20 @@ class Shots:
         p = e and self.where(e)
         if not p:
             return False
-        ok = set_clipboard_text(shot_text(p, ocr(p)))
+        ok = set_clipboard_text(shot_text(p, self.ocr.read(p)))
         self.log("copied text" if ok else "copy failed", p)
         return ok
 
     # ----- threads -----
     def start(self):
         self.front(user32.GetForegroundWindow())
+        self.ocr.start()
         threading.Thread(target=self.listen, daemon=True).start()
         threading.Thread(target=self.work, daemon=True).start()
         return self
 
     def stop(self):
+        self.ocr.stop()
         if self.hwnd:
             user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
 

@@ -63,7 +63,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - When you paste a screenshot into a Claude Code session (`Alt+V`), it moves from the desktop into a `screenshots` folder in that session's project folder, named after the session (`fix-login-page_2026-11-13_1405.png`). Pasted into a session of another project too, it is copied there. So the desktop folder keeps only the screenshots you never gave to Claude.
 - That folder never reaches git or a website: the panel adds `screenshots/` to the project's `.gitignore` (creating one only in a git repository that has none) and to its `.assetsignore` when there is one. These two files are the only project files it ever edits.
 - Nothing is ever deleted, and nothing is added to what Claude reads: the panel only watches the clipboard and the session's conversation file. To turn it off, put `"screenshots": false` in `~/.claude/claude-plus.local.json`.
-- Your last three screenshots stay on screen in a small strip at the bottom corner on the panel's side, over every window, without ever taking the keyboard. A new screenshot appears in it at once. Click a picture to open it; its **Copy** button puts the file's path and the text Windows reads in it (OCR) on the clipboard as text, so pasting it into a Claude prompt costs a few tokens instead of a picture:
+- Your last three screenshots stay on screen in a small strip at the top, beside the panel, over every window, without ever taking the keyboard. A new screenshot appears in it at once. Press anywhere on the strip and move to drag it; it stays where you drop it, also after a restart. Click a picture to see it large at once; click it again, click anywhere else or press `Esc` to close it, or **Open** to open it in your picture viewer. Its **Copy** button puts the file's path and the text Windows reads in it (OCR) on the clipboard as text, so pasting it into a Claude prompt costs a few tokens instead of a picture:
   ```
   [screenshot: C:\Users\you\my-project\screenshots\fix-login-page_2026-11-13_1405.png]
   the text in the picture, one line per line
@@ -158,7 +158,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `agent-panel.pyw` | The Agent Panel on the right or the top edge of the screen |
 | `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
 | `agent-alert.html` | The alert shown when a session waits for your answer |
-| `agent-shots.html` | The strip of your last three screenshots |
+| `agent-shots.html` | The strip of your last three screenshots, and their large preview |
 | `agent-panel-shots.py` | Keeps your screenshots: the desktop folder, then the project they were pasted into |
 | `mascot/` | The octopus: the logo (also the tray icon until a 5-hour figure is known) and the panel's animation strips |
 | `tools/mascot-export.py` | Cuts `mascot/` from the octopus sheet in `tools/mascot-source/` |
