@@ -181,6 +181,8 @@ user32.GetWindowLongW.restype = ctypes.c_long
 user32.SetWindowPos.argtypes = [wt.HWND, ctypes.c_ssize_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT]
 user32.GetAsyncKeyState.restype = ctypes.c_short
 user32.SetWindowRgn.argtypes = [wt.HWND, ctypes.c_void_p, wt.BOOL]
+user32.SetWindowLongPtrW.argtypes = [wt.HWND, ctypes.c_int, ctypes.c_ssize_t]
+user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 gdi32 = ctypes.windll.gdi32
 gdi32.CreateRectRgn.restype = gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
 gdi32.CombineRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
@@ -499,6 +501,8 @@ def open_session(s, cmd=None):
 kernel32.GetConsoleWindow.restype = wt.HWND
 user32.GetAncestor.restype = wt.HWND
 user32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+user32.WindowFromPoint.restype = wt.HWND
+user32.WindowFromPoint.argtypes = [wt.POINT]
 user32.GetForegroundWindow.restype = wt.HWND
 
 
@@ -1519,9 +1523,10 @@ class Outside:
         self.up.wait(2)
 
     def inside(self, pt):
-        r = wt.RECT()
-        return any(h and user32.GetWindowRect(h, ctypes.byref(r)) and r.left <= pt.x < r.right
-                   and r.top <= pt.y < r.bottom for h in self.hwnds)
+        """The press lands on one of the windows, not merely inside its rectangle: the strip is not topmost, so
+        another window may cover it."""
+        h = user32.WindowFromPoint(pt)
+        return bool(h) and user32.GetAncestor(h, 2) in self.hwnds  # GA_ROOT
 
     def later(self):
         threading.Thread(target=self.close, daemon=True).start()  # a hook must return at once
@@ -1586,13 +1591,13 @@ class Panel:
         self.alert = webview.create_window(ALERT_TITLE, html=ahtml, js_api=AlertApi(self), width=ALERT_W, height=130,
                                            frameless=True, easy_drag=False, on_top=True, hidden=True,
                                            focus=False, shadow=False, background_color="#FFFFFF")
-        # the strip of the last three screenshots: likewise its own window, over every window, never focused
+        # the strip of the last three screenshots: likewise its own window, owned by the panel, never focused
         self.strip_hwnd, self.strip_ready, self.strip_items, self.strip_key = None, False, [], None
         self.strip_on, self.strip_seen, self.strip_shown = strip_wanted(), -1, False
         with open(SHOTS_HTML, encoding="utf-8") as f:
             shtml = f.read()
         self.strip = webview.create_window(SHOTS_TITLE, html=shtml, js_api=StripApi(self), width=360, height=82,
-                                           min_size=(100, 50), frameless=True, easy_drag=False, on_top=True,
+                                           min_size=(100, 50), frameless=True, easy_drag=False, on_top=False,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
         # the large preview of a strip picture: the same page in view mode, its own window, never focused
@@ -1834,7 +1839,7 @@ class Panel:
             self.place()
             user32.ShowWindow(self.hwnd, 5)
             self.raise_panel()
-        self.update_strip()  # beside the panel when it shows, in the corner when it does not
+        self.update_strip()  # shown beside the panel, hidden with it
 
     def show(self):
         """A second start (the desktop shortcut): as Ctrl+Alt+C, but never hides the panel."""
@@ -2262,7 +2267,7 @@ class Panel:
         if self.alert_hwnd:
             self.alert.hide()
 
-    # ----- the strip: the last three screenshots, over every window, where the user dragged it -----
+    # ----- the strip: the last three screenshots, in the panel's z-order, where the user dragged it -----
     def keeping(self):
         """The screenshot keeper is loaded and switched on ("screenshots" in claude-plus.local.json)."""
         shots = getattr(self, "shots", None)
@@ -2300,12 +2305,15 @@ class Panel:
         self.update_strip()
         self.push()
 
-    def wake(self, win, hwnd):
+    def wake(self, win, hwnd, topmost):
         """pywebview's show() activates the window (Form.Activate), so it is used once per window, now, while the
         panel is starting anyway, off screen, and the foreground handed back; from then on Win32 shows and hides it
         without activating. Never shown by pywebview, WebView2 would draw nothing in it (see show_alert)."""
         fg = user32.GetForegroundWindow()
-        user32.SetWindowPos(hwnd, -1, -32000, -32000, 0, 0, 0x0001 | 0x0010)  # off screen meanwhile
+        if topmost:
+            user32.SetWindowPos(hwnd, -1, -32000, -32000, 0, 0, 0x0001 | 0x0010)  # off screen meanwhile
+        else:
+            user32.SetWindowPos(hwnd, 0, -32000, -32000, 0, 0, 0x0001 | 0x0004 | 0x0010)  # the same, SWP_NOZORDER
         win.show()
         user32.ShowWindow(hwnd, 0)
         if fg and fg != hwnd:
@@ -2326,8 +2334,8 @@ class Panel:
         """Screen pixels for a strip of n. Where the user dropped it, its top-right corner kept (so a strip of more
         pictures grows to the left), pulled wholly back onto the nearest screen when it would leave it (a monitor
         gone, a smaller resolution). Never dragged: at the top of the panel's screen, just left of the column when
-        the panel is docked on the right and shows (it covers none of it), just under the bar on the right when it is
-        docked on top, else in the top right corner."""
+        the panel is docked on the right (it covers none of it), just under the bar on the right when it is docked
+        on top. Only asked while the panel shows: the strip is hidden with it."""
         s = self.scale()
         w = int(round((SHOT_PAD + n * (SHOT_W + SHOT_PAD)) * s))
         h = int(round((SHOT_H + 2 * SHOT_PAD) * s))
@@ -2337,9 +2345,9 @@ class Panel:
             return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
         wa, gap = self.work_area(), int(round(SHOT_GAP * s))
         right, top = wa.right, wa.top
-        if self.visible and self.opts["dock"] == "top":
+        if self.opts["dock"] == "top":
             top += int(round(STRIP * s))
-        elif self.visible:
+        else:
             r = wt.RECT()
             user32.GetWindowRect(self.hwnd, ctypes.byref(r))
             right = min(right, r.left)
@@ -2347,16 +2355,20 @@ class Panel:
 
     def update_strip(self):
         """Draws the strip again when what it shows or where it sits has changed; hides it when it is switched off,
-        the keeper is off, or no screenshot is left. Left alone while it is being dragged."""
+        the keeper is off, no screenshot is left or the panel is hidden. Left alone while it is being dragged.
+        The strip is owned by the panel (GWLP_HWNDPARENT), so Windows keeps it directly above the panel in z-order:
+        it sinks when another window covers the panel and comes forward with it (lift(), a click on the panel,
+        Ctrl+Alt+C), never above a window the panel is under. Never topmost, never activated."""
         if not self.strip_ready or not self.hwnd or (self.strip_drag and self.strip_drag["thread"].is_alive()):
             return
         if not self.strip_shown:
-            self.wake(self.strip, self.strip_hwnd)
+            user32.SetWindowLongPtrW(self.strip_hwnd, -8, self.hwnd)  # GWLP_HWNDPARENT: the owner, before it shows
+            self.wake(self.strip, self.strip_hwnd, False)
             self.strip_shown = True
         if self.view_ready and not self.view_shown:
-            self.wake(self.view, self.view_hwnd)
+            self.wake(self.view, self.view_hwnd, True)
             self.view_shown = True
-        items = self.shots.latest(SHOT_N) if self.strip_on and self.keeping() else []
+        items = self.shots.latest(SHOT_N) if self.strip_on and self.keeping() and self.visible else []
         rect = self.strip_rect(len(items)) if items else None
         key = (json.dumps(items), rect)
         if key == self.strip_key:
@@ -2374,8 +2386,8 @@ class Panel:
         x, y, w, h = rect
         r = int(round(24 * self.scale()))
         user32.SetWindowRgn(self.strip_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), True)
-        # HWND_TOPMOST, SWP_NOACTIVATE | SWP_SHOWWINDOW: over everything, the keyboard stays where it was
-        user32.SetWindowPos(self.strip_hwnd, -1, x, y, w, h, 0x0010 | 0x0040)
+        # SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW: the owner keeps it above the panel; the keyboard stays put
+        user32.SetWindowPos(self.strip_hwnd, 0, x, y, w, h, 0x0004 | 0x0010 | 0x0040)
         if fresh:
             self.feed_view(items)  # after the strip shows: a large new picture takes a moment to hand over
 
@@ -2411,7 +2423,7 @@ class Panel:
                 d["moved"] = True
                 self.view_close()
             if d["moved"]:
-                user32.SetWindowPos(self.strip_hwnd, -1, r.left + dx, r.top + dy, 0, 0, 0x0001 | 0x0010)
+                user32.SetWindowPos(self.strip_hwnd, 0, r.left + dx, r.top + dy, 0, 0, 0x0001 | 0x0004 | 0x0010)
             if held:
                 time.sleep(0.01)
         if d["moved"]:
@@ -2462,7 +2474,9 @@ class Panel:
 
     def view_show(self, at):
         """The picture at up to its own size, in the largest free part of the strip's screen beside the strip (above,
-        below, left or right of it), so the strip stays clickable over it. Topmost, never activated."""
+        below, left or right of it), so it never covers the strip. Topmost, never activated: a popup the user just
+        opened, which closes on any press outside it and the strip, so it never stays over a window the user turned
+        to."""
         item = next((i for i in self.strip_items if i["at"] == at), None)
         if not item or not self.view_ready or not self.strip_now:
             return
@@ -2495,7 +2509,6 @@ class Panel:
             rr = int(round(24 * s))
             user32.SetWindowRgn(self.view_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, rr, rr), True)
             user32.SetWindowPos(self.view_hwnd, -1, x, y, w, h, 0x0010 | 0x0040)  # topmost, shown, not activated
-            user32.SetWindowPos(self.strip_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # the strip over it
         self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(at))
 
     def view_delete(self, at):
