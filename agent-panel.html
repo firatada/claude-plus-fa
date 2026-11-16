@@ -13,7 +13,7 @@
      blinking now and then while it is open, asleep and still when closed, and on a card takes its
      state's dot colour (green, red, grey; the strips are recoloured at export); the header's stays purple. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
-     one shape": the header's logo (36, the octopus), count pill (18, pill radius) and hide button (26) differ, the
+     one shape": the header's logo (36, the octopus), count pill (18, pill radius) and hide and screenshot-strip buttons (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
      16 px edge; card text sits inside its card.
      Top dock (2026-11-10, the maintainer): the same page as a strip over the top edge (body.top): a grip,
@@ -73,6 +73,17 @@ h1 { font-size: 15px; font-weight: 600; }
   background: none; color: var(--muted); display: grid; place-items: center;
 }
 #hide:hover { color: var(--blue); background: var(--surface2); }
+/* the strip of the last three screenshots (agent-shots.html), on or off; beside the hide button at the edge */
+#shots {
+  margin-left: auto; min-width: 26px; min-height: 26px; padding: 0; border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out;
+}
+#shots[hidden] { display: none; }
+#shots[aria-pressed="true"] { color: var(--blue); }
+#shots:hover { color: var(--blue); background: var(--surface2); }
+#shots:active { transform: scale(.97); }
+#shots:not([hidden]) + #hide { margin-left: -6px; }
+@media (prefers-reduced-motion: reduce) { #shots:active { transform: none; } }
 
 .search {
   flex: none; margin: 2px var(--edge) 12px; min-height: 32px; display: flex; align-items: center; gap: 8px;
@@ -281,7 +292,7 @@ body.top #grip { display: block; cursor: grab; }
 body.top h1 { display: none; }
 body.top .logo.mascot { width: 32px; height: 32px; }
 body.top svg.logo { width: 28px; height: 28px; }
-body.top #hide { margin-left: 0; min-width: var(--tab); min-height: var(--tab); }
+body.top #hide, body.top #shots { margin-left: 0; min-width: var(--tab); min-height: var(--tab); }
 body.top .search { margin: 0; flex: 0 1 210px; min-width: 120px; min-height: var(--tab); }
 /* a narrow screen gives the tabs the room the reset times took */
 @media (max-width: 1400px) { body.top .rt { display: none; } }
@@ -357,6 +368,11 @@ body.top #drop.open {
   </svg>
   <h1 data-tip data-full="Drag to the top edge to dock the panel there">Agent Panel</h1>
   <span id="count" data-tip data-full="Sessions in the main list"></span>
+  <button id="shots" type="button" aria-pressed="false" data-tip hidden>
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"
+      stroke-linejoin="round" aria-hidden="true"><rect x="1.5" y="2.5" width="11" height="9" rx="1.5"/>
+      <path d="M1.5 9.5l3.2-3 2.6 2.4 1.7-1.5 3.5 3"/><circle cx="9.5" cy="5.3" r=".9" fill="currentColor" stroke="none"/></svg>
+  </button>
   <button id="hide" aria-label="Hide the panel (Ctrl+Alt+C)" data-tip data-full="Hide the panel (Ctrl+Alt+C)">
     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"
       stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -607,6 +623,12 @@ function render() {
   const rest = showHidden ? hits : [];
   $("count").textContent = !state.ready ? "" : q ? `${rows.length}/${nMain}` : nMain;
   $("count").dataset.full = q ? "Matches in the main list / sessions in it" : "Sessions in the main list";
+  // the screenshot strip's switch; gone while the keeper is off ("screenshots": false), as the strip has nothing then
+  const sh = $("shots"), shotsOn = !!state.strip;
+  sh.hidden = state.strip == null;
+  sh.setAttribute("aria-pressed", shotsOn);
+  sh.dataset.full = shotsOn ? "Hide the last three screenshots" : "Show the last three screenshots";
+  sh.setAttribute("aria-label", sh.dataset.full);
   $("footer").setAttribute("aria-expanded", showHidden);
   $("footer").dataset.full = showHidden ? "Takes those sessions out of the list again" : "Lists the sessions kept out of the main list";
   const nShown = q ? hits.length : nAside;
@@ -1079,6 +1101,7 @@ $("footer").onclick = toggleAside;
 $("status").onclick = () => api().status_page().then(r => r && say(null, r.t, r.err));
 list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(e); });
 $("hide").onclick = () => window.pywebview && api().hide();
+$("shots").onclick = () => window.pywebview && api().strip();
 
 // ----- docking: the header (the grip on top) drags the panel between the right edge and the top edge -----
 // agent-panel.pyw moves the window while the button is held and changes its shape on the way
@@ -1110,10 +1133,12 @@ function setDock(d) {
   render();
 }
 
-// the hide button ends the strip on top, in the reading order as well as on screen; on the right it is in the header
+// the hide button ends the strip on top, in the reading order as well as on screen; on the right it is in the header.
+// The screenshot strip's button goes with it, just before it
 function placeHide() {
   if (onTop()) document.body.insertBefore($("hide"), $("drop"));
   else document.querySelector("header").append($("hide"));
+  $("hide").before($("shots"));
 }
 
 window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); }, dock: setDock };

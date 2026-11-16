@@ -7,8 +7,9 @@
 # sounds (tray menu: Alerts, Alert Sound). A card counts what its session runs in the background (child
 # `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
 # follows that page's public API. Screenshots the user takes are kept in Desktop\screenshots and move into a
-# session's folder when pasted there (agent-panel-shots.py).
-import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, json, os, queue, re, subprocess, sys, tempfile, threading, time
+# session's folder when pasted there (agent-panel-shots.py); the last three stay on screen in a strip over every
+# window (agent-shots.html), switched by a header button.
+import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, io, json, os, queue, re, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
 
@@ -24,7 +25,60 @@ MASCOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-m
 ALERT_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-alert.html")
 KNOCK = os.path.join(MASCOT, "knock.wav")
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-shots.py")
+SHOTS_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-shots.html")
 OPTS_FILE = os.path.join(STATE_DIR, "options.json")
+LOCAL = os.path.join(CLAUDE, "claude-plus.local.json")  # the user's own settings, outside the repo
+
+
+def strip_wanted():
+    """The strip of the last three screenshots: shown unless claude-plus.local.json says "shot_strip": false."""
+    try:
+        with open(LOCAL, encoding="utf-8") as f:
+            v = json.load(f)
+        return not (isinstance(v, dict) and v.get("shot_strip") is False)
+    except (OSError, ValueError):
+        return True
+
+
+def save_strip_wanted(on):
+    """The header button's choice, kept in claude-plus.local.json beside the user's other keys. A file that cannot
+    be read as JSON is left alone (the choice then lasts until the panel restarts)."""
+    try:
+        with open(LOCAL, encoding="utf-8") as f:
+            v = json.load(f)
+    except OSError:
+        v = {}
+    except ValueError:
+        return
+    if not isinstance(v, dict):
+        return
+    v["shot_strip"] = bool(on)
+    tmp = LOCAL + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(v, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, LOCAL)
+
+
+def thumb_src(path, cache={}):
+    """A strip thumbnail as a data URL (the page is handed over as a string, so it cannot load files), cached by
+    path, size and time."""
+    from PIL import Image
+    try:
+        st = os.stat(path)
+        key = (path, st.st_size, st.st_mtime)
+        if key not in cache:
+            with Image.open(path) as im:
+                im = im.convert("RGB")
+                im.thumbnail((SHOT_W * 3, SHOT_H * 3))  # sharp up to 300 % display scaling
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=85)
+            if len(cache) > 30:
+                cache.clear()
+            cache[key] = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+        return cache[key]
+    except Exception:
+        return ""
 
 
 def load_shots():
@@ -54,6 +108,10 @@ TITLE = "Agent Panel"
 ALERT_TITLE = "Agent Panel Alert"
 ALERT_W = 420          # logical pixels; the height follows the rows, as agent-alert.html lays them out
 ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
+SHOTS_TITLE = "Agent Panel Screenshots"
+SHOT_W, SHOT_H, SHOT_PAD = 112, 70, 6  # logical pixels: a strip thumbnail and the space around and between them,
+                       # as agent-shots.html lays them out
+SHOT_N = 3             # screenshots in the strip
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
 WIDTH = 280            # logical pixels
@@ -1301,6 +1359,9 @@ class Api:
     def region(self, rects):
         self._p.region(rects)
 
+    def strip(self):
+        self._p.events.put("strip")
+
     def status_page(self):
         try:
             os.startfile(STATUS_PAGE)  # the default browser
@@ -1323,6 +1384,25 @@ class AlertApi:
 
     def dismiss(self):
         self._p.alert_dismiss()
+
+
+class StripApi:
+    """What the screenshot strip may call; a screenshot is named by its capture time, its key in the keeper."""
+
+    def __init__(self, panel):
+        self._p = panel
+
+    def ready(self):
+        self._p.strip_up()
+
+    def open(self, at):
+        p = next((s["path"] for s in self._p.strip_items if s["at"] == at), None)
+        if p and os.path.exists(p):
+            os.startfile(p)  # the default viewer
+
+    def copy(self, at):
+        shots = getattr(self._p, "shots", None)
+        return bool(shots and shots.copy_text(at))
 
 
 def animations_on():
@@ -1366,6 +1446,14 @@ class Panel:
         self.alert = webview.create_window(ALERT_TITLE, html=ahtml, js_api=AlertApi(self), width=ALERT_W, height=130,
                                            frameless=True, easy_drag=False, on_top=True, hidden=True,
                                            focus=False, shadow=False, background_color="#FFFFFF")
+        # the strip of the last three screenshots: likewise its own window, over every window, never focused
+        self.strip_hwnd, self.strip_ready, self.strip_items, self.strip_key = None, False, [], None
+        self.strip_on, self.strip_seen, self.strip_shown = strip_wanted(), -1, False
+        with open(SHOTS_HTML, encoding="utf-8") as f:
+            shtml = f.read()
+        self.strip = webview.create_window(SHOTS_TITLE, html=shtml, js_api=StripApi(self), width=360, height=82,
+                                           min_size=(100, 50), frameless=True, easy_drag=False, on_top=True,
+                                           hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
 
     def run(self):
         webview.start(self.main, gui="edgechromium", private_mode=True)
@@ -1403,6 +1491,8 @@ class Panel:
                         self.last_scan = 0
                     elif ev == "quit":
                         return self.quit()
+                    elif ev == "strip":
+                        self.toggle_strip()
                     elif ev.startswith("dock:"):
                         self.set_dock(ev[5:])
                     elif ev.startswith("opt:"):
@@ -1442,9 +1532,13 @@ class Panel:
                 self.push()
                 self.check_alerts()
                 self.watch_return()
+                self.update_strip()  # a file deleted meanwhile, a changed screen or switched-off keeper
             elif now - self.last_live > LIVE_EVERY:
                 self.last_live = now
                 self.update_live()
+            if self.shots and self.shots.version != self.strip_seen:  # a screenshot saved or moved: at once
+                self.strip_seen = self.shots.version
+                self.update_strip()
             time.sleep(0.2)
 
     # ----- placement -----
@@ -1522,6 +1616,7 @@ class Panel:
             self.place()
         if self.icon:
             self.icon.update_menu()
+        self.update_strip()
 
     def drag(self, ox, oy):
         """The header was dragged (ox, oy: where it was grabbed, in css px). Until the button is released the
@@ -1591,6 +1686,7 @@ class Panel:
             self.place()
             user32.ShowWindow(self.hwnd, 5)
             self.raise_panel()
+        self.update_strip()  # beside the panel when it shows, in the corner when it does not
 
     def show(self):
         """A second start (the desktop shortcut): as Ctrl+Alt+C, but never hides the panel."""
@@ -2018,6 +2114,81 @@ class Panel:
         if self.alert_hwnd:
             self.alert.hide()
 
+    # ----- the strip: the last three screenshots, over every window at the bottom corner on the panel's side -----
+    def keeping(self):
+        """The screenshot keeper is loaded and switched on ("screenshots" in claude-plus.local.json)."""
+        shots = getattr(self, "shots", None)
+        return bool(shots and shots.on())
+
+    def strip_up(self):
+        """The strip's page has loaded; its window, made on pywebview's thread, is looked up only now (as alert_up)."""
+        self.strip_hwnd = own_window(SHOTS_TITLE, visible=False)
+        if self.strip_hwnd:
+            ex = user32.GetWindowLongW(self.strip_hwnd, -20)
+            # a tool window (no taskbar button) that never takes the keyboard: WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+            user32.SetWindowLongW(self.strip_hwnd, -20, (ex | 0x80 | 0x08000000) & ~0x40000)
+            self.strip_ready = True
+            self.strip_seen = -1  # the poll loop draws it on its next turn
+
+    def toggle_strip(self):
+        """The header button: the strip on or off, the choice kept in claude-plus.local.json."""
+        self.strip_on = not self.strip_on
+        try:
+            save_strip_wanted(self.strip_on)
+        except OSError:
+            pass
+        self.update_strip()
+        self.push()
+
+    def strip_rect(self, n):
+        """Screen pixels for a strip of n: the bottom corner of the panel's screen on the panel's side, left of the
+        column when it is docked on the right and shows (so the strip covers none of it), else in the corner."""
+        s = self.scale()
+        w = int(round((SHOT_PAD + n * (SHOT_W + SHOT_PAD)) * s))
+        h = int(round((SHOT_H + 2 * SHOT_PAD) * s))
+        mi = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        user32.GetMonitorInfoW(user32.MonitorFromWindow(self.hwnd, 2), ctypes.byref(mi))
+        wa, gap = mi.rcWork, int(round(8 * s))
+        right = wa.right
+        if self.opts["dock"] != "top" and self.visible:
+            r = wt.RECT()
+            user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+            right = min(right, r.left)
+        return right - gap - w, wa.bottom - gap - h, w, h
+
+    def update_strip(self):
+        """Draws the strip again when what it shows or where it sits has changed; hides it when it is switched off,
+        the keeper is off, or no screenshot is left."""
+        if not self.strip_ready or not self.hwnd:
+            return
+        if not self.strip_shown:
+            # pywebview's show() activates the window (Form.Activate), so it is used once, now, while the panel is
+            # starting anyway, and the foreground handed back; from then on Win32 shows and hides it without
+            # activating. Never shown by pywebview, WebView2 would draw nothing in it (see show_alert)
+            fg = user32.GetForegroundWindow()
+            user32.SetWindowPos(self.strip_hwnd, -1, -32000, -32000, 0, 0, 0x0001 | 0x0010)  # off screen meanwhile
+            self.strip.show()
+            user32.ShowWindow(self.strip_hwnd, 0)
+            if fg and fg != self.strip_hwnd:
+                user32.SetForegroundWindow(fg)
+            self.strip_shown = True
+        items = self.shots.latest(SHOT_N) if self.strip_on and self.keeping() else []
+        rect = self.strip_rect(len(items)) if items else None
+        key = (json.dumps(items), rect)
+        if key == self.strip_key:
+            return
+        self.strip_key, self.strip_items = key, items
+        if not items:
+            user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
+            return
+        data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"])} for i in items]
+        self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
+        x, y, w, h = rect
+        r = int(round(24 * self.scale()))
+        user32.SetWindowRgn(self.strip_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), True)
+        # HWND_TOPMOST, SWP_NOACTIVATE | SWP_SHOWWINDOW: over everything, the keyboard stays where it was
+        user32.SetWindowPos(self.strip_hwnd, -1, x, y, w, h, 0x0010 | 0x0040)
+
     def state(self):
         lim, now = read_limits(), time.time()
 
@@ -2039,7 +2210,7 @@ class Panel:
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
                            "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
                 "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime(),
-                "claude": self.claude_status}
+                "claude": self.claude_status, "strip": self.strip_on if self.keeping() else None}
 
     def watch_status(self):
         """Reads status.claude.com now and every STATUS_EVERY on a thread of its own, so a slow network never holds
@@ -2155,6 +2326,7 @@ class Panel:
         if getattr(self, "shots", None):
             self.shots.stop()
         self.alert.destroy()  # a hidden window left behind keeps the program running
+        self.strip.destroy()
         self.window.destroy()
 
 

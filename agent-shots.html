@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Panel Screenshots</title>
+<!-- The Agent Panel's strip of the last three screenshots (the maintainer, 2026-11-15): agent-panel.pyw shows it
+     at the bottom corner on the panel's side, over every window, without ever taking the keyboard, and hides it
+     when there is nothing to show. Newest first. A click on a picture opens the file in the default viewer;
+     Copy puts the file's current path and its OCR text on the clipboard as text, so a prompt gets a few tokens
+     instead of a picture. The window is exactly the strip (rounded by a window region), so the page has no
+     margin. Spark tokens as in agent-panel.html. Sizes: agent-panel.pyw SHOT_W, SHOT_H, SHOT_PAD. -->
+<style>
+:root {
+  --panel: #ffffff; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672; --blue: #1b4df5; --green: #16a34a;
+  --red-deep: #be123c; --r-small: 6px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--panel); color: var(--text); font: 600 11px/1 "Segoe UI", system-ui, sans-serif;
+  overflow: hidden; user-select: none; cursor: default;
+}
+button { font: inherit; cursor: pointer; }
+#strip {
+  height: 100%; display: flex; gap: 6px; padding: 5px; border: 1px solid var(--line); border-radius: 12px;
+}
+.shot { position: relative; flex: none; width: 112px; height: 70px; }
+.pic {
+  width: 100%; height: 100%; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  background: #eef2fb; display: block; transition: transform .16s ease-out;
+}
+.pic:hover { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue); }
+.pic:active { transform: scale(.97); }
+.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.copy {
+  position: absolute; top: 4px; right: 4px; height: 20px; padding: 0 7px; border: 1px solid var(--line);
+  border-radius: var(--r-small); background: rgba(255, 255, 255, .94); color: var(--muted);
+}
+.copy:hover { color: var(--blue); border-color: var(--blue); }
+.copy.done { color: var(--green); border-color: var(--green); }
+.copy.fail { color: var(--red-deep); }
+@media (prefers-reduced-motion: reduce) { .pic { transition: none; } .pic:active { transform: none; } }
+</style>
+</head>
+<body>
+<div id="strip"></div>
+<script>
+const api = () => window.pywebview.api;
+const strip = document.getElementById("strip");
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
+
+function copy(btn, at) {
+  btn.textContent = "Reading…";
+  btn.className = "copy";
+  api().copy(at).then(ok => {
+    btn.textContent = ok ? "Copied" : "Failed";
+    btn.className = "copy " + (ok ? "done" : "fail");
+    setTimeout(() => { btn.textContent = "Copy"; btn.className = "copy"; }, 1600);
+  });
+}
+
+// items: [{at, name, src}], newest first; agent-panel.pyw sizes the window to their number
+window.shotStrip = { update(items) {
+  strip.innerHTML = items.map(s => `<div class="shot">
+    <button type="button" class="pic" data-at="${s.at}" aria-label="Open ${esc(s.name)}"><img alt="" src="${s.src}"></button>
+    <button type="button" class="copy" data-at="${s.at}" aria-label="Copy the path and text of ${esc(s.name)}">Copy</button>
+  </div>`).join("");
+} };
+strip.addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const at = Number(b.dataset.at);
+  if (b.classList.contains("copy")) copy(b, at);
+  else api().open(at);
+});
+addEventListener("pywebviewready", () => api().ready());
+</script>
+</body>
+</html>

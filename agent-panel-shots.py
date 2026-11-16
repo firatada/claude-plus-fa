@@ -5,7 +5,8 @@
 # file moves to <that session's folder>\screenshots\<session-title>_YYYY-MM-DD_HHMM.png and that folder
 # gets screenshots/ in its .gitignore (and .assetsignore, when it has one). Pasted into a second session
 # in another folder, it is copied there. Nothing is deleted; nothing is added to Claude's input; the
-# clipboard is only read, never written.
+# keeper only reads the clipboard. The panel's strip of the last three (latest()) writes TEXT to it on Copy
+# (copy_text(): the file's path and its OCR lines), never an image, so the keeper never takes it for a screenshot.
 # Off: "screenshots": false in ~/.claude/claude-plus.local.json.
 import base64, collections, ctypes, ctypes.wintypes as wt, datetime, io, json, os, queue, re, shutil, threading, \
     time, unicodedata
@@ -374,6 +375,85 @@ def keep_private(project):
     add_line(os.path.join(project, ".assetsignore"))
 
 
+# ---------- the strip's Copy: the path and the OCR text, as text ----------
+# Windows' own OCR (Windows.Media.Ocr), driven from Windows PowerShell 5.1, which reaches WinRT without a package.
+# Turkish first: measured, it reads Turkish right and English with small l/I slips; en-US garbles Turkish letters.
+OCR_PS = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$as = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and
+  $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } |
+  Select-Object -First 1
+function Wait($op, [Type]$t) { $k = $as.MakeGenericMethod($t).Invoke($null, @($op)); $k.Wait() | Out-Null; $k.Result }
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
+$null = [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
+$e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('tr'))
+if (-not $e) { $e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
+if (-not $e) { exit 3 }
+$f = Wait ([Windows.Storage.StorageFile]::GetFileFromPathAsync($env:CPFA_OCR)) ([Windows.Storage.StorageFile])
+$s = Wait ($f.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$d = Wait ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($s)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$b = Wait ($d.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$r = Wait ($e.RecognizeAsync($b)) ([Windows.Media.Ocr.OcrResult])
+$s.Dispose()
+foreach ($l in $r.Lines) { $l.Text }
+"""
+
+
+def ocr(path):
+    """The picture's text, one string per line Windows' OCR found; [] when it finds none or cannot run (it reads
+    pictures up to OcrEngine.MaxImageDimension, 10000 px here). Measured: 0.4 s a picture, 1.3 s the first."""
+    import subprocess
+    try:
+        enc = base64.b64encode(OCR_PS.encode("utf-16-le")).decode("ascii")
+        r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-EncodedCommand", enc], capture_output=True, timeout=60,
+                           env=dict(os.environ, CPFA_OCR=os.path.abspath(path)),
+                           creationflags=0x08000000)  # CREATE_NO_WINDOW
+        if r.returncode:
+            return []
+        return [l.strip() for l in r.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
+    except Exception:
+        return []
+
+
+kernel32.GlobalAlloc.restype = kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+user32.SetClipboardData.argtypes = [wt.UINT, ctypes.c_void_p]
+user32.SetClipboardData.restype = ctypes.c_void_p
+
+
+def set_clipboard_text(text):
+    """Text alone on the clipboard (CF_UNICODETEXT): no image format, so is_screenshot() refuses it."""
+    data = text.encode("utf-16-le") + b"\0\0"
+    for _ in range(10):  # another program may hold the clipboard open for a moment
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        return False
+    try:
+        user32.EmptyClipboard()
+        h = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+        ctypes.memmove(kernel32.GlobalLock(h), data, len(data))
+        kernel32.GlobalUnlock(h)
+        if not user32.SetClipboardData(13, h):  # CF_UNICODETEXT; once set, the clipboard owns the memory
+            kernel32.GlobalFree(h)
+            return False
+        return True
+    finally:
+        user32.CloseClipboard()
+
+
+def shot_text(path, lines):
+    """What Copy puts on the clipboard: a few tokens in a prompt, where the picture itself costs many."""
+    return "\n".join(["[screenshot: %s]" % path] + list(lines))
+
+
 # ---------- the work ----------
 class Shots:
     """Owned by the Agent Panel: start() runs a clipboard listener and a worker on threads of the panel's
@@ -397,6 +477,7 @@ class Shots:
         self.fronts = collections.deque(maxlen=32)  # windows that came to the front: {"at", "hwnd", "app", "title"}
         self.drag = None       # the last rectangle dragged while a snipping tool was in front: (x, y, ended at)
         self.tracking = False  # follow_drag() is running
+        self.version = 0       # goes up on every change to the index: the panel's strip redraws then
 
     # ----- state -----
     def load(self):
@@ -419,6 +500,29 @@ class Shots:
             os.replace(tmp, self.state)
         except OSError:
             pass
+        self.version += 1
+
+    def latest(self, n=3):
+        """The panel's strip: the last n screenshots kept that still exist, newest first, each where it is now."""
+        out = []
+        for e in reversed(list(self.index)):
+            p = self.where(e)
+            if p:
+                out.append({"at": e["at"], "path": p})
+                if len(out) == n:
+                    break
+        return out
+
+    def copy_text(self, at):
+        """Copy on a strip thumbnail: its current path and OCR text on the clipboard, as text. The path is looked
+        up now, as the file may have moved into a project since the strip was drawn."""
+        e = next((e for e in reversed(list(self.index)) if e["at"] == at), None)
+        p = e and self.where(e)
+        if not p:
+            return False
+        ok = set_clipboard_text(shot_text(p, ocr(p)))
+        self.log("copied text" if ok else "copy failed", p)
+        return ok
 
     # ----- threads -----
     def start(self):
