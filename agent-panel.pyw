@@ -8,7 +8,8 @@
 # `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
 # follows that page's public API. Screenshots the user takes are kept in Desktop\screenshots and move into a
 # session's folder when pasted there (agent-panel-shots.py); the last three stay on screen in a strip over every
-# window (agent-shots.html), switched by a header button, dragged anywhere; a click shows one large at once.
+# window (agent-shots.html), switched by a header button, dragged anywhere; a click shows one large at once, with
+# Open and Delete (to the Recycle Bin).
 import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, io, json, os, queue, re, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
@@ -1465,6 +1466,9 @@ class ViewApi:
         if p and os.path.exists(p):
             os.startfile(p)  # the default viewer
 
+    def delete(self, at):
+        return self._p.view_delete(at)
+
     def close(self):
         self._p.view_close()
 
@@ -2494,8 +2498,24 @@ class Panel:
             user32.SetWindowPos(self.strip_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)  # the strip over it
         self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(at))
 
+    def view_delete(self, at):
+        """Delete on the preview: the file, wherever it is now (the Desktop or a project), goes to the Recycle Bin,
+        never deleted for good, and without asking, as the Recycle Bin is the undo. The preview closes and the
+        strip fills up with the next older screenshot. A file already gone only leaves the strip. False when the
+        Recycle Bin refused it (the preview then stays)."""
+        shots = getattr(self, "shots", None)
+        if not shots:
+            return False
+        p = shots.path(at)
+        if p and not (recycle([p]) and not os.path.exists(p)):
+            return False
+        shots.drop(at)  # the poll loop redraws the strip at once (Shots.version)
+        self.view_close()
+        return True
+
     def view_close(self):
-        """Hides the preview: Esc, a click on it or outside it, a second click on its picture, Open, a drag."""
+        """Hides the preview: Esc, a click on it or outside it, a second click on its picture, Open, Delete, a
+        drag."""
         with self.view_lock:
             if self.view_at is None:
                 return

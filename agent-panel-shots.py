@@ -583,18 +583,30 @@ class Shots:
         """The panel's strip: the last n screenshots kept that still exist, newest first, each where it is now."""
         out = []
         for e in reversed(list(self.index)):
-            p = self.where(e)
+            p = not e.get("dropped") and self.where(e)
             if p:
                 out.append({"at": e["at"], "path": p})
                 if len(out) == n:
                     break
         return out
 
-    def copy_text(self, at):
-        """Copy on a strip thumbnail: its current path and OCR text on the clipboard, as text. The path is looked
-        up now, as the file may have moved into a project since the strip was drawn."""
+    def path(self, at):
+        """Where the screenshot taken at `at` is now (None when it is gone), looked up at this moment: it may have
+        moved into a project since the strip was drawn."""
         e = next((e for e in reversed(list(self.index)) if e["at"] == at), None)
-        p = e and self.where(e)
+        return e and self.where(e)
+
+    def drop(self, at):
+        """Delete on the preview: the file went to the Recycle Bin (or was already gone), so the screenshot leaves
+        the strip for good, even when a copy pasted into another project still exists (that copy stays)."""
+        for e in self.index:
+            if e["at"] == at:
+                e["dropped"] = True
+        self.save()
+
+    def copy_text(self, at):
+        """Copy on a strip thumbnail: its current path and OCR text on the clipboard, as text."""
+        p = self.path(at)
         if not p:
             return False
         ok = set_clipboard_text(shot_text(p, self.ocr.read(p)))

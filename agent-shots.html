@@ -11,8 +11,9 @@
      on a picture shows it large at once (the preview holds all three pictures at full size already); a click on the
      same picture closes it. Copy puts the file's current path and its OCR text on the clipboard as text, so a prompt
      gets a few tokens instead of a picture. The window is exactly the strip (rounded by a window region).
-     Preview: the picture at up to its own size, its name and an Open button (the default viewer). A click on it, a
-     click outside it, or Esc closes it. Spark tokens as in agent-panel.html. Sizes: agent-panel.pyw SHOT_W, SHOT_H,
+     Preview: the picture at up to its own size, its name, a Delete button (the file to the Recycle Bin, wherever it
+     is now, no question asked: the Recycle Bin is the undo; the strip then fills up with the next older one) and an
+     Open button (the default viewer). A click on it, a click outside it, or Esc closes it. Spark tokens as in agent-panel.html. Sizes: agent-panel.pyw SHOT_W, SHOT_H,
      SHOT_PAD, VIEW_HEAD, VIEW_PAD. -->
 <style>
 :root {
@@ -45,18 +46,19 @@ body.moving, body.moving * { cursor: grabbing !important; }
 .copy:hover { color: var(--blue); border-color: var(--blue); }
 .copy.done { color: var(--green); border-color: var(--green); }
 .copy.fail { color: var(--red-deep); }
-/* the preview: a 36 px head (name, Open) over the picture, 8 px round it */
+/* the preview: a 36 px head (name, Delete, Open) over the picture, 8 px round it */
 #view { display: none; height: 100%; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; }
 body.view #strip { display: none; }
 body.view #view { display: flex; }
 #head { flex: none; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; }
 #name { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
-#open {
+#open, #del {
   flex: none; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-small);
   background: var(--panel); color: var(--muted);
 }
 #open:hover { color: var(--blue); border-color: var(--blue); }
+#del:hover, #del.fail { color: var(--red-deep); border-color: var(--red-deep); }
 #big { flex: 1; min-height: 0; padding: 0 8px 8px; }
 #big img { display: none; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; }
 #big img.on { display: block; }
@@ -65,7 +67,7 @@ body.view #view { display: flex; }
 </head>
 <body>
 <div id="strip"></div>
-<div id="view"><div id="head"><span id="name"></span><button type="button" id="open">Open</button></div><div id="big"></div></div>
+<div id="view"><div id="head"><span id="name"></span><button type="button" id="del" aria-label="Delete: move it to the Recycle Bin">Delete</button><button type="button" id="open">Open</button></div><div id="big"></div></div>
 <script>
 /*MODE*/
 const api = () => window.pywebview.api;
@@ -155,8 +157,18 @@ window.shotView = {
     for (const v of Object.values(shown)) v.img.classList.remove("on");
   },
 };
+const del = document.getElementById("del");
 document.getElementById("view").addEventListener("click", e => {
   if (e.target.closest("#open")) api().open(current);
+  else if (e.target.closest("#del")) {
+    // agent-panel.pyw closes the preview once the file is in the Recycle Bin; a refusal shows here for a moment
+    api().delete(current).then(ok => {
+      if (ok) return;
+      del.textContent = "Failed";
+      del.classList.add("fail");
+      setTimeout(() => { del.textContent = "Delete"; del.classList.remove("fail"); }, 1600);
+    });
+  }
   else api().close();
 });
 
