@@ -3,10 +3,12 @@
 <head>
 <meta charset="utf-8">
 <title>Agent Panel Screenshots</title>
-<!-- The Agent Panel's strip of the last three screenshots (the maintainer, 2026-11-15 and 16), and the large preview
+<!-- The Agent Panel's strip of the last three screenshots and the pinned ones (the maintainer, 2026-11-15 and 16), and the large preview
      a click on one opens. agent-panel.pyw loads this page twice: as the strip, and with window.MODE = "view" as the
      preview. Both float over every window without ever taking the keyboard.
-     Strip: newest first. Pressing anywhere and moving drags the whole strip (agent-panel.pyw moves the window while
+     Strip: the pinned ones, then the last three others, each group newest first, wrapping into further rows when
+     agent-panel.pyw makes the window narrower than one row (it would leave the screen). Pin keeps a screenshot in the
+     strip however many newer ones come (agent-panel.pyw stores it); a click on its blue Pin unpins it. Pressing anywhere and moving drags the whole strip (agent-panel.pyw moves the window while
      the button is held and tells, on release, whether it was a drag); a press released in place is a click. A click
      on a picture shows it large at once (the preview holds all three pictures at full size already); a click on the
      same picture closes it. Copy puts the file's current path and its OCR text on the clipboard as text, so a prompt
@@ -28,7 +30,8 @@ body {
 }
 button { font: inherit; cursor: pointer; }
 #strip {
-  height: 100%; display: flex; gap: 6px; padding: 5px; border: 1px solid var(--line); border-radius: 12px;
+  height: 100%; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 5px;
+  border: 1px solid var(--line); border-radius: 12px;
 }
 body.moving, body.moving * { cursor: grabbing !important; }
 .shot { position: relative; flex: none; width: 112px; height: 70px; }
@@ -39,11 +42,13 @@ body.moving, body.moving * { cursor: grabbing !important; }
 .pic:hover, .pic.open { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue); }
 .pic:active { transform: scale(.97); }
 .pic img { width: 100%; height: 100%; object-fit: cover; display: block; -webkit-user-drag: none; }
-.copy {
+.copy, .pin {
   position: absolute; top: 4px; right: 4px; height: 20px; padding: 0 7px; border: 1px solid var(--line);
   border-radius: var(--r-small); background: rgba(255, 255, 255, .94); color: var(--muted);
 }
-.copy:hover { color: var(--blue); border-color: var(--blue); }
+.pin { right: auto; left: 4px; }
+.copy:hover, .pin:hover { color: var(--blue); border-color: var(--blue); }
+.pin.on { background: var(--blue); border-color: var(--blue); color: #fff; }
 .copy.done { color: var(--green); border-color: var(--green); }
 .copy.fail { color: var(--red-deep); }
 /* the preview: a 36 px head (name, Delete, Open) over the picture, 8 px round it */
@@ -84,11 +89,19 @@ function copy(btn, at) {
   });
 }
 
-// items: [{at, name, src}], newest first; agent-panel.pyw sizes the window to their number
+function pin(btn, at) {  // shown at once; agent-panel.pyw stores it and redraws the strip in its new place
+  const on = !btn.classList.contains("on");
+  btn.classList.toggle("on", on);
+  btn.setAttribute("aria-pressed", on);
+  api().pin(at);
+}
+
+// items: [{at, name, src, pin}], the pinned ones first, each group newest first; agent-panel.pyw sizes the window
 window.shotStrip = {
   update(items) {
     strip.innerHTML = items.map(s => `<div class="shot">
       <button type="button" class="pic" data-at="${s.at}" aria-label="Enlarge ${esc(s.name)}"><img alt="" src="${s.src}"></button>
+      <button type="button" class="pin${s.pin ? " on" : ""}" data-at="${s.at}" aria-pressed="${s.pin}" aria-label="Pin ${esc(s.name)}: keep it in the strip">Pin</button>
       <button type="button" class="copy" data-at="${s.at}" aria-label="Copy the path and text of ${esc(s.name)}">Copy</button>
     </div>`).join("");
   },
@@ -119,6 +132,7 @@ strip.addEventListener("pointerup", e => {
     if (moved || !b) return;
     const at = Number(b.dataset.at);
     if (b.classList.contains("copy")) copy(b, at);
+    else if (b.classList.contains("pin")) pin(b, at);
     else api().enlarge(at);
   });
 });

@@ -7,10 +7,10 @@
 # sounds (tray menu: Alerts, Alert Sound). A card counts what its session runs in the background (child
 # `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
 # follows that page's public API. Screenshots the user takes are kept in Desktop\screenshots and move into a
-# session's folder when pasted there (agent-panel-shots.py); the last three stay on screen in a strip over every
-# window (agent-shots.html), switched by a header button, dragged anywhere; a click shows one large at once, with
-# Open and Delete (to the Recycle Bin).
-import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, io, json, os, queue, re, subprocess, sys, tempfile, threading, time
+# session's folder when pasted there (agent-panel-shots.py); the last three, and any the user pinned, stay on
+# screen in a strip over every window (agent-shots.html), switched by a header button, dragged anywhere; a click
+# shows one large at once, with Open and Delete (to the Recycle Bin).
+import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, io, json, math, os, queue, re, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
 
@@ -54,6 +54,15 @@ def strip_at():
         return int(v[0]), int(v[1])
     except (TypeError, ValueError, IndexError, KeyError):
         return None
+
+
+def strip_pins():
+    """The screenshots pinned in the strip, by the keeper's key, the capture time ("shot_pins": [at, ...]); a pinned
+    one stays however many newer ones come, and keeps its pin when the keeper moves it into a project."""
+    try:
+        return [float(a) for a in local("shot_pins") or []]
+    except (TypeError, ValueError):
+        return []
 
 
 def save_local(key, value):
@@ -117,6 +126,22 @@ def full_src(path, cache={}):
         return "", (0, 0)
 
 
+def pic_size(path, cache={}):
+    """A picture's size in pixels, from its header alone (where the preview goes), cached by path, size and time."""
+    from PIL import Image
+    try:
+        st = os.stat(path)
+        key = (path, st.st_size, st.st_mtime)
+        if key not in cache:
+            with Image.open(path) as im:
+                if len(cache) > 200:
+                    cache.clear()
+                cache[key] = im.size
+        return cache[key]
+    except Exception:
+        return 0, 0
+
+
 def load_shots():
     """The screenshot keeper (agent-panel-shots.py beside this file), started on threads of this process;
     None when the file is missing or fails to load, and the panel runs without it."""
@@ -147,7 +172,7 @@ ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SHOTS_TITLE = "Agent Panel Screenshots"
 SHOT_W, SHOT_H, SHOT_PAD = 112, 70, 6  # logical pixels: a strip thumbnail and the space around and between them,
                        # as agent-shots.html lays them out
-SHOT_N = 3             # screenshots in the strip
+SHOT_N = 3             # unpinned screenshots in the strip (the pinned ones come on top of these)
 SHOT_GAP = 8           # logical pixels between the strip and the screen's edge or the panel
 SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
 VIEW_TITLE = "Agent Panel Screenshot"
@@ -1454,6 +1479,9 @@ class StripApi:
         shots = getattr(self._p, "shots", None)
         return bool(shots and shots.copy_text(at))
 
+    def pin(self, at):
+        self._p.events.put("pin:" + json.dumps(at))  # done on the poll loop's thread, as every other strip change
+
 
 class ViewApi:
     """What the large preview may call."""
@@ -1600,6 +1628,7 @@ class Panel:
                                            min_size=(100, 50), frameless=True, easy_drag=False, on_top=False,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
+        self.pins = strip_pins()
         # the large preview of a strip picture: the same page in view mode, its own window, never focused
         self.view_hwnd, self.view_ready, self.view_shown, self.view_at, self.view_sent = None, False, False, None, {}
         self.view_watch, self.view_lock = None, threading.RLock()
@@ -1646,6 +1675,8 @@ class Panel:
                         return self.quit()
                     elif ev == "strip":
                         self.toggle_strip()
+                    elif ev.startswith("pin:"):
+                        self.toggle_pin(float(ev[4:]))
                     elif ev.startswith("dock:"):
                         self.set_dock(ev[5:])
                     elif ev.startswith("opt:"):
@@ -2267,7 +2298,7 @@ class Panel:
         if self.alert_hwnd:
             self.alert.hide()
 
-    # ----- the strip: the last three screenshots, in the panel's z-order, where the user dragged it -----
+    # ----- the strip: the pinned screenshots and the last three, in the panel's z-order, where the user dragged it -----
     def keeping(self):
         """The screenshot keeper is loaded and switched on ("screenshots" in claude-plus.local.json)."""
         shots = getattr(self, "shots", None)
@@ -2305,6 +2336,21 @@ class Panel:
         self.update_strip()
         self.push()
 
+    def toggle_pin(self, at):
+        """A Pin button: the screenshot pinned (it stays in the strip, the pinned ones before the recent ones), or
+        unpinned; kept in claude-plus.local.json and handed to the keeper, which then never trims it off its index."""
+        self.save_pins([a for a in self.pins if a != at] if at in self.pins else self.pins + [at])
+        self.update_strip()
+
+    def save_pins(self, pins):
+        self.pins = pins
+        if getattr(self, "shots", None):
+            self.shots.keep = set(pins)
+        try:
+            save_local("shot_pins", pins)
+        except OSError:
+            pass
+
     def wake(self, win, hwnd, topmost):
         """pywebview's show() activates the window (Form.Activate), so it is used once per window, now, while the
         panel is starting anyway, off screen, and the foreground handed back; from then on Win32 shows and hides it
@@ -2335,23 +2381,31 @@ class Panel:
         pictures grows to the left), pulled wholly back onto the nearest screen when it would leave it (a monitor
         gone, a smaller resolution). Never dragged: at the top of the panel's screen, just left of the column when
         the panel is docked on the right (it covers none of it), just under the bar on the right when it is docked
-        on top. Only asked while the panel shows: the strip is hidden with it."""
+        on top. More pictures than fit between its right edge and the screen's left edge wrap into further rows
+        below (the page's flex-wrap breaks at the same width), in either dock, as the strip lies along the top.
+        Only asked while the panel shows: the strip is hidden with it."""
         s = self.scale()
-        w = int(round((SHOT_PAD + n * (SHOT_W + SHOT_PAD)) * s))
-        h = int(round((SHOT_H + 2 * SHOT_PAD) * s))
         if self.strip_at:
-            x, y = self.strip_at[0] - w, self.strip_at[1]
-            wa = self.work_area((x, y, w, h))
-            return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
-        wa, gap = self.work_area(), int(round(SHOT_GAP * s))
-        right, top = wa.right, wa.top
-        if self.opts["dock"] == "top":
-            top += int(round(STRIP * s))
+            right, top = self.strip_at
+            wa = self.work_area((right - 1, top, 1, 1))
+            right = min(max(right, wa.left + 1), wa.right)
         else:
-            r = wt.RECT()
-            user32.GetWindowRect(self.hwnd, ctypes.byref(r))
-            right = min(right, r.left)
-        return right - gap - w, top + gap, w, h
+            wa, gap = self.work_area(), int(round(SHOT_GAP * s))
+            right, top = wa.right, wa.top
+            if self.opts["dock"] == "top":
+                top += int(round(STRIP * s))
+            else:
+                r = wt.RECT()
+                user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+                right = min(right, r.left)
+            right, top = right - gap, top + gap
+        cols = max(1, min(n, int(((right - wa.left) / s - SHOT_PAD) // (SHOT_W + SHOT_PAD))))
+        rows = -(-n // cols)
+        w = math.ceil((SHOT_PAD + cols * (SHOT_W + SHOT_PAD)) * s)  # never a pixel short: the page would wrap early
+        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD)) * s)
+        x, y = right - w, top
+        wa = self.work_area((x, y, w, h))
+        return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
 
     def update_strip(self):
         """Draws the strip again when what it shows or where it sits has changed; hides it when it is switched off,
@@ -2368,7 +2422,12 @@ class Panel:
         if self.view_ready and not self.view_shown:
             self.wake(self.view, self.view_hwnd, True)
             self.view_shown = True
-        items = self.shots.latest(SHOT_N) if self.strip_on and self.keeping() and self.visible else []
+        if self.pins and self.keeping():  # a pinned file deleted (here or elsewhere) or gone loses its pin
+            gone = [a for a in self.pins if not self.shots.alive(a)]
+            if gone:
+                self.save_pins([a for a in self.pins if a not in gone])
+        on = self.strip_on and self.keeping() and self.visible
+        items = self.shots.latest(SHOT_N, set(self.pins)) if on else []
         rect = self.strip_rect(len(items)) if items else None
         key = (json.dumps(items), rect)
         if key == self.strip_key:
@@ -2380,7 +2439,8 @@ class Panel:
             user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
             return
         if fresh:
-            data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"])} for i in items]
+            data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"]), "pin": i["pin"]}
+                    for i in items]
             self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
             self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))
         x, y, w, h = rect
@@ -2480,7 +2540,7 @@ class Panel:
         item = next((i for i in self.strip_items if i["at"] == at), None)
         if not item or not self.view_ready or not self.strip_now:
             return
-        iw, ih = full_src(item["path"])[1]
+        iw, ih = pic_size(item["path"])
         if not iw or not ih:
             return
         s = self.scale()

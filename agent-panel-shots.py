@@ -5,7 +5,7 @@
 # file moves to <that session's folder>\screenshots\<session-title>_YYYY-MM-DD_HHMM.png and that folder
 # gets screenshots/ in its .gitignore (and .assetsignore, when it has one). Pasted into a second session
 # in another folder, it is copied there. Nothing is deleted; nothing is added to Claude's input; the
-# keeper only reads the clipboard. The panel's strip of the last three (latest()) writes TEXT to it on Copy
+# keeper only reads the clipboard. The panel's strip (latest(): the pinned ones and the last three) writes TEXT to it on Copy
 # (copy_text(): the file's path and its OCR lines, read by a resident OCR worker), never an image, so the keeper
 # never takes it for a screenshot.
 # Off: "screenshots": false in ~/.claude/claude-plus.local.json.
@@ -90,6 +90,17 @@ def enabled():
         return not (isinstance(v, dict) and v.get("screenshots") is False)
     except (OSError, ValueError):
         return True
+
+
+def pins():
+    """The screenshots pinned in the panel's strip, by capture time ("shot_pins" in claude-plus.local.json; the panel
+    writes it). Kept in the index however many newer ones come."""
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            v = json.load(f)
+        return {float(a) for a in v.get("shot_pins") or []}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set()
 
 
 def desktop():
@@ -555,6 +566,7 @@ class Shots:
         self.tracking = False  # follow_drag() is running
         self.version = 0       # goes up on every change to the index: the panel's strip redraws then
         self.ocr = Ocr()       # the resident OCR worker: Copy's reading
+        self.keep = pins()     # capture times the panel's strip has pinned: never trimmed off the index
 
     # ----- state -----
     def load(self):
@@ -568,7 +580,9 @@ class Shots:
             return []
 
     def save(self):
-        self.index = self.index[-KEEP:]
+        cut, keep = len(self.index) - KEEP, self.keep
+        if cut > 0:  # the oldest go, except pinned ones
+            self.index = [e for i, e in enumerate(self.index) if i >= cut or e["at"] in keep]
         try:
             os.makedirs(os.path.dirname(self.state), exist_ok=True)
             tmp = self.state + ".tmp"
@@ -579,16 +593,23 @@ class Shots:
             pass
         self.version += 1
 
-    def latest(self, n=3):
-        """The panel's strip: the last n screenshots kept that still exist, newest first, each where it is now."""
-        out = []
+    def latest(self, n=3, pinned=()):
+        """The panel's strip: every pinned screenshot that still exists, then the last n unpinned ones, each group
+        newest first, each where it is now."""
+        pins, recent = [], []
         for e in reversed(list(self.index)):
+            pin = e["at"] in pinned
+            if not pin and len(recent) == n:
+                continue
             p = not e.get("dropped") and self.where(e)
             if p:
-                out.append({"at": e["at"], "path": p})
-                if len(out) == n:
-                    break
-        return out
+                (pins if pin else recent).append({"at": e["at"], "path": p, "pin": pin})
+        return pins + recent
+
+    def alive(self, at):
+        """The screenshot is still kept: in the index, not deleted on the preview, its file somewhere."""
+        e = next((e for e in reversed(list(self.index)) if e["at"] == at), None)
+        return bool(e and not e.get("dropped") and self.where(e))
 
     def path(self, at):
         """Where the screenshot taken at `at` is now (None when it is gone), looked up at this moment: it may have
@@ -954,6 +975,7 @@ class Shots:
             return
         os.makedirs(folder, exist_ok=True)
         dest = free_name(folder, "%s_%s" % (slugify(s.get("title")), stamp(e["at"])))
+        e["places"].append(dest)  # listed first, so where() never finds it nowhere mid-move (a pin would be lost)
         if e.get("file") and src == e["file"]:
             shutil.move(src, dest)  # first paste: it leaves the Desktop
             e["file"] = None
@@ -961,6 +983,5 @@ class Shots:
         else:
             shutil.copy2(src, dest)  # pasted again elsewhere: a copy
             self.log("copied", dest)
-        e["places"].append(dest)
         self.save()
         keep_private(home)
