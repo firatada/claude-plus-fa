@@ -2,7 +2,7 @@
 
 Add-ons for Claude Code on Windows, so a session and its context are never lost. Public repository; one code base for everyone. The maintainer's own behaviour differs only through `~/.claude/claude-plus.local.json`, which lives outside the repo.
 
-1. Limit fallback: when the usage limit ends a turn, a themed window offers to continue the same session on z.ai GLM (only when a key is set); once the limit resets and GLM is idle, the same window offers to continue it with Claude again.
+1. Limit fallback: when the usage limit ends a turn, a themed window offers to continue the session on z.ai GLM or on Codex, with set-up steps for whichever is not ready; once the limit resets and GLM or Codex is idle, the same window offers to continue it with Claude again, carrying what Codex did into the same transcript.
 2. `glm` command: Claude Code on GLM, sharing `~/.claude`.
 3. Status line: model, context, 5-hour and weekly usage bars with reset times.
 4. Context guard: past 90 % Claude documents everything and writes `handoff.md`.
