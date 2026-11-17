@@ -9,6 +9,8 @@
 # On either way out it records the move in ~/.claude/state/glm-return/<session>.json, so the Agent Panel can
 # offer the way back to Claude once the limit has reset; the panel asks through this script's --ask-return
 # and, coming back from Codex, uses codex_back_prompt() to carry what happened in Codex into the transcript.
+# The record lives until a Claude process holds the session again. Run as `--carry` (SessionStart resume and
+# UserPromptSubmit hooks) it carries a Codex record into a session the user resumed or typed into by hand.
 #
 # The question is asked inside the hook, so settings.json gives this hook a long
 # timeout; StopFailure output is ignored, so blocking costs nothing.
@@ -499,6 +501,19 @@ def alive(pid):
     return bool(ok) and code.value == 259  # STILL_ACTIVE
 
 
+def born(pid):
+    """A process's creation time (FILETIME as an int), None if it cannot be read: with alive() it tells the
+    console the record names from a later process that got the same number."""
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    t = [ctypes.c_ulonglong() for _ in range(4)]
+    got = k32.GetProcessTimes(h, *[ctypes.byref(x) for x in t])
+    k32.CloseHandle(h)
+    return t[0].value if got else None
+
+
 def reset_time(now, limits=None):
     """When Claude can be used again, and where that figure came from. The 5-hour window's resets_at as the
     status line last saved it; a weekly limit that is also used up and resets later wins. Missing, unreadable
@@ -549,8 +564,8 @@ def record_switch(sid, cwd, console, orig_pid, skip, limits=None, now=None, via=
     now = time.time() if now is None else now
     resets_at, source = reset_time(now, limits)
     rec = {"session": sid, "cwd": cwd, "folder": os.path.basename(cwd.rstrip("\\/")) or cwd, "via": via,
-           "console": console, "orig_pid": orig_pid, "skip": bool(skip), "at": now, "transcript": transcript,
-           "resets_at": resets_at, "reset_from": source}
+           "console": console, "console_born": born(console) if console else None, "orig_pid": orig_pid,
+           "skip": bool(skip), "at": now, "transcript": transcript, "resets_at": resets_at, "reset_from": source}
     rec.update(extra)
     os.makedirs(RETURN_DIR, exist_ok=True)
     path = os.path.join(RETURN_DIR, sid + ".json")
@@ -575,6 +590,103 @@ def claude_model(transcript):
     except (OSError, TypeError):
         pass
     return found or "default"
+
+
+def resume_model(transcript):
+    """The --model a resume of this session needs, or None when it needs none: the last assistant turn was a
+    claude-* model (or there is none). A session whose last turn was GLM's (or any other non-Claude model) gets
+    claude_model(), so `claude --resume` never asks Anthropic for GLM's model. "<synthetic>" turns (Claude
+    Code's own error lines) are no model and are skipped."""
+    last = None
+    try:
+        with open(transcript, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"assistant"' in line:
+                    m = re.search(r'"model":"([^"<][^"]*)"', line)
+                    if m:
+                        last = m.group(1)
+    except (OSError, TypeError):
+        return None
+    if last is None or last.startswith("claude-"):
+        return None
+    return claude_model(transcript)
+
+
+# ---------- carrying a Codex record in exactly once ----------
+# Three things may carry the same record into the Claude transcript: the Agent Panel (the first prompt of the
+# resume it starts) and the --carry hook (SessionStart on a resume, UserPromptSubmit on a prompt typed into a
+# Claude window that holds the session). Whoever creates the claim file first carries it; the others see it and
+# do not. The claim is named after the record's Codex thread, so a later move to Codex (a new thread) has a
+# claim of its own; it is kept after the record goes, so a reader that loaded the record a moment earlier still
+# finds it taken. The Agent Panel deletes claims older than CLAIM_KEEP.
+CLAIM_KEEP = 7 * 24 * 3600
+
+
+def claim_path(rec):
+    tag = rec.get("codex_thread") or str(int(rec.get("at") or 0))
+    return os.path.join(RETURN_DIR, "%s.%s.carried" % (rec["session"], re.sub(r"[^\w-]", "", tag)))
+
+
+def claim(rec, who):
+    """Take the right to carry this record in; False when someone already has."""
+    try:
+        fd = os.open(claim_path(rec), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"by": who, "at": time.time()}, f)
+    return True
+
+
+def carried(rec):
+    return os.path.exists(claim_path(rec))
+
+
+def release(rec):
+    """Give a claim back: the Claude window that was to carry the record never took the session."""
+    try:
+        os.remove(claim_path(rec))
+    except OSError:
+        pass
+
+
+def carry_hook():
+    """--carry, run as a SessionStart hook (matcher resume) and a UserPromptSubmit hook. When the session holds a
+    live Codex record nobody has carried in yet, its text (codex_back_prompt(), the long-record file rule
+    included) goes into this session as additional context, which Claude Code writes into the same transcript;
+    the record is then removed. Silent and quick otherwise: most sessions have no record."""
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return
+    sid, event = data.get("session_id"), data.get("hook_event_name") or "SessionStart"
+    path = os.path.join(RETURN_DIR, "%s.json" % sid) if sid else None
+    if not path or not os.path.exists(path):
+        return
+    if event == "SessionStart" and data.get("source") not in (None, "resume"):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return
+    if rec.get("via") != "codex" or rec.get("session") != sid or not claim(rec, "hook:" + event):
+        return
+    try:
+        prompt, _ = codex_back_prompt(rec)
+    except Exception as e:  # the record is claimed: say so rather than lose it silently
+        release(rec)
+        print(json.dumps({"systemMessage": "claude-plus-fa could not read what happened in Codex (%s)." % e}))
+        return
+    for p in (path, path[:-len(".json")] + ".answer"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    print(json.dumps({"systemMessage": "claude-plus-fa: what happened in Codex was added to this session.",
+                      "hookSpecificOutput": {"hookEventName": event, "additionalContext": prompt}}))
 
 
 # ---------- Codex: the way back, what happened there ----------
@@ -846,6 +958,10 @@ def main():
     # --ask-return <answer file> <folder> <session title> <what Not Now does> [GLM|Codex]: run by the Agent Panel
     if args[:1] == ["--ask-return"] and len(args) >= 5:
         ask_return(*args[1:6])
+        return
+    # --carry: the SessionStart (resume) and UserPromptSubmit hook that carries a Codex record in (carry_hook())
+    if args[:1] == ["--carry"]:
+        carry_hook()
         return
 
     data = json.load(sys.stdin)

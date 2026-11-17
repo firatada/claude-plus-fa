@@ -39,6 +39,8 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - **GLM** resumes the very same session: it reads the same conversation and keeps writing into the same conversation file.
 - **Codex** gets the conversation through the Codex plugin's own transfer, which turns it into a Codex thread with the full history, then opens `codex resume` on it. Codex keeps its own thread file.
 - When Claude's limit resets, the Agent Panel waits until GLM or Codex has finished its turn, then offers to bring the session back to Claude: Continue With Claude reopens it in a new Claude window and closes the GLM or Codex one. Coming back from Codex, Claude's first message is a record of everything that happened in Codex (each message, each reply, each command with its exit code, the files it changed), so the Claude conversation stays one unbroken file. Not Now asks once more 30 minutes later, never again after that.
+- Until the session is back on Claude, its card in the Agent Panel says **on GLM** or **on Codex**. While the GLM or Codex window is open, a click on the card brings that window up. Right-click the card and pick **Back to Claude** to go back at any time: it waits for GLM or Codex to finish its turn, then continues in a new Claude window and closes the other one. With that window closed, a double-click on the card continues the session with Claude, with the Codex record if it came from Codex.
+- Resuming by hand works too: `claude --resume <id>` after Codex gets the Codex record added to the conversation, exactly once. After GLM, a hand-typed resume needs the model named: `claude --resume <id> --model default` (plain `claude --resume <id>` asks Anthropic for GLM's model and fails with a model error). Inside a window that already shows that error, `/model default` and sending again works for that window only.
 - **GLM is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai. It needs a free z.ai API key.
 - Codex needs the [Codex CLI](https://github.com/openai/codex), the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) and a ChatGPT sign-in.
 - Anything that is not set up yet shows its steps in the dialog instead (**Set Up GLM**, **Set Up Codex**), with buttons that open the z.ai pages, open the key file, install the CLI and the plugin, and start the Codex sign-in in your browser. The dialog notices each finished step by itself.
@@ -148,7 +150,9 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 ## Limits
 
 - claude-plus-fa runs on Windows only.
-- Codex keeps its own conversation file. What Codex did reaches the Claude conversation as one message when you continue with Claude; if you never do, it stays in Codex only.
+- Codex keeps its own conversation file. What Codex did reaches the Claude conversation once, when the session comes back to Claude (from the Agent Panel, or a resume or a prompt in a Claude window of that session); until then it is in Codex only. What Codex does after that point stays in Codex.
+- A session resumed by hand after GLM needs `--model default` (see above); Claude Code picks the model before any hook runs, so claude-plus-fa cannot add it for you. Sessions opened from the Agent Panel get it automatically.
+- The way back needs the Agent Panel running, except a hand-typed resume after Codex, which only needs the hooks.
 
 ## Files
 

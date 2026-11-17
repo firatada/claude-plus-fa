@@ -1,6 +1,7 @@
 # Installs the GLM fallback into the current Windows user profile. Safe to rerun.
 #   glm.cmd          -> ~/.local/bin        (launches Claude Code against z.ai)
-#   glm-fallback.py  -> ~/.claude/hooks     (StopFailure hook: continue on GLM or Codex)
+#   glm-fallback.py  -> ~/.claude/hooks     (StopFailure hook: continue on GLM or Codex; SessionStart resume and
+#                                            UserPromptSubmit with --carry: a Codex record carried in by hand)
 #   context-guard.py -> ~/.claude/hooks     (Stop at 90 % context, PreCompact, SessionStart compact + startup)
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
@@ -100,6 +101,9 @@ def register_hook():
     put_hook(settings, "SessionStart", "compact", "context-guard.py", "resumed", timeout=10)
     put_hook(settings, "SessionStart", "startup|clear", "context-guard.py", "started", timeout=10)
     put_hook(settings, "UserPromptSubmit", None, "prompt-recall.py", timeout=10)
+    # a Codex record carried into a session resumed or typed into by hand (glm-fallback.py carry_hook())
+    put_hook(settings, "SessionStart", "resume", "glm-fallback.py", "--carry", timeout=30)
+    put_hook(settings, "UserPromptSubmit", None, "glm-fallback.py", "--carry", timeout=30)
 
     # The status line is yours to change: set it only when there is none, or it is ours.
     current = (settings.get("statusLine") or {}).get("command", "")
@@ -114,7 +118,7 @@ def register_hook():
     nl = "\r\n" if "\r\n" in raw else "\n"
     with open(SETTINGS, "w", encoding="utf-8", newline="") as f:
         f.write(json.dumps(settings, indent=2, ensure_ascii=False).replace("\n", nl) + nl)
-    print("ok      hooks registered in %s: StopFailure, Stop, PreCompact, SessionStart(compact, startup|clear), UserPromptSubmit"
+    print("ok      hooks registered in %s: StopFailure, Stop, PreCompact, SessionStart(compact, startup|clear, resume), UserPromptSubmit"
           % SETTINGS)
     print(status_note)
 

@@ -520,7 +520,9 @@ function fill(el, s, q) {
   const a = el.querySelector(".age");
   a.textContent = s.age;
   a.dataset.k = "age:" + s.id;
-  const flags = (s.hidden ? ["hidden"] : []).concat(s.headless ? ["headless"] : [], s.here ? [] : ["folder deleted"]).join(" · ");
+  // "on GLM" / "on Codex": the limit fallback moved it there and it is not back on Claude yet (Back to Claude in its menu)
+  const flags = (s.via ? ["on " + s.via] : []).concat(s.hidden ? ["hidden"] : [], s.headless ? ["headless"] : [],
+                                                       s.here ? [] : ["folder deleted"]).join(" · ");
   // what the session runs in the background: a count on the title row, each one listed in its tooltip
   const bg = s.bg || [], w = el.querySelector(".bgw");
   w.hidden = !bg.length;
@@ -929,6 +931,11 @@ function openMenu(s, card, x, y) {
   m.setAttribute("role", "menu");
   m.setAttribute("aria-label", `Actions for “${s.title}”`);
   const items = [];
+  // on GLM or Codex since the usage limit: the way back, by hand (glm-fallback.py, agent-panel.pyw back())
+  if (s.via && s.here) items.push(["Back to Claude", s.viaOpen
+      ? `Continues it with Claude in a new window once ${s.via} is idle, then closes the ${s.via} window`
+      : `Continues it with Claude in a new window, from where ${s.via} stopped`,
+    () => { closeMenu(); say(card, "Going back to Claude…", false, true); api().back(s.id).then(reply(card)); }]);
   // a headless run is set aside already, so Hide would change nothing
   if (!(s.headless && !s.hidden)) items.push(s.hidden
     ? ["Unhide", "Moves it back to the main list", () => { closeMenu(); api().set_hidden(s.id, false); announce("Moved back to the main list."); }]

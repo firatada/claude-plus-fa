@@ -10,7 +10,7 @@
 # session's folder when pasted there (agent-panel-shots.py); the last three, and any the user pinned, stay on
 # screen in a strip over every window (agent-shots.html), switched by a header button, dragged anywhere; a click
 # shows one large at once, with Open and Delete (to the Recycle Bin).
-import base64, ctypes, ctypes.wintypes as wt, datetime, importlib.util, io, json, math, os, queue, re, shutil, subprocess, sys, tempfile, threading, time
+import base64, ctypes, ctypes.wintypes as wt, datetime, glob, importlib.util, io, json, math, os, queue, re, shutil, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
 
@@ -721,7 +721,10 @@ def close_session(s):
 # (glm-fallback.py --ask-return), whether to continue it with Claude. On Continue it resumes the session with
 # Claude in a new window (from Codex with the record of what happened there as its first prompt) and closes
 # the GLM or Codex window only once Claude holds the session. The record is a file, so a restart of the panel
-# loses nothing; the answer comes back as a file beside it for the same reason.
+# loses nothing; the answer comes back as a file beside it for the same reason. Since 2026-11-18 the record lives
+# until a Claude process holds the session again (or the transcript is gone): Not Now and a closed GLM or Codex
+# window keep it, the card says "on GLM" / "on Codex" and offers Back to Claude, and every way back resumes with
+# --model and, from Codex, carries the record in exactly once (here, or glm-fallback.py's --carry hook).
 RETURN_DIR = os.path.join(CLAUDE, "state", "glm-return")
 FALLBACK = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "glm-fallback.py"),  # run from the repo
             os.path.join(CLAUDE, "hooks", "glm-fallback.py"))                             # installed
@@ -730,6 +733,7 @@ IDLE_FOR = 4           # seconds GLM or Codex must stay idle, so a pause between
 START_WAIT = 90        # seconds for the new Claude window to hold the session; after that GLM/Codex is left as it is
 CODEX_EXES = ("codex.exe", "node.exe")  # codex.cmd -> node codex.js -> codex.exe under the Codex console
 VIA = {"glm": "GLM", "codex": "Codex"}
+CLAIM_KEEP = 7 * 24 * 3600  # seconds a claim on a carried Codex record is kept (glm-fallback.py claim())
 
 
 def fallback():
@@ -762,6 +766,32 @@ def resume_claude(rec, title, model, prompt=None):
         f.write(prompt)
     return open_session(s, cmd + ' "While Claude\'s limit was out, this session continued in Codex. '
                                  'What happened there is in %s. Read it, then continue from where Codex stopped."' % path)
+
+
+def read_record(path):
+    """A way-back record, or None when it is gone, half written or foreign."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+        rec.setdefault("console", rec.get("glm_cmd"))  # a record written before Codex joined (2026-11-17)
+        rec["session"], rec["console"], rec["resets_at"]
+        return rec
+    except Exception:
+        return None
+
+
+def console_alive(rec):
+    """The GLM or Codex console the record names still runs (not a later process that got its number)."""
+    return bool(rec.get("console")) and alive(rec["console"]) and (
+        rec.get("console_born") is None or born(rec["console"]) == rec["console_born"])
+
+
+def resume_cmd(s):
+    """The resume a card starts: plain, or with --model when the transcript's last assistant turn was not a Claude
+    model (left on GLM by any route), since Claude Code resumes on that model and Anthropic answers 404."""
+    fb = fallback()
+    model = fb.resume_model(s.get("path")) if fb else None
+    return RESUME % s["id"] + (" --model %s" % model if model else "")
 
 
 class PROCESSENTRY32W(ctypes.Structure):
@@ -1464,6 +1494,9 @@ class Api:
     def close(self, sid):
         return self._p.close(sid)
 
+    def back(self, sid):
+        return self._p.back(sid)
+
     def delete(self, sid):
         return self._p.delete(sid)
 
@@ -1649,6 +1682,9 @@ class Panel:
         self.opts = load_opts()
         self.rects = []  # what the page has open under the strip, in css px: [x, y, w, h, radius]
         self.idle_since = {}  # GLM sessions on their way back to Claude: since when each has been idle
+        self.returns = {}  # session id -> {"via": "GLM"/"Codex", "open": its window still runs it}; see watch_return()
+        self.ret_lock = threading.Lock()  # the loop's watch_return() and the page's Back to Claude touch the same records
+        self.claims_swept = 0
         self.nc = None  # the DWM frame policy last set (see frame())
         self.front = None  # the last window that came to the front, not counting the panel's own (follow_front())
         self.wins = {}  # pid of an open session -> the window showing it (window_of), kept between scans
@@ -2123,28 +2159,277 @@ class Panel:
 
     # ----- back to Claude after a GLM or Codex fallback (see RETURN_DIR) -----
     def watch_return(self):
-        """Every live pass: each session glm-fallback.py moved to GLM or Codex, one step further on its way back."""
+        """Every live pass: each session glm-fallback.py moved to GLM or Codex, one step further on its way back.
+        What the cards need (on GLM / on Codex, whether that window still runs it) is kept in self.returns."""
         try:
             names = [n for n in os.listdir(RETURN_DIR) if n.endswith(".json")]
         except OSError:
+            names = []
+        self.drop_old_claims()
+        found = {}
+        if names:
+            snap = procs()
+            par = {p: v[0] for p, v in snap.items()}
+            with self.ret_lock:
+                for n in names:
+                    path = os.path.join(RETURN_DIR, n)
+                    rec = read_record(path)
+                    if not rec:
+                        continue  # half written or foreign: left alone
+                    try:
+                        self.step_return(path, rec, par, snap)
+                    except Exception:
+                        pass  # never let it stop the panel's loop; the next pass tries again
+                    if os.path.exists(path):
+                        found[rec["session"]] = {"via": VIA.get(rec.get("via"), "GLM"), "open": rec.get("_open", False)}
+        if found != self.returns:
+            self.returns = found
+            self.push()
+
+    def drop_old_claims(self):
+        """Claim files (glm-fallback.py claim()) outlive their record, so a reader that loaded the record a moment
+        earlier still finds it taken; after CLAIM_KEEP nobody can still hold that record."""
+        now = time.time()
+        if now - self.claims_swept < 3600:
             return
-        if not names:
+        self.claims_swept = now
+        for p in glob.glob(os.path.join(RETURN_DIR, "*.carried")):
+            try:
+                if now - os.path.getmtime(p) > CLAIM_KEEP:
+                    os.remove(p)
+            except OSError:
+                pass
+
+    def step_return(self, path, rec, par, snap=None):
+        """One step of one session's way back. The record lives until a Claude process holds the session again
+        (or the transcript is gone): Not Now, a closed GLM or Codex window and GLM or Codex left in its window no
+        longer drop it; the card then offers Back to Claude, and a resume of any kind brings it back."""
+        sid, now, console = rec["session"], time.time(), rec["console"]
+        via = rec.get("via") or "glm"
+        answer_file = path[:-len(".json")] + ".answer"
+        s = self.find(sid)
+        transcript = rec.get("transcript") or (s or {}).get("path")
+        fb = fallback()
+
+        def done():
+            """The session is back on Claude (or gone): the record goes, and a question still open with it."""
+            self.end_asker(rec)
+            for p in (path, answer_file):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            self.idle_since.pop(sid, None)
+
+        if transcript and not os.path.exists(transcript):
+            return done()  # the conversation itself is gone (deleted)
+        if via == "codex" and fb and fb.carried(rec) and not rec.get("claude_cmd"):
+            return done()  # the --carry hook carried it into a Claude window the user resumed or typed into
+        procs_ = session_procs(sid)
+        console_up = console_alive(rec)
+        if rec.get("claude_cmd"):
+            # Continue or Back to Claude was taken and Claude started: the GLM or Codex window closes only once
+            # Claude holds the session, so it is never without a window, and it is idle, so two never write it at once
+            if [p for p in procs_ if runs_under(p["pid"], rec["claude_cmd"], par)]:
+                if console_up:
+                    end_tree(console, par)
+                return done()
+            if now - rec.get("switch_at", now) > START_WAIT or not alive(rec["claude_cmd"]):
+                # Claude did not start: the record stays, GLM or Codex as it is; the Codex record was not carried
+                for k in ("claude_cmd", "switch_at", "go"):
+                    rec.pop(k, None)
+                if via == "codex" and fb:
+                    fb.release(rec)
+                save_record(path, rec)
             return
-        snap = procs()
-        par = {p: v[0] for p, v in snap.items()}
-        for n in names:
-            path = os.path.join(RETURN_DIR, n)
+        if via == "codex":
+            # Codex holds no Claude session: its own processes under the console are the sign it still runs
+            snap = snap or procs()
+            agent = [p for p, (pp, exe) in snap.items()
+                     if console_up and p != console and exe.lower() in CODEX_EXES and runs_under(p, console, par)]
+            glm = []
+        else:
+            agent = glm = [p for p in procs_ if console_up and runs_under(p["pid"], console, par)]
+        orig = next((p for p in procs_ if p["pid"] == rec.get("orig_pid") and p not in glm), None)
+        back = [p for p in procs_ if p not in glm and p is not orig]
+        changed = False
+        if agent and not rec.get("agent_seen"):
+            rec["agent_seen"], changed = True, True
+        if orig and orig["status"] == "idle" and not rec.get("orig_idle"):
+            rec["orig_idle"], changed = True, True  # the old window's turn has ended (the hook ran inside it)
+        # GLM or Codex still runs in its window (or is still starting there): a card click raises that window
+        is_open = bool(console_up and (agent or not rec.get("agent_seen")))
+        if rec.get("_open") != is_open:
+            rec["_open"], changed = is_open, True
+        if back or (orig and rec.get("orig_idle") and orig["status"] in ("busy", "waiting")):
+            # a Claude window holds the session again (resumed by hand, or the old window typed into). GLM wrote
+            # into the transcript itself; Codex's record still has to come in, which the --carry hook does on that
+            # window's start or next prompt (it then removes the record), so the record waits for it
+            if via != "codex":
+                return done()
+            if self.asker_alive(rec):
+                self.end_asker(rec)
+                rec.pop("asker", None)
+                changed = True
+            if changed:
+                save_record(path, rec)
+            return
+        asking = self.asker_alive(rec)
+        if not is_open:
+            if asking:
+                self.end_asker(rec)  # its window closed under the question: nothing is left to ask about
+                rec.pop("asker", None)
+                changed = True
+            if rec.pop("go", None):
+                changed = True  # a Back to Claude waiting for it to be idle: the card's click resumes it now
+            if changed:
+                save_record(path, rec)
+            return
+        answer = None
+        try:
+            with open(answer_file, encoding="utf-8") as f:
+                answer = f.read().strip()
+            os.remove(answer_file)
+        except OSError:
+            if rec.get("asker") and not asking:
+                answer = "later"  # the window went without an answer
+        if answer:
+            rec.pop("asker", None)
+            asking, changed = False, True
+            if answer == "continue":
+                rec["go"] = True
+            elif rec.get("asked", 0) >= 2:
+                rec["no_more"] = True  # Not Now twice: no more questions; the card keeps Back to Claude
+            else:
+                rec["next_ask"] = now + ASK_AGAIN
+        if changed:
+            save_record(path, rec)
+        if asking:
+            return
+        if not rec.get("go") and (rec.get("no_more") or now < rec["resets_at"] or now < rec.get("next_ask", 0)):
+            return
+        # never cut GLM or Codex off mid-turn: only when it is idle, and has been for a moment. GLM: every GLM
+        # process of the session says idle. Codex: the last turn in its thread file has ended and the file has
+        # not been written for IDLE_FOR (a Codex just started has written its settings but no turn yet).
+        if not self.agent_idle(rec, glm, agent, fb):
+            self.idle_since.pop(sid, None)
+            return
+        if now - self.idle_since.setdefault(sid, now) < IDLE_FOR:
+            return
+        title = short(s["title"], 60) if s else rec.get("folder") or sid
+        if rec.get("go"):
+            if fb is None:
+                return
+            self.launch_back(rec, title, fb, transcript)
+        else:
+            script = next((f for f in FALLBACK if os.path.exists(f)), None)
+            if not script:
+                return
+            name = VIA.get(via, "GLM")
+            later = ("Not Now stays on %s and asks once more in %d minutes." % (name, ASK_AGAIN // 60)
+                     if rec.get("asked", 0) == 0 else
+                     "Not Now stays on %s and does not ask again; Back to Claude in its card's menu in the "
+                     "Agent Panel brings it back." % name)
+            p = subprocess.Popen([sys.executable, script, "--ask-return", answer_file, rec.get("folder") or "",
+                                  title, later, name], creationflags=CREATE_NO_WINDOW, env=clean_env())
+            rec["asker"], rec["asker_born"], rec["asked"] = p.pid, born(p.pid), rec.get("asked", 0) + 1
+        self.idle_since.pop(sid, None)
+        save_record(path, rec)
+
+    def agent_idle(self, rec, glm, agent, fb):
+        """GLM or Codex has no turn under way in its window (see step_return)."""
+        if (rec.get("via") or "glm") == "codex":
             try:
-                with open(path, encoding="utf-8") as f:
-                    rec = json.load(f)
-                rec.setdefault("console", rec.get("glm_cmd"))  # a record written before Codex joined (2026-11-17)
-                rec["session"], rec["console"], rec["resets_at"]
-            except Exception:
-                continue  # half written or foreign: left alone
+                quiet = time.time() - os.path.getmtime(rec["codex_file"]) >= IDLE_FOR
+            except (OSError, KeyError, TypeError):
+                quiet = False
+            return bool(agent) and quiet and fb is not None and fb.codex_idle(rec)
+        return bool(glm) and all(p["status"] == "idle" for p in glm)
+
+    def launch_back(self, rec, title, fb, transcript):
+        """Resume the session with Claude in a new window: on its last Claude model (else default), and from Codex
+        with the record of what happened there as the first prompt, unless the --carry hook has taken it already."""
+        model = fb.claude_model(transcript)
+        prompt = None
+        if rec.get("via") == "codex" and fb.claim(rec, "panel"):
             try:
-                self.step_return(path, rec, par, snap)
+                prompt, rec["record_file"] = fb.codex_back_prompt(rec)
             except Exception:
-                pass  # never let it stop the panel's loop; the next pass tries again
+                fb.release(rec)
+                raise
+        try:
+            p = resume_claude(rec, title, model, prompt)
+        except Exception:
+            if prompt is not None:
+                fb.release(rec)
+            raise
+        rec["claude_cmd"], rec["switch_at"] = p.pid, time.time()
+        return p
+
+    def asker_alive(self, rec):
+        return bool(rec.get("asker") and alive(rec["asker"]) and born(rec["asker"]) == rec.get("asker_born"))
+
+    def end_asker(self, rec):
+        if self.asker_alive(rec):
+            h = kernel32.OpenProcess(0x0001, False, int(rec["asker"]))
+            if h:
+                kernel32.TerminateProcess(h, 0)
+                kernel32.CloseHandle(h)
+
+    def back(self, sid):
+        """Back to Claude from the card's menu. While GLM or Codex still runs in its window it goes the way the
+        automatic way back goes (waits until GLM or Codex is idle, then resumes and closes that window), without
+        waiting for the limit's reset: the user asked for it. With that window closed it resumes at once."""
+        path = os.path.join(RETURN_DIR, sid + ".json")
+        s = self.find(sid)
+        title = short(s["title"], 60) if s else sid
+        with self.ret_lock:
+            if not read_record(path):
+                return ok("It is already back on Claude.")
+            snap = procs()
+            par = {p: v[0] for p, v in snap.items()}
+            try:
+                self.step_return(path, read_record(path), par, snap)  # up to date first: it may be back already
+            except Exception:
+                pass
+            rec = read_record(path)
+            if not rec:
+                return ok("It is back on Claude.")
+            if rec.get("claude_cmd"):
+                return ok("Going back to Claude…")
+            fb = fallback()
+            if fb is None:
+                return err("glm-fallback.py is missing; reinstall claude-plus-fa.")
+            name = VIA.get(rec.get("via"), "GLM")
+            if rec.get("_open"):
+                self.end_asker(rec)
+                rec.pop("asker", None)
+                rec["go"] = True
+                save_record(path, rec)
+                console = rec["console"]
+                glm = [p for p in session_procs(sid) if runs_under(p["pid"], console, par)]
+                agent = glm if rec.get("via") != "codex" else [
+                    p for p, (pp, exe) in snap.items() if p != console and exe.lower() in CODEX_EXES
+                    and runs_under(p, console, par)]
+                if not self.agent_idle(rec, glm, agent, fb):
+                    return ok("%s is in the middle of a turn; it goes back to Claude as soon as that turn ends." % name)
+                return ok("Going back to Claude…")
+            if s and not folder_exists(s):
+                return err("Its folder was deleted.")
+            try:
+                self.launch_back(rec, title, fb, rec.get("transcript") or (s or {}).get("path"))
+            except Exception as e:
+                return err("Could not start Claude (%s)." % e)
+            save_record(path, rec)
+        return ok("Opening " + short(title, end="…") + " with Claude.")
+
+    def return_window(self, sid):
+        """The GLM or Codex window a card click raises while it still runs the session, else None."""
+        r = self.returns.get(sid)
+        if not r or not r.get("open"):
+            return None
+        rec = read_record(os.path.join(RETURN_DIR, sid + ".json"))
+        return (rec and console_alive(rec) and window_of(rec["console"])) or None
 
     def watch_update(self):
         """Every scan: a failed Claude Code update not handled yet starts repair_update() on a thread of its own;
@@ -2181,120 +2466,6 @@ class Panel:
             self.repairing = False
             self.last_scan = 0  # the next pass pushes the bottom line at once
         threading.Thread(target=work, daemon=True).start()
-
-    def step_return(self, path, rec, par, snap=None):
-        sid, now, console = rec["session"], time.time(), rec["console"]
-        via = rec.get("via") or "glm"
-        answer_file = path[:-len(".json")] + ".answer"
-
-        def done():
-            """Nothing more to do for this session: the record goes, and a question still open with it."""
-            if rec.get("asker") and alive(rec["asker"]) and born(rec["asker"]) == rec.get("asker_born"):
-                h = kernel32.OpenProcess(0x0001, False, int(rec["asker"]))
-                if h:
-                    kernel32.TerminateProcess(h, 0)
-                    kernel32.CloseHandle(h)
-            for p in (path, answer_file):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
-            self.idle_since.pop(sid, None)
-
-        procs_ = session_procs(sid)
-        if rec.get("claude_cmd"):
-            # Continue was taken and Claude started: the GLM or Codex window closes only once Claude holds the
-            # session, so it is never without a window, and it is idle, so two never write the session at once
-            if [p for p in procs_ if runs_under(p["pid"], rec["claude_cmd"], par)]:
-                end_tree(console, par)
-                return done()
-            if now - rec.get("switch_at", now) > START_WAIT or not alive(rec["claude_cmd"]):
-                return done()  # Claude did not start: GLM or Codex stays as it is
-            return
-        if via == "codex":
-            # Codex holds no Claude session: its own processes under the console are the sign it still runs
-            snap = snap or procs()
-            agent = [p for p, (pp, exe) in snap.items()
-                     if p != console and exe.lower() in CODEX_EXES and runs_under(p, console, par)]
-            glm = []
-        else:
-            agent = glm = [p for p in procs_ if runs_under(p["pid"], console, par)]
-        orig = next((p for p in procs_ if p["pid"] == rec.get("orig_pid") and p not in glm), None)
-        back = [p for p in procs_ if p not in glm and p is not orig]
-        if (back                                                  # open in another (Claude) window
-                or not alive(console)                             # the GLM or Codex window was closed
-                or (rec.get("agent_seen", rec.get("glm_pid")) and not agent)  # GLM or Codex was left in its window
-                or (orig and rec.get("orig_idle") and orig["status"] in ("busy", "waiting"))):  # typed into the old window
-            return done()
-        changed = False
-        if agent and not rec.get("agent_seen"):
-            rec["agent_seen"], changed = True, True
-        if orig and orig["status"] == "idle" and not rec.get("orig_idle"):
-            rec["orig_idle"], changed = True, True  # the old window's turn has ended (the hook ran inside it)
-        asking = rec.get("asker") and alive(rec["asker"]) and born(rec["asker"]) == rec.get("asker_born")
-        answer = None
-        try:
-            with open(answer_file, encoding="utf-8") as f:
-                answer = f.read().strip()
-            os.remove(answer_file)
-        except OSError:
-            if rec.get("asker") and not asking:
-                answer = "later"  # the window went without an answer
-        if answer:
-            rec.pop("asker", None)
-            changed = asking = False
-            if answer == "continue":
-                rec["go"] = True
-            elif rec.get("asked", 0) >= 2:
-                return done()  # Not Now twice: it stays on GLM or Codex and is not asked again
-            else:
-                rec["next_ask"] = now + ASK_AGAIN
-            save_record(path, rec)
-        if changed:
-            save_record(path, rec)
-        if asking or now < rec["resets_at"] or now < rec.get("next_ask", 0):
-            return
-        # never cut GLM or Codex off mid-turn: only when it is idle, and has been for a moment. GLM: every GLM
-        # process of the session says idle. Codex: the last turn in its thread file has ended and the file has
-        # not been written for IDLE_FOR (a Codex just started has written its settings but no turn yet).
-        fb = fallback() if via == "codex" else None
-        if via == "codex":
-            try:
-                quiet = now - os.path.getmtime(rec["codex_file"]) >= IDLE_FOR
-            except (OSError, KeyError, TypeError):
-                quiet = False
-            idle = bool(agent) and quiet and fb is not None and fb.codex_idle(rec)
-        else:
-            idle = bool(glm) and all(p["status"] == "idle" for p in glm)
-        if not idle:
-            self.idle_since.pop(sid, None)
-            return
-        if now - self.idle_since.setdefault(sid, now) < IDLE_FOR:
-            return
-        s = self.find(sid)
-        title = short(s["title"], 60) if s else rec.get("folder") or sid
-        if rec.get("go"):
-            fb = fb or fallback()
-            if fb is None:
-                return
-            model = fb.claude_model(rec.get("transcript") or (s or {}).get("path"))
-            prompt = None
-            if via == "codex":
-                prompt, rec["record_file"] = fb.codex_back_prompt(rec)
-            p = resume_claude(rec, title, model, prompt)
-            rec["claude_cmd"], rec["switch_at"] = p.pid, now
-        else:
-            script = next((f for f in FALLBACK if os.path.exists(f)), None)
-            if not script:
-                return
-            name = VIA.get(via, "GLM")
-            later = ("Not Now stays on %s and asks once more in %d minutes." % (name, ASK_AGAIN // 60)
-                     if rec.get("asked", 0) == 0 else "Not Now stays on %s and does not ask again." % name)
-            p = subprocess.Popen([sys.executable, script, "--ask-return", answer_file, rec.get("folder") or "",
-                                  title, later, name], creationflags=CREATE_NO_WINDOW, env=clean_env())
-            rec["asker"], rec["asker_born"], rec["asked"] = p.pid, born(p.pid), rec.get("asked", 0) + 1
-        self.idle_since.pop(sid, None)
-        save_record(path, rec)
 
     # ----- the alert: a session waiting for an answer shows over every window, with a knock -----
     def check_alerts(self):
@@ -2703,6 +2874,8 @@ class Panel:
                               "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden,
                               "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
                               "headless": s.get("headless", False),
+                              "via": (self.returns.get(s["id"]) or {}).get("via"),
+                              "viaOpen": bool((self.returns.get(s["id"]) or {}).get("open")),
                               "bg": [{"kind": w["kind"], "what": w["what"], "for": lasted(w["since"])} for w in s.get("bg", [])]}
                              for s in self.sessions],
                 "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
@@ -2747,6 +2920,8 @@ class Panel:
             return None
         if not folder_exists(s):
             return err("Its folder was deleted. Hide or delete it from its menu.")
+        if sid in self.returns and self.returns[sid]["open"]:
+            return self.raise_return(sid)
         if s["status"]:
             # a second click on the card of a window already in front puts it away again
             hwnd = self.window_for(s)
@@ -2765,14 +2940,45 @@ class Panel:
         session until Claude Code registers it in ~/.claude/sessions (read here afresh, not the list's status, which
         can be LIVE_EVERY old) or LAUNCH_WAIT passes."""
         s = self.find(sid)
-        if not s or not folder_exists(s) or s["status"]:
+        if not s or not folder_exists(s):
+            return None
+        if sid in self.returns:
+            # on GLM or Codex: its window is raised while it still runs there, otherwise it comes back to Claude
+            if self.returns[sid]["open"]:
+                return self.raise_return(sid)
+            if s["status"]:
+                return None
+            with self.opening:
+                if sid in running() or time.time() - self.launched.get(sid, 0) < LAUNCH_WAIT:
+                    return None
+                self.launched[sid] = time.time()
+            return self.back(sid)
+        if s["status"]:
             return None
         with self.opening:
             if sid in running() or time.time() - self.launched.get(sid, 0) < LAUNCH_WAIT:
                 return None
             self.launched[sid] = time.time()
-            open_session(s)
+            open_session(s, resume_cmd(s) if not s["distro"] else None)
         return ok("Opening " + short(s["title"], end="…"))
+
+    def raise_return(self, sid):
+        """A click on the card of a session still running on GLM or Codex: that window comes up (a second click
+        while it is in front puts it away), as for an open session; the model does not change."""
+        hwnd = self.return_window(sid)
+        if not hwnd:
+            return err("Its %s window was not found. Look for it on the taskbar." % self.returns[sid]["via"])
+        if user32.GetForegroundWindow() == hwnd:
+            user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+            return None
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
+        if user32.GetForegroundWindow() != hwnd:
+            press(0x12)  # a lone Alt lets this process take the foreground
+            user32.SetForegroundWindow(hwnd)
+        self.lift(hwnd)
+        return None
 
     def set_hidden(self, sid, on):
         (self.hidden.add if on else self.hidden.discard)(sid)
