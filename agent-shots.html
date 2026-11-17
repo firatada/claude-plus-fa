@@ -20,11 +20,16 @@
      Preview: the picture at up to its own size, its name, a Delete button (the file to the Recycle Bin, wherever it
      is now, no question asked: the Recycle Bin is the undo; the strip then fills up with the next older one) and an
      Open button (the default viewer). A click on it, a click outside it, or Esc closes it. Spark tokens as in agent-panel.html. Sizes: agent-panel.pyw SHOT_W, SHOT_H,
-     SHOT_PAD, VIEW_HEAD, VIEW_PAD. -->
+     SHOT_PAD, SHOT_LABEL, VIEW_HEAD, VIEW_PAD.
+     Labels (2026-11-17): a full-screen capture shrunk to 112 px says nothing, so each picture has one line under it: the
+     window or session title and the time (agent-panel.pyw shot_label() reads both from the file name), the title cut
+     with an ellipsis while the time always shows. Pointing at a card shows the full file name in the panel's tooltip
+     (agent-panel.html .tip: 400 ms, gone after 3 s or on a press); the strip window is exactly the strip, so it sits
+     inside it, over the picture just above the label. -->
 <style>
 :root {
   --panel: #ffffff; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672; --blue: #1b4df5; --green: #16a34a;
-  --red-deep: #be123c; --r-small: 6px;
+  --red-deep: #be123c; --r-small: 6px; --tip-bg: rgba(10, 26, 64, .88); --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
@@ -38,9 +43,9 @@ button { font: inherit; cursor: pointer; }
   border: 1px solid var(--line); border-radius: 12px;
 }
 body.moving, body.moving * { cursor: grabbing !important; }
-.shot { position: relative; flex: none; width: 112px; height: 70px; }
+.shot { position: relative; flex: none; width: 112px; height: 86px; }
 .pic {
-  width: 100%; height: 100%; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  width: 100%; height: 70px; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
   background: #eef2fb; display: block; transition: transform .16s ease-out;
 }
 .pic:hover, .pic.open { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue); }
@@ -62,9 +67,20 @@ body.moving, body.moving * { cursor: grabbing !important; }
   font-variant-numeric: tabular-nums; pointer-events: none;
 }
 .num svg { width: 9px; height: 9px; fill: currentColor; }
-.shot .num { position: absolute; left: 4px; bottom: 4px; }
+.shot .num { position: absolute; left: 4px; top: 50px; }  /* the picture's bottom-left corner: 70 - 16 - 4 */
 #badge:empty { display: none; }
 .copy.fail { color: var(--red-deep); }
+/* the label: SHOT_LABEL (16) px under the picture, the title cut first, the time always whole */
+.cap { display: flex; height: 14px; margin-top: 2px; padding: 0 2px; color: var(--muted); font: 600 10.5px/14px "Segoe UI", system-ui, sans-serif; white-space: nowrap; }
+.cap .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cap .w { flex: none; }
+.tip {
+  position: fixed; z-index: 20; max-width: calc(100vw - 8px); padding: 5px 8px; border-radius: var(--r-small);
+  background: var(--tip-bg); color: #fff; font: 400 11px/1.35 "Segoe UI", system-ui, sans-serif;
+  white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; box-shadow: var(--shadow-tip);
+  animation: fade .12s ease-out;
+}
+@keyframes fade { from { opacity: 0; } }
 /* the preview: a 36 px head (name, Delete, Open) over the picture, 8 px round it */
 #view { display: none; height: 100%; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; }
 body.view #strip { display: none; }
@@ -81,7 +97,7 @@ body.view #view { display: flex; }
 #big { flex: 1; min-height: 0; padding: 0 8px 8px; }
 #big img { display: none; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; }
 #big img.on { display: block; }
-@media (prefers-reduced-motion: reduce) { .pic { transition: none; } .pic:active { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .pic, .tip { transition: none; animation: none; } .pic:active { transform: none; } }
 </style>
 </head>
 <body>
@@ -117,17 +133,54 @@ function pin(btn, at) {  // shown at once; agent-panel.pyw stores it and redraws
 // counts within each group from 1; agent-panel.pyw sizes the window
 window.shotStrip = {
   update(items) {
-    strip.innerHTML = items.map(s => `<div class="shot">
+    strip.innerHTML = items.map(s => `<div class="shot" data-full="${esc(s.name)}">
       <button type="button" class="pic" data-at="${s.at}" aria-label="Enlarge ${esc(label(s))}"><img alt="" src="${s.src}"></button>
       <span class="num" aria-hidden="true">${badge(s)}</span>
       <button type="button" class="pin${s.pin ? " on" : ""}" data-at="${s.at}" aria-pressed="${s.pin}" aria-label="Pin ${esc(s.name)}: keep it in the strip">Pin</button>
       <button type="button" class="copy" data-at="${s.at}" aria-label="Copy the path and text of ${esc(s.name)}">Copy</button>
+      <div class="cap" aria-hidden="true">${s.title ? `<span class="t">${esc(s.title)}</span><span class="w">${s.when ? "&nbsp;· " + esc(s.when) : ""}</span>` : `<span class="w">${esc(s.when)}</span>`}</div>
     </div>`).join("");
+    tipHide();
   },
   open(at) {  // the picture the preview shows is outlined; null: none
     strip.querySelectorAll(".pic").forEach(b => b.classList.toggle("open", Number(b.dataset.at) === at));
   },
 };
+
+// ----- tooltip: the full file name, as the panel's (mindmap tooltip.md: opens on movement after ~400 ms, leaves by
+// itself after ~3 s or on any press); Pin and Copy name themselves, so pointing at them opens none -----
+let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
+function tipShow(el) {
+  tipJob = null;
+  if (!document.body.contains(el)) return;
+  tip = document.createElement("div");
+  tip.className = "tip";
+  tip.textContent = el.dataset.full;
+  document.body.append(tip);
+  // the window ends at the strip's edge: centred on the card, its foot just above the label, kept inside
+  const r = el.querySelector(".pic").getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+  const x = Math.max(4, Math.min((r.left + r.right) / 2 - w / 2, innerWidth - w - 4));
+  const y = Math.max(4, Math.min(r.bottom - 4 - h, innerHeight - h - 4));
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+  tipEnd = setTimeout(() => { tipDone = tipTarget; tipHide(); }, 3000);
+}
+function tipHide() {
+  clearTimeout(tipJob); clearTimeout(tipEnd);
+  tipJob = tipEnd = tipTarget = null;
+  if (tip) { tip.remove(); tip = null; }
+}
+addEventListener("pointermove", e => {  // only a real mouse that really moved: not a card redrawn under a still pointer
+  if (e.pointerType !== "mouse" || (e.clientX === lx && e.clientY === ly) || pressed) return;
+  lx = e.clientX; ly = e.clientY;
+  const p = e.target.closest(".pin, .copy") ? null : e.target.closest(".shot");
+  if (p !== tipDone) tipDone = null;
+  if (p && p === tipTarget) return;
+  tipHide();
+  if (p && p !== tipDone) { tipTarget = p; tipJob = setTimeout(() => tipShow(p), 400); }
+});
+document.documentElement.addEventListener("mouseleave", tipHide);
+addEventListener("blur", tipHide);
 
 // A press anywhere on the strip: agent-panel.pyw follows the pointer and moves the window once it has gone a few
 // pixels. On release it says whether that happened; only a press released in place counts as a click.
@@ -135,6 +188,8 @@ let pressed = null;
 strip.addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
   e.preventDefault();
+  tipDone = tipTarget || e.target.closest(".shot");  // a press dismisses it, and it does not come back on that card
+  tipHide();
   try { strip.setPointerCapture(e.pointerId); } catch (_) {}  // the release still arrives if the pointer leaves
   // release() waits for press()'s answer, so the two never cross on their way to agent-panel.pyw
   pressed = {b: e.target.closest("button"), x: e.screenX, y: e.screenY, n: api().press()};

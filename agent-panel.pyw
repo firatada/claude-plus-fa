@@ -173,12 +173,46 @@ def mascot_js(only=None):
         pass  # no strips: the page keeps its plain logo
     return "window.MASCOT = %s;" % json.dumps(strips)
 TITLE = "Agent Panel"
+SHOT_NAME = re.compile(r"^(?:(?P<pre>.*)_)?(?P<d>\d{4}-\d{2}-\d{2})_(?P<t>\d{4})(?:_\d+)?$")
+MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+
+
+def shot_label(path, now=None):
+    """(title, when) for a strip thumbnail's label, read from the file name alone, never the picture. The keeper
+    names files <app>_<title>_YYYY-MM-DD_HHMM, <app>_YYYY-..., or YYYY-... alone; moved into a project,
+    <session-title>_YYYY-...; a clash adds _<n>. The title is the last part before the date (a slug never holds
+    an underscore), its hyphens shown as spaces, so <app> alone stands in when there is no title. A name outside
+    that pattern (a file renamed by hand) shows its plain stem and the file's modified time. when: HH:MM today,
+    "yesterday HH:MM", "16 Nov HH:MM" this year, "16 Nov 2025 HH:MM" before (the panel is English only)."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    m = SHOT_NAME.match(stem)
+    try:
+        if not m:
+            raise ValueError
+        at = datetime.datetime.strptime(m["d"] + m["t"], "%Y-%m-%d%H%M")
+        title = (m["pre"] or "").rsplit("_", 1)[-1].replace("-", " ").strip()
+    except ValueError:
+        title = stem
+        try:
+            at = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+        except OSError:
+            return title, ""
+    today = (now or datetime.datetime.now()).date()
+    when = at.strftime("%H:%M")
+    if at.date() == today - datetime.timedelta(days=1):
+        when = "yesterday " + when
+    elif at.date() != today:
+        when = "%d %s%s %s" % (at.day, MONTHS[at.month - 1], "" if at.year == today.year else " %d" % at.year, when)
+    return title, when
+
+
 ALERT_TITLE = "Agent Panel Alert"
 ALERT_W = 420          # logical pixels; the height follows the rows, as agent-alert.html lays them out
 ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SHOTS_TITLE = "Agent Panel Screenshots"
 SHOT_W, SHOT_H, SHOT_PAD = 112, 70, 6  # logical pixels: a strip thumbnail and the space around and between them,
                        # as agent-shots.html lays them out
+SHOT_LABEL = 16        # logical pixels: the one-line label under each thumbnail (agent-shots.html .cap)
 SHOT_N = 3             # unpinned screenshots in the strip (the pinned ones come on top of these)
 SHOT_GAP = 8           # logical pixels between the strip and the screen's edge or the panel
 SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
@@ -2414,7 +2448,7 @@ class Panel:
         cols = max(1, min(n, int(((right - wa.left) / s - SHOT_PAD) // (SHOT_W + SHOT_PAD))))
         rows = -(-n // cols)
         w = math.ceil((SHOT_PAD + cols * (SHOT_W + SHOT_PAD)) * s)  # never a pixel short: the page would wrap early
-        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD)) * s)
+        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_LABEL + SHOT_PAD)) * s)
         x, y = right - w, top
         wa = self.work_area((x, y, w, h))
         return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
@@ -2444,6 +2478,7 @@ class Panel:
         for i in items:  # two sequences: pinned 1.. by pin order, recent 1.. from the newest back
             counts[i["pin"]] += 1
             i["num"] = counts[i["pin"]]
+            i["title"], i["when"] = shot_label(i["path"])  # in the key: "14:32" becomes "yesterday 14:32" at midnight
         rect = self.strip_rect(len(items)) if items else None
         key = (json.dumps(items), rect)
         if key == self.strip_key:
@@ -2456,7 +2491,7 @@ class Panel:
             return
         if fresh:
             data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"]), "pin": i["pin"],
-                     "num": i["num"]} for i in items]
+                     "num": i["num"], "title": i["title"], "when": i["when"]} for i in items]
             self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
             self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))
         x, y, w, h = rect
