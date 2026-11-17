@@ -57,12 +57,19 @@ def strip_at():
 
 
 def strip_pins():
-    """The screenshots pinned in the strip, by the keeper's key, the capture time ("shot_pins": [at, ...]); a pinned
-    one stays however many newer ones come, and keeps its pin when the keeper moves it into a project."""
-    try:
-        return [float(a) for a in local("shot_pins") or []]
-    except (TypeError, ValueError):
-        return []
+    """The screenshots pinned in the strip, by the keeper's key, the capture time ("shot_pins": [at, ...]), in the
+    order they were pinned (the strip numbers them so); a pinned one stays however many newer ones come, and keeps
+    its pin when the keeper moves it into a project. A value written before the numbers came is the same list,
+    already in pin order (every version appended a new pin): it is read as it is, a repeat or a non-number dropped."""
+    v, pins = local("shot_pins"), []
+    for a in v if isinstance(v, list) else []:
+        try:
+            a = float(a)
+        except (TypeError, ValueError):
+            continue
+        if a not in pins:
+            pins.append(a)
+    return pins
 
 
 def save_local(key, value):
@@ -1629,6 +1636,11 @@ class Panel:
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
         self.pins = strip_pins()
+        if self.pins != local("shot_pins") and local("shot_pins") is not None:  # a repeat or a bad entry: written clean
+            try:
+                save_local("shot_pins", self.pins)
+            except OSError:
+                pass
         # the large preview of a strip picture: the same page in view mode, its own window, never focused
         self.view_hwnd, self.view_ready, self.view_shown, self.view_at, self.view_sent = None, False, False, None, {}
         self.view_watch, self.view_lock = None, threading.RLock()
@@ -2427,7 +2439,11 @@ class Panel:
             if gone:
                 self.save_pins([a for a in self.pins if a not in gone])
         on = self.strip_on and self.keeping() and self.visible
-        items = self.shots.latest(SHOT_N, set(self.pins)) if on else []
+        items = self.shots.latest(SHOT_N, self.pins) if on else []
+        counts = {True: 0, False: 0}
+        for i in items:  # two sequences: pinned 1.. by pin order, recent 1.. from the newest back
+            counts[i["pin"]] += 1
+            i["num"] = counts[i["pin"]]
         rect = self.strip_rect(len(items)) if items else None
         key = (json.dumps(items), rect)
         if key == self.strip_key:
@@ -2439,8 +2455,8 @@ class Panel:
             user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
             return
         if fresh:
-            data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"]), "pin": i["pin"]}
-                    for i in items]
+            data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"]), "pin": i["pin"],
+                     "num": i["num"]} for i in items]
             self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
             self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))
         x, y, w, h = rect
@@ -2515,7 +2531,7 @@ class Panel:
                 k = (i["path"], st.st_size, st.st_mtime)
             except OSError:
                 continue
-            d = {"at": i["at"], "name": os.path.basename(i["path"])}
+            d = {"at": i["at"], "name": os.path.basename(i["path"]), "pin": i["pin"], "num": i["num"]}
             if self.view_sent.get(i["at"]) != k:
                 d["src"] = full_src(i["path"])[0]
             sent[i["at"]] = k

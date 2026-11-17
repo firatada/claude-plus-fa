@@ -594,8 +594,9 @@ class Shots:
         self.version += 1
 
     def latest(self, n=3, pinned=()):
-        """The panel's strip: every pinned screenshot that still exists, then the last n unpinned ones, each group
-        newest first, each where it is now."""
+        """The panel's strip: every pinned screenshot that still exists, in the order it was pinned (pinned: the
+        capture times in that order), then the last n unpinned ones, newest first, each where it is now."""
+        pinned = list(pinned)
         pins, recent = [], []
         for e in reversed(list(self.index)):
             pin = e["at"] in pinned
@@ -604,6 +605,7 @@ class Shots:
             p = not e.get("dropped") and self.where(e)
             if p:
                 (pins if pin else recent).append({"at": e["at"], "path": p, "pin": pin})
+        pins.sort(key=lambda i: pinned.index(i["at"]))
         return pins + recent
 
     def alive(self, at):

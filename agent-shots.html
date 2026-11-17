@@ -6,13 +6,17 @@
 <!-- The Agent Panel's strip of the last three screenshots and the pinned ones (the maintainer, 2026-11-15 and 16), and the large preview
      a click on one opens. agent-panel.pyw loads this page twice: as the strip, and with window.MODE = "view" as the
      preview. Both float over every window without ever taking the keyboard.
-     Strip: the pinned ones, then the last three others, each group newest first, wrapping into further rows when
+     Strip: the pinned ones in the order they were pinned, then the last three others, newest first, wrapping into further rows when
      agent-panel.pyw makes the window narrower than one row (it would leave the screen). Pin keeps a screenshot in the
      strip however many newer ones come (agent-panel.pyw stores it); a click on its blue Pin unpins it. Pressing anywhere and moving drags the whole strip (agent-panel.pyw moves the window while
      the button is held and tells, on release, whether it was a drag); a press released in place is a click. A click
      on a picture shows it large at once (the preview holds all three pictures at full size already); a click on the
      same picture closes it. Copy puts the file's current path and its OCR text on the clipboard as text, so a prompt
      gets a few tokens instead of a picture. The window is exactly the strip (rounded by a window region).
+     Numbers (2026-11-17): every picture carries a badge in its bottom-left corner, clear of Pin, Copy and Delete. The
+     two groups count apart: the recent ones 1, 2, 3 from the newest back (a new screenshot becomes 1), the pinned ones
+     1, 2, ... in the order they were pinned (an unpin closes the gap), their badge led by a pin glyph so a pinned 1
+     never reads as the recent 1. agent-panel.pyw sends the numbers; the preview's head shows the same badge.
      Preview: the picture at up to its own size, its name, a Delete button (the file to the Recycle Bin, wherever it
      is now, no question asked: the Recycle Bin is the undo; the strip then fills up with the next older one) and an
      Open button (the default viewer). A click on it, a click outside it, or Esc closes it. Spark tokens as in agent-panel.html. Sizes: agent-panel.pyw SHOT_W, SHOT_H,
@@ -50,6 +54,16 @@ body.moving, body.moving * { cursor: grabbing !important; }
 .copy:hover, .pin:hover { color: var(--blue); border-color: var(--blue); }
 .pin.on { background: var(--blue); border-color: var(--blue); color: #fff; }
 .copy.done { color: var(--green); border-color: var(--green); }
+/* the number badge: dark with a white edge, readable on a light or a dark screenshot; the pinned one adds a pin */
+.num {
+  flex: none; height: 16px; min-width: 16px; padding: 0 4px; display: inline-flex; align-items: center;
+  justify-content: center; gap: 2px; border-radius: 4px; background: rgba(10, 26, 64, .86); color: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .8); font: 700 10px/1 "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.num svg { width: 9px; height: 9px; fill: currentColor; }
+.shot .num { position: absolute; left: 4px; bottom: 4px; }
+#badge:empty { display: none; }
 .copy.fail { color: var(--red-deep); }
 /* the preview: a 36 px head (name, Delete, Open) over the picture, 8 px round it */
 #view { display: none; height: 100%; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; }
@@ -72,12 +86,15 @@ body.view #view { display: flex; }
 </head>
 <body>
 <div id="strip"></div>
-<div id="view"><div id="head"><span id="name"></span><button type="button" id="del" aria-label="Delete: move it to the Recycle Bin">Delete</button><button type="button" id="open">Open</button></div><div id="big"></div></div>
+<div id="view"><div id="head"><span id="badge" class="num" aria-hidden="true"></span><span id="name"></span><button type="button" id="del" aria-label="Delete: move it to the Recycle Bin">Delete</button><button type="button" id="open">Open</button></div><div id="big"></div></div>
 <script>
 /*MODE*/
 const api = () => window.pywebview.api;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const strip = document.getElementById("strip");
+const PIN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3H8v2h1v6l-3 3v2h5v6l1 1 1-1v-6h5v-2l-3-3V5h1z"/></svg>';
+const badge = s => (s.pin ? PIN : "") + s.num;  // the badge's inside: a pin glyph for the pinned sequence
+const label = s => (s.pin ? "pinned " : "") + s.num + ", " + s.name;
 
 function copy(btn, at) {
   btn.textContent = "Reading…";
@@ -96,11 +113,13 @@ function pin(btn, at) {  // shown at once; agent-panel.pyw stores it and redraws
   api().pin(at);
 }
 
-// items: [{at, name, src, pin}], the pinned ones first, each group newest first; agent-panel.pyw sizes the window
+// items: [{at, name, src, pin, num}], the pinned ones first by pin order, then the recent ones newest first; num
+// counts within each group from 1; agent-panel.pyw sizes the window
 window.shotStrip = {
   update(items) {
     strip.innerHTML = items.map(s => `<div class="shot">
-      <button type="button" class="pic" data-at="${s.at}" aria-label="Enlarge ${esc(s.name)}"><img alt="" src="${s.src}"></button>
+      <button type="button" class="pic" data-at="${s.at}" aria-label="Enlarge ${esc(label(s))}"><img alt="" src="${s.src}"></button>
+      <span class="num" aria-hidden="true">${badge(s)}</span>
       <button type="button" class="pin${s.pin ? " on" : ""}" data-at="${s.at}" aria-pressed="${s.pin}" aria-label="Pin ${esc(s.name)}: keep it in the strip">Pin</button>
       <button type="button" class="copy" data-at="${s.at}" aria-label="Copy the path and text of ${esc(s.name)}">Copy</button>
     </div>`).join("");
@@ -140,7 +159,7 @@ strip.addEventListener("lostpointercapture", () => { pressed = null; document.bo
 
 // ----- the preview -----
 // every picture of the strip is kept here at full size, decoded, so showing one is instant; items:
-// [{at, name, src?}], src only when the picture is new or changed
+// [{at, name, pin, num, src?}], src only when the picture is new or changed
 const big = document.getElementById("big");
 const shown = {};  // at -> {img, name}
 let current = null;
@@ -158,19 +177,24 @@ window.shotView = {
         big.appendChild(img);
         shown[i.at] = {img};
       }
-      if (shown[i.at]) shown[i.at].name = i.name;
+      if (shown[i.at]) Object.assign(shown[i.at], {name: i.name, pin: i.pin, num: i.num});
     }
+    if (current !== null && shown[current]) head(shown[current]);  // a new screenshot or an unpin renumbers it
   },
   show(at) {
     current = at;
     for (const [k, v] of Object.entries(shown)) v.img.classList.toggle("on", Number(k) === at);
-    document.getElementById("name").textContent = shown[at] ? shown[at].name : "";
+    head(shown[at]);
   },
   hide() {
     current = null;
     for (const v of Object.values(shown)) v.img.classList.remove("on");
   },
 };
+function head(v) {
+  document.getElementById("name").textContent = v ? v.name : "";
+  document.getElementById("badge").innerHTML = v ? badge(v) : "";
+}
 const del = document.getElementById("del");
 document.getElementById("view").addEventListener("click", e => {
   if (e.target.closest("#open")) api().open(current);
