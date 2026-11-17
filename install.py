@@ -1,6 +1,6 @@
 # Installs the GLM fallback into the current Windows user profile. Safe to rerun.
 #   glm.cmd          -> ~/.local/bin        (launches Claude Code against z.ai)
-#   glm-fallback.py  -> ~/.claude/hooks     (StopFailure hook: Yes/No, then resume on GLM)
+#   glm-fallback.py  -> ~/.claude/hooks     (StopFailure hook: continue on GLM or Codex)
 #   context-guard.py -> ~/.claude/hooks     (Stop at 90 % context, PreCompact, SessionStart compact + startup)
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)

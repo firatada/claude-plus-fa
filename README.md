@@ -34,12 +34,14 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - Once it has read them, it tells you which `.md` files it read, so you always know what the session is working from.
 - The same read-back also takes place when you start a new session in a project that has a `handoff.md`.
 
-**Auto Switch to Free Models When Claude Tokens End**
-- When your Claude usage limit runs out, a dialog offers to carry on with a **free** model, GLM by [z.ai](https://z.ai).
-- Choosing Yes resumes the very same session, with its full conversation, in a new window.
-- When Claude's limit resets, the Agent Panel waits until GLM has finished its turn, then offers to bring the session back to Claude: Continue With Claude reopens it in a new Claude window and closes the GLM one. Not Now asks once more 30 minutes later, never again after that.
-- **It is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai.
-- The switch requires a free z.ai API key; without one, the dialog never appears.
+**Auto Switch to GLM or Codex When Claude Tokens End**
+- When your Claude usage limit runs out, a dialog offers two ways to carry on in a new window, from where the session stopped: **Continue With GLM**, a **free** model by [z.ai](https://z.ai), or **Continue With Codex**, OpenAI's coding agent on your ChatGPT plan.
+- **GLM** resumes the very same session: it reads the same conversation and keeps writing into the same conversation file.
+- **Codex** gets the conversation through the Codex plugin's own transfer, which turns it into a Codex thread with the full history, then opens `codex resume` on it. Codex keeps its own thread file.
+- When Claude's limit resets, the Agent Panel waits until GLM or Codex has finished its turn, then offers to bring the session back to Claude: Continue With Claude reopens it in a new Claude window and closes the GLM or Codex one. Coming back from Codex, Claude's first message is a record of everything that happened in Codex (each message, each reply, each command with its exit code, the files it changed), so the Claude conversation stays one unbroken file. Not Now asks once more 30 minutes later, never again after that.
+- **GLM is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai. It needs a free z.ai API key.
+- Codex needs the [Codex CLI](https://github.com/openai/codex), the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) and a ChatGPT sign-in.
+- Anything that is not set up yet shows its steps in the dialog instead (**Set Up GLM**, **Set Up Codex**), with buttons that open the z.ai pages, open the key file, install the CLI and the plugin, and start the Codex sign-in in your browser. The dialog notices each finished step by itself.
 
 **Agent Panel**
 
@@ -85,13 +87,14 @@ Open the claude-plus-fa z.ai key file ~/.claudex/profiles/glm/.env in Notepad.
 
 5. Replace `PASTE_YOUR_KEY_HERE` with your key and save the file. Never paste the key into a chat.
 
-The key is optional: without it, everything else in claude-plus-fa works as usual.
+The key is optional: without it, everything else in claude-plus-fa works as usual. When the limit is reached without a key, the dialog shows these steps itself under **Set Up GLM**, with a button that opens the key file.
 
 ## Requirements
 
 - Windows 10 or 11
 - [Claude Code](https://code.claude.com) and Python 3.8 or newer, both available on `PATH`
-- For the free-model switch only: a free [z.ai API key](https://z.ai/manage-apikey/apikey-list)
+- For the GLM switch only: a free [z.ai API key](https://z.ai/manage-apikey/apikey-list)
+- For the Codex switch only: the [Codex CLI](https://github.com/openai/codex), the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) and a ChatGPT sign-in (the dialog's **Set Up Codex** walks you through all three)
 
 ## Install
 
@@ -145,6 +148,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 ## Limits
 
 - claude-plus-fa runs on Windows only.
+- Codex keeps its own conversation file. What Codex did reaches the Claude conversation as one message when you continue with Claude; if you never do, it stays in Codex only.
 
 ## Files
 
@@ -153,7 +157,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `statusline.py` | Draws the status line and records the context figure |
 | `prompt-recall.py` | Keeps your last prompt for the status line |
 | `context-guard.py` | Handles the 90 % auto save, the compaction notes and the read-back |
-| `glm-fallback.py` | Shows the free-model switch dialog when the usage limit is reached |
+| `glm-fallback.py` | Shows the GLM / Codex switch dialog when the usage limit is reached, and carries what happened in Codex back to Claude |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |
 | `agent-panel.pyw` | The Agent Panel on the right or the top edge of the screen |
 | `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
