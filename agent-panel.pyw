@@ -92,27 +92,6 @@ def save_local(key, value):
     os.replace(tmp, LOCAL)
 
 
-def thumb_src(path, cache={}):
-    """A strip thumbnail as a data URL (the page is handed over as a string, so it cannot load files), cached by
-    path, size and time."""
-    from PIL import Image
-    try:
-        st = os.stat(path)
-        key = (path, st.st_size, st.st_mtime)
-        if key not in cache:
-            with Image.open(path) as im:
-                im = im.convert("RGB")
-                im.thumbnail((SHOT_W * 3, SHOT_H * 3))  # sharp up to 300 % display scaling
-                buf = io.BytesIO()
-                im.save(buf, "JPEG", quality=85)
-            if len(cache) > 30:
-                cache.clear()
-            cache[key] = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-        return cache[key]
-    except Exception:
-        return ""
-
-
 def full_src(path, cache={}):
     """A strip picture at full size, as a data URL of the file itself, and its size in pixels; cached by path, size
     and time (the strip's three, and a few that just left it)."""
@@ -178,7 +157,7 @@ MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
 
 
 def shot_label(path, now=None):
-    """(title, when) for a strip thumbnail's label, read from the file name alone, never the picture. The keeper
+    """(title, when) for a strip card's text, read from the file name alone, never the picture. The keeper
     names files <app>_<title>_YYYY-MM-DD_HHMM, <app>_YYYY-..., or YYYY-... alone; moved into a project,
     <session-title>_YYYY-...; a clash adds _<n>. The title is the last part before the date (a slug never holds
     an underscore), its hyphens shown as spaces, so <app> alone stands in when there is no title. A name outside
@@ -210,9 +189,8 @@ ALERT_TITLE = "Agent Panel Alert"
 ALERT_W = 420          # logical pixels; the height follows the rows, as agent-alert.html lays them out
 ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SHOTS_TITLE = "Agent Panel Screenshots"
-SHOT_W, SHOT_H, SHOT_PAD = 112, 70, 6  # logical pixels: a strip thumbnail and the space around and between them,
-                       # as agent-shots.html lays them out
-SHOT_LABEL = 16        # logical pixels: the one-line label under each thumbnail (agent-shots.html .cap)
+SHOT_W, SHOT_H, SHOT_PAD = 150, 94, 6  # logical pixels: a strip card (text only, no picture) and the space around
+                       # and between them, as agent-shots.html lays them out
 SHOT_N = 3             # unpinned screenshots in the strip (the pinned ones come on top of these)
 SHOT_GAP = 8           # logical pixels between the strip and the screen's edge or the panel
 SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
@@ -2448,7 +2426,7 @@ class Panel:
         cols = max(1, min(n, int(((right - wa.left) / s - SHOT_PAD) // (SHOT_W + SHOT_PAD))))
         rows = -(-n // cols)
         w = math.ceil((SHOT_PAD + cols * (SHOT_W + SHOT_PAD)) * s)  # never a pixel short: the page would wrap early
-        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_LABEL + SHOT_PAD)) * s)
+        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD)) * s)
         x, y = right - w, top
         wa = self.work_area((x, y, w, h))
         return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
@@ -2490,7 +2468,7 @@ class Panel:
             user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
             return
         if fresh:
-            data = [{"at": i["at"], "name": os.path.basename(i["path"]), "src": thumb_src(i["path"]), "pin": i["pin"],
+            data = [{"at": i["at"], "name": os.path.basename(i["path"]), "pin": i["pin"],
                      "num": i["num"], "title": i["title"], "when": i["when"]} for i in items]
             self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
             self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))

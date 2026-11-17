@@ -628,7 +628,7 @@ class Shots:
         self.save()
 
     def copy_text(self, at):
-        """Copy on a strip thumbnail: its current path and OCR text on the clipboard, as text."""
+        """Copy on a strip card: its current path and OCR text on the clipboard, as text."""
         p = self.path(at)
         if not p:
             return False
