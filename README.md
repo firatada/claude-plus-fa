@@ -19,6 +19,12 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 - You will be able to see your last prompt here, on the second line, in full: a long prompt wraps over as many lines as it needs, up to 12.
 - There is no need to scroll back through a long answer to recall what you asked.
 
+**Reply to a passage**
+- Select a passage of Claude's answer with the mouse, type `: your answer` and press Enter. Claude gets the passage you selected as the thing you are replying to, and a line under your prompt shows what was quoted (`Quoted: the first words…`). A prompt that does not start with `:` is sent as it is.
+- This needs the selection on the clipboard as you select it. In Windows Terminal turn on **Settings** > **Interaction** > **Automatically copy selection to clipboard** (`"copyOnSelect": true` in its settings file). Otherwise press `Ctrl+C` after selecting.
+- The screenshot strip shows the text a `:` reply would quote, in two lines under its cards, until a `:` prompt uses it or you copy something else.
+- A password manager's copy is never quoted or shown: the clipboard formats it uses to keep a copy private are respected. A passage longer than 4,000 characters is cut, and Claude is told so.
+
 **Context Tracker**
 - The status line lets you watch the context yourself, while claude-plus-fa keeps track of it for you in the background at all times.
 
@@ -160,6 +166,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 |---|---|
 | `statusline.py` | Draws the status line and records the context figure |
 | `prompt-recall.py` | Keeps your last prompt for the status line |
+| `quote-reply.py` | Adds the passage you selected to a prompt that starts with `:` |
 | `context-guard.py` | Handles the 90 % auto save, the compaction notes and the read-back |
 | `glm-fallback.py` | Shows the GLM / Codex switch dialog when the usage limit is reached, and carries what happened in Codex back to Claude |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |

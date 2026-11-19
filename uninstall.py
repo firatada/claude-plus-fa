@@ -1,7 +1,7 @@
 # Removes claude-plus-fa from the current Windows user profile. Safe to rerun.
 #   settings.json    -> the claude-plus-fa hook entries, and the statusLine if it is ours
 #                       (backed up first as settings.json.before-claude-plus-uninstall)
-#   ~/.claude        -> statusline.py, the three hook scripts, the state folder
+#   ~/.claude        -> statusline.py, the four hook scripts, the state folder
 #   ~/.local/bin     -> glm.cmd
 # Kept on purpose: your z.ai key file and ~/.claude/claude-plus.local.json (yours,
 # not ours), the install backup, and ~/.local/bin on PATH (other tools live there).
@@ -11,7 +11,7 @@ HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
 HOOKS = os.path.join(CLAUDE_DIR, "hooks")
 SETTINGS = os.path.join(CLAUDE_DIR, "settings.json")
-SCRIPTS = ("glm-fallback.py", "context-guard.py", "prompt-recall.py")
+SCRIPTS = ("glm-fallback.py", "context-guard.py", "prompt-recall.py", "quote-reply.py")
 FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "statusline.py"),
     os.path.join(CLAUDE_DIR, "agent-panel.pyw"),

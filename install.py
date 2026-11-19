@@ -4,6 +4,7 @@
 #                                            UserPromptSubmit with --carry: a Codex record carried in by hand)
 #   context-guard.py -> ~/.claude/hooks     (Stop at 90 % context, PreCompact, SessionStart compact + startup)
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
+#   quote-reply.py   -> ~/.claude/hooks     (UserPromptSubmit: a prompt starting with ":" replies to the copied passage)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
 #   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge or a strip on the top edge; starts at sign-in)
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
@@ -49,9 +50,10 @@ def copy_files():
     shutil.copy2(os.path.join(HERE, "glm-fallback.py"), HOOKS)
     shutil.copy2(os.path.join(HERE, "context-guard.py"), HOOKS)
     shutil.copy2(os.path.join(HERE, "prompt-recall.py"), HOOKS)
+    shutil.copy2(os.path.join(HERE, "quote-reply.py"), HOOKS)
     shutil.copy2(os.path.join(HERE, "statusline.py"), CLAUDE_DIR)
     print("copied  glm.cmd -> %s" % BIN)
-    print("copied  glm-fallback.py, context-guard.py, prompt-recall.py -> %s" % HOOKS)
+    print("copied  glm-fallback.py, context-guard.py, prompt-recall.py, quote-reply.py -> %s" % HOOKS)
     print("copied  statusline.py -> %s" % CLAUDE_DIR)
 
 
@@ -101,6 +103,7 @@ def register_hook():
     put_hook(settings, "SessionStart", "compact", "context-guard.py", "resumed", timeout=10)
     put_hook(settings, "SessionStart", "startup|clear", "context-guard.py", "started", timeout=10)
     put_hook(settings, "UserPromptSubmit", None, "prompt-recall.py", timeout=10)
+    put_hook(settings, "UserPromptSubmit", None, "quote-reply.py", timeout=10)
     # a Codex record carried into a session resumed or typed into by hand (glm-fallback.py carry_hook())
     put_hook(settings, "SessionStart", "resume", "glm-fallback.py", "--carry", timeout=30)
     put_hook(settings, "UserPromptSubmit", None, "glm-fallback.py", "--carry", timeout=30)

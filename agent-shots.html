@@ -27,7 +27,13 @@
      the card's top, above the text, so none of them covers it. The preview is the only place the picture appears.
      Pointing at a card shows the full file name in the panel's tooltip (agent-panel.html .tip: 400 ms, gone after
      3 s or on a press); the strip window is exactly the strip, so it sits inside it, over the card's title, its
-     foot just above the time. -->
+     foot just above the time.
+     Reply band (2026-11-19): under the cards, the clipboard's text that a ":" reply would quote (quote-reply.py, the
+     UserPromptSubmit hook), in two lines at most, cut with "…", led by a blue ":". Text only, with no box of its own:
+     it sits on the strip's own surface, so no terminal text is ever behind it and it reads the same on light and dark
+     terminals. agent-panel.pyw sends it with shotStrip.quote(text) and hides it (null) when the clipboard has no text,
+     holds a password manager's private format, or a ":" prompt already used it; the window then loses the band
+     (QUOTE_H), and with no screenshot left the strip is that band alone. A press on it drags the strip like any. -->
 <style>
 :root {
   --panel: #ffffff; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672; --blue: #1b4df5; --green: #16a34a;
@@ -48,6 +54,14 @@ body.moving, body.moving * { cursor: grabbing !important; }
 /* a card: SHOT_W x SHOT_H (150 x 94; 150 so the top row holds a pinned 2-digit badge, Pin and "Reading…"). The
    whole card is the button that opens the preview; its text starts under the top row (6 + 20 + 4), the title up to
    3 lines of 14 px, the time on the last line, never cut */
+/* the ":" reply's band: a full row under the cards, 2 lines of 14 px (agent-panel.pyw QUOTE_H = 28 + the 6 below) */
+#quote {
+  flex: 0 0 100%; height: 28px; padding: 0 3px; color: var(--text); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
+  overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+#quote[hidden] { display: none; }
+#quote b { color: var(--blue); font-weight: 700; }
+#strip.solo { justify-content: flex-end; }  /* one card under a two-card band: at the strip's anchored right end */
 .shot { position: relative; flex: none; width: 150px; height: 94px; }
 .pic {
   width: 100%; height: 100%; padding: 30px 8px 6px; border: 1px solid var(--line); border-radius: 8px;
@@ -121,6 +135,11 @@ const strip = document.getElementById("strip");
 const PIN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3H8v2h1v6l-3 3v2h5v6l1 1 1-1v-6h5v-2l-3-3V5h1z"/></svg>';
 const badge = s => (s.pin ? PIN : "") + s.num;  // the badge's inside: a pin glyph for the pinned sequence
 const label = s => (s.pin ? "pinned " : "") + s.num + ", " + s.name;
+const quoteEl = Object.assign(document.createElement("div"), {id: "quote", hidden: true});
+function band() {  // the band stays the strip's last row, whatever update() drew before it
+  strip.append(quoteEl);
+  strip.classList.toggle("solo", !quoteEl.hidden && strip.querySelectorAll(".shot").length === 1);
+}
 
 function copy(btn, at) {
   btn.textContent = "Reading…";
@@ -149,7 +168,13 @@ window.shotStrip = {
       <button type="button" class="pin${s.pin ? " on" : ""}" data-at="${s.at}" aria-pressed="${s.pin}" aria-label="Pin ${esc(s.name)}: keep it in the strip">Pin</button>
       <button type="button" class="copy" data-at="${s.at}" aria-label="Copy the path and text of ${esc(s.name)}">Copy</button></div>
     </div>`).join("");
+    band();
     tipHide();
+  },
+  quote(text) {  // what a ":" reply would quote; null hides the band
+    quoteEl.hidden = !text;
+    quoteEl.innerHTML = text ? "<b>:</b> " + esc(text) : "";
+    band();
   },
   open(at) {  // the picture the preview shows is outlined; null: none
     strip.querySelectorAll(".pic").forEach(b => b.classList.toggle("open", Number(b.dataset.at) === at));

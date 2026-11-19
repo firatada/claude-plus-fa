@@ -140,6 +140,19 @@ def load_shots():
         return None
 
 
+def load_quote():
+    """quote-reply.py (the ":" reply hook) as a module, for its clip(): the strip shows what a ":" reply would
+    quote, read the same way the hook reads it. None when it is missing, and the strip shows no passage."""
+    script = next((f for f in QUOTE if os.path.exists(f)), None)
+    try:
+        spec = importlib.util.spec_from_file_location("quote_reply", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
 def mascot_js(only=None):
     """The octopus strips as data URLs: the page is handed over as a string, so it cannot load files."""
     strips = {}
@@ -194,6 +207,11 @@ SHOT_W, SHOT_H, SHOT_PAD = 150, 94, 6  # logical pixels: a strip card (text only
 SHOT_N = 3             # unpinned screenshots in the strip (the pinned ones come on top of these)
 SHOT_GAP = 8           # logical pixels between the strip and the screen's edge or the panel
 SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
+QUOTE_H = 34           # logical pixels: the strip's band under its cards for what a ":" reply would quote, two
+                       # 14 px lines and the 6 px below them (agent-shots.html #quote)
+QUOTE_CHARS = 300      # characters of the clipboard's text handed to that band (it shows 2 lines and cuts with …)
+QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
+         os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
 VIEW_TITLE = "Agent Panel Screenshot"
 VIEW_HEAD, VIEW_PAD = 36, 8  # logical pixels: the preview's head row and the space round its picture
 VIEW_MIN_W = 320       # logical pixels: the preview is never narrower (its head needs the room)
@@ -1712,10 +1730,15 @@ class Panel:
         self.strip_on, self.strip_seen, self.strip_shown = strip_wanted(), -1, False
         with open(SHOTS_HTML, encoding="utf-8") as f:
             shtml = f.read()
+        # min_size: pywebview's default 200 x 100 cut the strip's bottom edge; 40 is the reply band alone (QUOTE_H + 6)
         self.strip = webview.create_window(SHOTS_TITLE, html=shtml, js_api=StripApi(self), width=360, height=82,
-                                           min_size=(100, 50), frameless=True, easy_drag=False, on_top=False,
+                                           min_size=(100, 40), frameless=True, easy_drag=False, on_top=False,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
+        # what a ":" reply would quote (quote_poll): the clipboard's sequence number and text last read, the hook's
+        # record of the one it used (and that file's mtime), and the text the strip shows now (None: nothing)
+        self.quote_mod, self.quote_seq, self.quote_text, self.quote_m, self.quote_used, self.quote = (
+            load_quote(), None, None, None, None, None)
         self.pins = strip_pins()
         if self.pins != local("shot_pins") and local("shot_pins") is not None:  # a repeat or a bad entry: written clean
             try:
@@ -1815,6 +1838,8 @@ class Panel:
                 self.update_live()
             if self.shots and self.shots.version != self.strip_seen:  # a screenshot saved or moved: at once
                 self.strip_seen = self.shots.version
+                self.update_strip()
+            elif self.quote_poll():  # a passage selected, or a ":" prompt used it
                 self.update_strip()
             time.sleep(0.2)
 
@@ -2632,8 +2657,9 @@ class Panel:
         GetMonitorInfo(mon, ctypes.byref(mi))
         return mi.rcWork
 
-    def strip_rect(self, n):
-        """Screen pixels for a strip of n. Where the user dropped it, its top-right corner kept (so a strip of more
+    def strip_rect(self, n, quote=False):
+        """Screen pixels for a strip of n, with the ":" reply's band under the cards when quote (then at least two
+        cards wide, so its two lines hold a recognisable stretch of the passage; n may be 0). Where the user dropped it, its top-right corner kept (so a strip of more
         pictures grows to the left), pulled wholly back onto the nearest screen when it would leave it (a monitor
         gone, a smaller resolution). Never dragged: at the top of the panel's screen, just left of the column when
         the panel is docked on the right (it covers none of it), just under the bar on the right when it is docked
@@ -2655,10 +2681,10 @@ class Panel:
                 user32.GetWindowRect(self.hwnd, ctypes.byref(r))
                 right = min(right, r.left)
             right, top = right - gap, top + gap
-        cols = max(1, min(n, int(((right - wa.left) / s - SHOT_PAD) // (SHOT_W + SHOT_PAD))))
+        cols = max(1, min(max(n, 2 if quote else 1), int(((right - wa.left) / s - SHOT_PAD) // (SHOT_W + SHOT_PAD))))
         rows = -(-n // cols)
         w = math.ceil((SHOT_PAD + cols * (SHOT_W + SHOT_PAD)) * s)  # never a pixel short: the page would wrap early
-        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD)) * s)
+        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD) + (QUOTE_H if quote else 0)) * s)
         x, y = right - w, top
         wa = self.work_area((x, y, w, h))
         return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
@@ -2684,26 +2710,32 @@ class Panel:
                 self.save_pins([a for a in self.pins if a not in gone])
         on = self.strip_on and self.keeping() and self.visible
         items = self.shots.latest(SHOT_N, self.pins) if on else []
+        quote = self.quote if on else None  # its band shows even with no screenshot left: the strip is then that band
         counts = {True: 0, False: 0}
         for i in items:  # two sequences: pinned 1.. by pin order, recent 1.. from the newest back
             counts[i["pin"]] += 1
             i["num"] = counts[i["pin"]]
             i["title"], i["when"] = shot_label(i["path"])  # in the key: "14:32" becomes "yesterday 14:32" at midnight
-        rect = self.strip_rect(len(items)) if items else None
-        key = (json.dumps(items), rect)
+        rect = self.strip_rect(len(items), bool(quote)) if items or quote else None
+        key = (json.dumps(items), rect, quote)
         if key == self.strip_key:
             return
         fresh = self.strip_key is None or key[0] != self.strip_key[0]
+        said = self.strip_key is None or key[2] != self.strip_key[2]
         self.strip_key, self.strip_items, self.strip_now = key, items, rect
-        if not items:
-            self.view_close()
-            user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
-            return
+        # the page first, hidden or not: a strip shown again later must not bring back cards it no longer has
         if fresh:
             data = [{"at": i["at"], "name": os.path.basename(i["path"]), "pin": i["pin"],
                      "num": i["num"], "title": i["title"], "when": i["when"]} for i in items]
             self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
             self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))
+        if said:
+            self.strip.evaluate_js("shotStrip.quote(%s)" % json.dumps(quote))
+        if not items:
+            self.view_close()
+        if not items and not quote:
+            user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
+            return
         x, y, w, h = rect
         r = int(round(24 * self.scale()))
         user32.SetWindowRgn(self.strip_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), True)
@@ -2711,6 +2743,35 @@ class Panel:
         user32.SetWindowPos(self.strip_hwnd, 0, x, y, w, h, 0x0004 | 0x0010 | 0x0040)
         if fresh:
             self.feed_view(items)  # after the strip shows: a large new picture takes a moment to hand over
+
+    def quote_poll(self):
+        """What a ":" reply would quote right now (quote-reply.py, the UserPromptSubmit hook): the clipboard's text,
+        whitespace collapsed; nothing when it holds no text, holds a password manager's private format, or is the
+        clipboard a ":" prompt already used (the hook keeps its sequence number in quote-used.json). One clipboard
+        and one strip for the whole PC, so with several terminals open it is the passage any of them would quote.
+        The clipboard is opened only when its sequence number moved (well under a millisecond, once per copy); a
+        clipboard another program still holds is read on a later turn. True when the strip's text changed."""
+        q = self.quote_mod
+        if not q:
+            return False
+        n = q.seq()
+        if n != self.quote_seq:
+            n, text, private = q.clip(tries=1)
+            if private is None:
+                return False
+            self.quote_seq = n
+            self.quote_text = q.flat(text, QUOTE_CHARS) if text and text.strip() and not private else None
+        try:
+            m = os.stat(q.USED).st_mtime
+        except OSError:
+            m = None
+        if m != self.quote_m:
+            self.quote_m, self.quote_used = m, q.used()
+        shown = self.quote_text if self.quote_seq != self.quote_used else None
+        if shown == self.quote:
+            return False
+        self.quote = shown
+        return True
 
     # ----- dragging the strip -----
     def strip_press(self):
