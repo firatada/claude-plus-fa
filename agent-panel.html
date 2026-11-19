@@ -484,6 +484,11 @@ function headerMascot() {
 const aside = s => s.hidden || !s.here || s.headless;
 const STATUS = {ask: "A prompt in it waits for your answer", busy: "Working", idle: "Open, waiting for you", "": "Closed"};
 const stateOf = s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
+// The main list in groups by state: asking (it needs you), working, open and waiting, closed. Within a group
+// the order agent-panel.pyw sends stays, newest transcript first, so the session that last moved leads its
+// group. The sort is stable, so equal states never trade places.
+const RANK = {ask: 0, busy: 1, idle: 2, "": 3};
+const byState = list => [...list].sort((a, b) => RANK[stateOf(a)] - RANK[stateOf(b)]);
 // how long a turn has run: 0:42, 12:05, 1:02:10
 function clock(ms) {
   const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60;
@@ -632,16 +637,20 @@ function skeleton() {
   return el;
 }
 
-// While the pointer is over the list the cards keep their order, so a click lands on the card that
-// was under it; the newest-first order comes back when the pointer leaves. Keyboard focus on a card
-// holds it too, but only while the panel window has focus: a click on a card raises another window
-// and leaves document.activeElement on that card, which would otherwise freeze the order for hours.
+// While the pointer is over the list, a card's menu or confirm is open, or a card has the keyboard, the
+// cards keep their order, so a click lands on the card that was under it; the new order comes in, gliding,
+// as soon as the last of those ends. Keyboard focus holds only while the panel window has focus: a click
+// on a card raises another window and leaves document.activeElement on that card, which would otherwise
+// freeze the order for hours.
 let hovering = false;
+// a hold that ended applies the waiting order at once, not at the next 2 s refresh
+const letGo = () => setTimeout(() => { lastKey = null; render(); }, 0);
 const rowsOf = list => [...list.children].filter(e => !e.classList.contains("say"));
 // A reorder moves cards (design.md: what moves is animated): each card that stood in the list
-// slides from its old place to its new one; a card new to the list, once the list was already
-// drawn, fades in from a few pixels above. Under reduced motion the cards simply take their places.
-const MOVE = {duration: 260, easing: "cubic-bezier(0.23, 1, 0.32, 1)"};
+// slides from its old place to its new one (FLIP: measured before and after, then animated from the
+// difference; a card caught mid-glide starts from where it is seen); a card new to the list, once the list
+// was already drawn, fades in from a few pixels above. Under reduced motion the cards simply take their places.
+const MOVE = {duration: 200, easing: "cubic-bezier(0.23, 1, 0.32, 1)"};
 function glide(els, was) {
   if (still.matches || !was.size) return;
   for (const e of els) {
@@ -668,7 +677,7 @@ function render() {
   const q = $("q").value.trim().toLowerCase();
   const all = state.sessions, nAside = all.filter(aside).length, nMain = all.length - nAside;
   const found = all.filter(s => !q || (s.title + "\n" + s.path).toLowerCase().includes(q));
-  const rows = found.filter(s => !aside(s)), hits = found.filter(aside);
+  const rows = byState(found.filter(s => !aside(s))), hits = found.filter(aside);
   if (!nAside) showHidden = false;
   const rest = showHidden ? hits : [];
   $("count").textContent = !state.ready ? "" : q ? `${rows.length}/${nMain}` : nMain;
@@ -941,6 +950,7 @@ function closeMenu() {
     const back = menu.contains(document.activeElement) && menuCard && document.body.contains(menuCard);
     menu.remove(); menu = null;
     if (back) menuCard.focus({preventScroll: true});
+    letGo();
   }
   menuCard = null;
   setTarget(null);
@@ -1114,6 +1124,8 @@ list.addEventListener("pointerenter", () => { hovering = true; });
 // a pointer still over the list after the window lost focus holds the order again once it moves
 list.addEventListener("pointermove", () => { hovering = true; });
 list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
+// the keyboard leaving the list ends its hold (a move between two cards keeps it: render() checks again)
+list.addEventListener("focusout", letGo);
 list.addEventListener("scroll", () => { tipHide(); if (quiet) quiet = false; else closeMenu(); });
 $("drop").addEventListener("scroll", () => { tipHide(); sayGone(); closeMenu(); });
 // a window raised over the panel sends no pointerleave, so losing focus ends the hold as well;
