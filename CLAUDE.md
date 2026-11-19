@@ -10,6 +10,7 @@ Add-ons for Claude Code on Windows, so a session and its context are never lost.
 6. New sessions start from `handoff.md` when the project has one.
 7. Prompt recall: the status line's second line shows your last prompt, so you never scroll up to find it.
 8. Agent Panel: every session on the PC in a list docked to the right edge; a click resumes it in its own folder; right-click hides, closes or deletes one.
+9. Reply to a passage: select part of Claude's answer, type `: your answer`, press Enter; the selection goes with the prompt as the passage being replied to, and the screenshot strip shows what a `:` reply would quote.
 
 Install or reinstall: double-click `install.cmd` (or `python install.py`). Remove: `uninstall.cmd`. Both are safe to rerun.
 
