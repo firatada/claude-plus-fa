@@ -4,14 +4,16 @@
 <meta charset="utf-8">
 <title>Agent Panel</title>
 <!-- The Agent Panel's face, shown by agent-panel.pyw in a WebView2 window. Spark tokens
-     (mindmap/design_themes/spark_theme). Dots: working and open are green, closed is grey;
-     a working card breathes green slowly, a card whose prompt waits for an answer pulses red, faster
-     (the maintainer, 2026-11-09). The folder path shows only in the title's tooltip.
+     (mindmap/design_themes/spark_theme). Dots: working is a turning green arc, open a still grey ring,
+     closed a grey dot, asking red; green means working and nothing else. A working card holds a still
+     green tint and shows how long its turn has run where the others show their age; a card whose prompt
+     waits for an answer pulses red, the only thing that pulses (the maintainer, 2026-11-19, replacing a
+     slow green breathing that "is not enough"). The folder path shows only in the title's tooltip.
      Mascot (2026-11-09): a purple octopus (the maintainer's sheet, cut by tools/mascot-export.py into
      mascot/ and inlined by agent-panel.pyw as window.MASCOT). It is the header's logo and sits on every
      card: reading a tablet while the session works, puzzled with a question mark while it asks, calm and
      blinking now and then while it is open, asleep and still when closed, and on a card takes its
-     state's dot colour (green, red, grey; the strips are recoloured at export); the header's stays purple. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
+     state's colour (green working, red asking, slate open, light grey closed; the strips are recoloured at export); the header's stays purple. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
      one shape": the header's logo (36, the octopus), count pill (18, pill radius) and hide and screenshot-strip buttons (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
@@ -121,20 +123,25 @@ h1 { font-size: 15px; font-weight: 600; }
 .card:focus-visible { outline-offset: 1px; }
 .t { display: flex; align-items: center; gap: 6px; height: 18px; }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--gone); }
-.dot.busy { background: var(--green); }
+/* working: a turning arc, the panel's sign for work under way (as on the background-work badge), 10 px
+   drawn in the dot's 8 px slot so the title stays where it is; under reduced motion it stands still */
+.dot.busy { width: 10px; height: 10px; margin: 0 -1px; background: none; border: 2px solid var(--green);
+            border-right-color: transparent; animation: spin 1s linear infinite; }
 .dot.ask { background: var(--red); }
-/* the whole card shows the state: working breathes green slowly for as long as Claude reports the
-   session busy; a prompt in it waiting for an answer pulses red, faster, the family's "this needs you".
-   Background and ring only, so the hover's blue border still shows over it. */
-.card.busy { animation: breathe 2.4s ease-in-out infinite; }
+/* open and waiting for you: a still ring, neither green (working) nor filled grey (closed) */
+.dot.idle { background: none; box-shadow: inset 0 0 0 1.5px var(--muted); }
+/* the whole card shows the state: working holds a still green tint and ring for as long as Claude reports
+   the session busy; a prompt in it waiting for an answer pulses red, the family's "this needs you", and
+   is the only thing that pulses. Background and ring only, so the hover's blue border still shows. */
+.card.busy { background: var(--green-tint); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--green); }
 .card.ask { animation: alarm 1.2s ease-in-out infinite; }
-@keyframes breathe { 50% { background: var(--green-tint); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--green); } }
 @keyframes alarm { 50% { background: var(--red-tint); box-shadow: var(--card-shadow), 0 0 0 2px var(--red); } }
-.dot.idle { background: var(--green); }
 .name { min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arrow { flex: none; visibility: hidden; color: var(--blue); font-size: 12px; }
 .card.here:hover .arrow { visibility: visible; }
 .age { flex: none; margin-left: auto; font-size: 11px; color: var(--muted); }
+/* on a working card: how long its turn has run, ticking each second */
+.age.run { color: var(--text); font-weight: 600; }
 /* background work of an open session (child runs, subagents): a quiet count with a turning arc, gone when
    they end; the list of them is its tooltip */
 .bgw {
@@ -274,11 +281,10 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .card.here:active, .btn:active, .item:active, #hide:active, #qx:active, #footer:active, #status:active { transform: none; }
-  /* without the blink, each state still differs by shape, not by colour alone */
-  .dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--green); }
+  /* without the motion each state still differs by shape (arc, ring, dot, haloed dot), not by colour alone;
+     the working arc stands still and its timer still counts */
   .dot.ask { box-shadow: 0 0 0 2px var(--red-tint); }
-  /* the card keeps its state as a still tint instead of breathing */
-  .card.busy { background: var(--green-tint); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--green); }
+  /* the asking card keeps its state as a still tint instead of pulsing */
   .card.ask { background: var(--red-tint); box-shadow: var(--card-shadow), 0 0 0 2px var(--red); }
 }
 
@@ -477,6 +483,15 @@ function headerMascot() {
 // kept out of the main list
 const aside = s => s.hidden || !s.here || s.headless;
 const STATUS = {ask: "A prompt in it waits for your answer", busy: "Working", idle: "Open, waiting for you", "": "Closed"};
+const stateOf = s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
+// how long a turn has run: 0:42, 12:05, 1:02:10
+function clock(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60;
+  const two = n => String(n).padStart(2, "0");
+  return h ? `${h}:${two(m)}:${two(t % 60)}` : `${m}:${two(t % 60)}`;
+}
+// the state in words; a working session's carries how long its turn has run ("Working, 0:42")
+const said = (s, st) => st === "busy" && s.turn ? "Working, " + clock(Date.now() - s.turn) : STATUS[st];
 
 // green under 50 %, gold under 80 %, red above, as on the status line; colour and figure both
 // come from the same rounded value, so the two can never disagree
@@ -500,29 +515,43 @@ function hit(t, q) {
   return out + esc(t.slice(i));
 }
 
+// "on GLM" / "on Codex": the limit fallback moved it there and it is not back on Claude yet (Back to Claude in its menu)
+const flagsOf = s => (s.via ? ["on " + s.via] : []).concat(s.hidden ? ["hidden"] : [], s.headless ? ["headless"] : [],
+                                                         s.here ? [] : ["folder deleted"]).join(" · ");
 // Cards are kept and patched, never redrawn wholesale: open sessions change every 2 s, and a
 // redrawn card would drop the pointer's hover and the tooltip on its title.
 function fill(el, s, q) {
-  const st = !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
+  const st = stateOf(s);
   el.className = "card" + (st === "busy" || st === "ask" ? " " + st : "") + (s.here ? " here" : "") +
                  (menuFor === s.id ? " target" : "");
   sprite(el.querySelector(".av"), MOOD[st]);
   const d = el.querySelector(".dot");
   d.className = "dot " + st;
-  d.dataset.full = STATUS[st];
-  d.setAttribute("aria-label", STATUS[st]);
+  d.dataset.full = said(s, st);
+  d.setAttribute("aria-label", d.dataset.full);
   const n = el.querySelector(".name"), nh = hit(s.title, q);
   if (n.dataset.html !== nh) { n.innerHTML = nh; n.dataset.html = nh; }
   // the folder path lives in the title's tooltip; a title cut short shows there in full above it
   n.dataset.title = s.title;
   n.dataset.path = s.path;
   n.dataset.full = n.classList.contains("cut") ? s.title + "\n" + s.path : s.path;
-  const a = el.querySelector(".age");
-  a.textContent = s.age;
-  a.dataset.k = "age:" + s.id;
-  // "on GLM" / "on Codex": the limit fallback moved it there and it is not back on Claude yet (Back to Claude in its menu)
-  const flags = (s.via ? ["on " + s.via] : []).concat(s.hidden ? ["hidden"] : [], s.headless ? ["headless"] : [],
-                                                       s.here ? [] : ["folder deleted"]).join(" · ");
+  // a working card shows how long its turn has run instead of its age, moved on each second by ticking();
+  // that text stays out of the fade of changed figures, which would otherwise blur it at every refresh
+  const a = el.querySelector(".age"), run = st === "busy" && !!s.turn;
+  a.classList.toggle("run", run);
+  a.toggleAttribute("data-tip", run);
+  if (run) {
+    a.dataset.turn = s.turn;
+    a.dataset.full = "How long the current turn has run";
+    a.textContent = clock(Date.now() - s.turn);
+    delete a.dataset.k;
+  } else {
+    delete a.dataset.turn;
+    delete a.dataset.full;
+    a.textContent = s.age;
+    a.dataset.k = "age:" + s.id;
+  }
+  const flags = flagsOf(s);
   // what the session runs in the background: a count on the title row, each one listed in its tooltip
   const bg = s.bg || [], w = el.querySelector(".bgw");
   w.hidden = !bg.length;
@@ -532,9 +561,7 @@ function fill(el, s, q) {
       [b.kind, b.what, b.for].filter(Boolean).join(" · ")).join("\n") +
       (bg.length > 8 ? `\nand ${bg.length - 8} more` : "");
   }
-  el.setAttribute("aria-label", [s.title, STATUS[st].toLowerCase(), s.path, s.age,
-    s.ctx == null ? "" : "context " + pct(s.ctx), flags,
-    bg.length ? bg.length + " running in the background" : ""].filter(Boolean).join(", "));
+  el.setAttribute("aria-label", cardLabel(s, st));
   // the meta row is built once and patched, so a tooltip on it survives the 2 s refresh;
   // a session with no context reading shows no ctx bar at all
   const m = el.querySelector(".meta");
@@ -552,6 +579,27 @@ function fill(el, s, q) {
   }
   if (fl.textContent !== flags) { fl.textContent = flags; fl.dataset.full = flags; }
 }
+// what a screen reader hears for a card: "my-app, working, 0:42, <its folder>, context 41%"
+function cardLabel(s, st) {
+  const bg = s.bg || [];
+  return [s.title, said(s, st).toLowerCase(), s.path, st === "busy" && s.turn ? "" : s.age,
+    s.ctx == null ? "" : "context " + pct(s.ctx), flagsOf(s),
+    bg.length ? bg.length + " running in the background" : ""].filter(Boolean).join(", ");
+}
+// Each second the working cards' timers move on, between the 2 s refreshes, by patching their text only, so
+// hover and tooltips survive. A card's label is left alone while it has the keyboard, so a screen reader does
+// not re-read it every second; it is at most a second old when the card gets the keyboard.
+function ticking() {
+  for (const a of document.querySelectorAll(".card[data-id] .age[data-turn]")) {
+    const el = a.closest(".card"), s = find(el.dataset.id);
+    if (!s || !s.turn) continue;
+    a.textContent = clock(Date.now() - s.turn);
+    el.querySelector(".dot").dataset.full = said(s, "busy");
+    el.querySelector(".dot").setAttribute("aria-label", said(s, "busy"));
+    if (el !== document.activeElement) el.setAttribute("aria-label", cardLabel(s, "busy"));
+  }
+}
+setInterval(ticking, 1000);
 function cardEl(s, old, q) {
   let el = old.get(s.id);
   if (!el) {

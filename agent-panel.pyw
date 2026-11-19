@@ -394,7 +394,9 @@ def running():
             # for an answer; the status then says "busy" (older versions) or "waiting" (2.1.319)
             out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"],
                                    "waiting": o.get("waitingFor") or (o.get("status") == "waiting" or None),
-                                   "cwd": o.get("cwd"), "started": o.get("startedAt")}
+                                   "cwd": o.get("cwd"), "started": o.get("startedAt"),
+                                   # stamped at each status change, so while busy it is when the turn began
+                                   "since": o.get("statusUpdatedAt")}
     return out
 
 
@@ -478,7 +480,7 @@ def scan(cache):
                 sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title, "path": path,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
                                  "mtime": st.st_mtime, "status": (run or {}).get("status"),
-                                 "waiting": (run or {}).get("waiting"),
+                                 "waiting": (run or {}).get("waiting"), "since": (run or {}).get("since"),
                                  "pid": (run or {}).get("pid"), "name": (run or {}).get("name"),
                                  "ctx": read_ctx(sid), "headless": hit.get("entry") == "sdk-cli"})
     for gone in [p for p in cache if p not in seen]:
@@ -1692,6 +1694,7 @@ class Panel:
         self.launched = {}  # session id -> when open() started it; cleared once ~/.claude/sessions shows it
         self.repairing, self.update_note = False, None  # a failed Claude Code update: being repaired; what is left
         self.claude_status = False  # status.claude.com, read every STATUS_EVERY by watch_status(); False: not read yet, None: unreadable
+        self.turns = {}  # session id -> its current turn, for the working card's timer; see turn_start()
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
@@ -1990,7 +1993,7 @@ class Panel:
             self.launched.pop(sid, None)  # it is running now: the status guards it from here on
         for s in self.sessions:
             run = live.get(s["id"]) or {}
-            s["status"], s["pid"], s["waiting"] = run.get("status"), run.get("pid"), run.get("waiting")
+            s["status"], s["pid"], s["waiting"], s["since"] = run.get("status"), run.get("pid"), run.get("waiting"), run.get("since")
             if s["status"]:
                 s["ctx"] = read_ctx(s["id"])
                 try:
@@ -2858,8 +2861,26 @@ class Panel:
         self.view.evaluate_js("shotView.hide()")
         self.strip.evaluate_js("shotStrip.open(null)")
 
+    def turn_start(self, s, turns):
+        """When the session's current turn began, in ms since the epoch, for the timer on a working card; None out of
+        a turn. Claude Code stamps statusUpdatedAt at each status change and leaves it alone while a turn runs, so a
+        change to busy is the turn's start. A question inside the turn (status "waiting", or waitingFor) changes the
+        stamp twice: the session keeps its start while it asks and when it works again after a read that saw it
+        asking, so the timer runs on through the answer. A new stamp on a working session seen working at the last
+        read means an end missed between two reads: a new turn. Without a stamp (older Claude Code), the first read
+        that saw it working stands in."""
+        if s["status"] not in ("busy", "waiting"):
+            return None
+        t, since, ask = self.turns.get(s["id"]), s.get("since"), bool(s.get("waiting"))
+        if not t or (since != t["since"] and not t["ask"] and not ask):
+            t = {"start": since or int(time.time() * 1000)}
+        t["since"], t["ask"] = since, ask
+        turns[s["id"]] = t
+        return t["start"]
+
     def state(self):
         lim, now = read_limits(), time.time()
+        turns = {}
 
         def usage(v, fmt):
             try:
@@ -2869,19 +2890,21 @@ class Panel:
             except (TypeError, ValueError):
                 pass
             return None
-        return {"sessions": [{"id": s["id"], "title": s["title"], "folder": s["folder"], "path": where_of(s),
-                              "status": s["status"], "waiting": bool(s["status"] and s.get("waiting")),
-                              "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden,
-                              "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
-                              "headless": s.get("headless", False),
-                              "via": (self.returns.get(s["id"]) or {}).get("via"),
-                              "viaOpen": bool((self.returns.get(s["id"]) or {}).get("open")),
-                              "bg": [{"kind": w["kind"], "what": w["what"], "for": lasted(w["since"])} for w in s.get("bg", [])]}
-                             for s in self.sessions],
-                "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
-                           "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
-                "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime(),
-                "claude": self.claude_status, "strip": self.strip_on if self.keeping() else None}
+        out = {"sessions": [{"id": s["id"], "title": s["title"], "folder": s["folder"], "path": where_of(s),
+                             "status": s["status"], "waiting": bool(s["status"] and s.get("waiting")),
+                             "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden, "turn": self.turn_start(s, turns),
+                             "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
+                             "headless": s.get("headless", False),
+                             "via": (self.returns.get(s["id"]) or {}).get("via"),
+                             "viaOpen": bool((self.returns.get(s["id"]) or {}).get("open")),
+                             "bg": [{"kind": w["kind"], "what": w["what"], "for": lasted(w["since"])} for w in s.get("bg", [])]}
+                            for s in self.sessions],
+               "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
+                          "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
+               "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime(),
+               "claude": self.claude_status, "strip": self.strip_on if self.keeping() else None}
+        self.turns = turns  # only the sessions in a turn now: one that left its turn starts afresh next time
+        return out
 
     def watch_status(self):
         """Reads status.claude.com now and every STATUS_EVERY on a thread of its own, so a slow network never holds

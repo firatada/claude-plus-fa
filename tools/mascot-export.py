@@ -25,7 +25,7 @@ OUT = os.path.join(os.path.dirname(HERE), "mascot")
 OUT_PX = 96
 # name: (column 0 or 1, row band 0..5, frames to keep in play order, colour)
 STRIPS = {
-    "calm": (0, 0, [0, 1, 2, 3, 4], "green"),     # 1 Calm: looks around, blinks
+    "calm": (0, 0, [0, 1, 2, 3, 4], "slate"),     # 1 Calm: looks around, blinks
     "reading": (1, 0, [0, 1, 2, 3, 4], "green"),  # 2 Watching / reading a tablet
     "sleeping": (0, 1, [0, 1, 2], "grey"),        # 3 Asleep (cap and bubble frames left out)
     "asking": (1, 3, [1, 2, 4, 2], "red"),        # 8 Puzzled, question marks (the box frame left out)
@@ -35,7 +35,8 @@ STRIPS = {
 # brightness scaled; green is darker than the dot's own (0.87, 0.64): a lighter green read as pale,
 # and the dot's brightness still read as too light on the octopus
 HEADER = ("calm", "reading", "asking")  # the moods the header shows (never asleep)
-COLOURS = {"green": (142, 1.2, 0.65), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85)}
+COLOURS = {"green": (142, 1.2, 0.65), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85),
+           "slate": (225, 0.3, 0.7)}
 
 
 def recolour(img, colour):
