@@ -207,9 +207,10 @@ SHOT_W, SHOT_H, SHOT_PAD = 150, 94, 6  # logical pixels: a strip card (text only
 SHOT_N = 3             # unpinned screenshots in the strip (the pinned ones come on top of these)
 SHOT_GAP = 8           # logical pixels between the strip and the screen's edge or the panel
 SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
-QUOTE_H = 34           # logical pixels: the strip's band under its cards for what a ":" reply would quote, two
-                       # 14 px lines and the 6 px below them (agent-shots.html #quote)
-QUOTE_CHARS = 300      # characters of the clipboard's text handed to that band (it shows 2 lines and cuts with …)
+QUOTE_BELOW = 6        # logical pixels under the strip's band for what a ":" reply would quote (agent-shots.html
+                       # #quote); the band itself is as tall as its text, wrapped, as the page measures it
+QUOTE_CAP = 3          # the band grows to at most 1/QUOTE_CAP of the work area's height, then scrolls inside
+QUOTE_LINE = 14        # logical pixels: one line of the band; its cap is whole lines, so none shows cut in half
 QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
          os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
 VIEW_TITLE = "Agent Panel Screenshot"
@@ -1730,15 +1731,17 @@ class Panel:
         self.strip_on, self.strip_seen, self.strip_shown = strip_wanted(), -1, False
         with open(SHOTS_HTML, encoding="utf-8") as f:
             shtml = f.read()
-        # min_size: pywebview's default 200 x 100 cut the strip's bottom edge; 40 is the reply band alone (QUOTE_H + 6)
+        # min_size: pywebview's default 200 x 100 cut the strip's bottom edge; 26 is the reply band alone with one
+        # line (6 + 14 + QUOTE_BELOW): a window held taller than its region loses its bottom edge
         self.strip = webview.create_window(SHOTS_TITLE, html=shtml, js_api=StripApi(self), width=360, height=82,
-                                           min_size=(100, 40), frameless=True, easy_drag=False, on_top=False,
+                                           min_size=(100, 26), frameless=True, easy_drag=False, on_top=False,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
         # what a ":" reply would quote (quote_poll): the clipboard's sequence number and text last read, the hook's
         # record of the one it used (and that file's mtime), and the text the strip shows now (None: nothing)
         self.quote_mod, self.quote_seq, self.quote_text, self.quote_m, self.quote_used, self.quote = (
             load_quote(), None, None, None, None, None)
+        self.band_key, self.band_h = None, 0  # what the band was last given (passage, width, cap) and its height
         self.pins = strip_pins()
         if self.pins != local("shot_pins") and local("shot_pins") is not None:  # a repeat or a bad entry: written clean
             try:
@@ -2657,9 +2660,10 @@ class Panel:
         GetMonitorInfo(mon, ctypes.byref(mi))
         return mi.rcWork
 
-    def strip_rect(self, n, quote=False):
-        """Screen pixels for a strip of n, with the ":" reply's band under the cards when quote (then at least two
-        cards wide, so its two lines hold a recognisable stretch of the passage; n may be 0). Where the user dropped it, its top-right corner kept (so a strip of more
+    def strip_rect(self, n, quote=None):
+        """Screen pixels for a strip of n, with the ":" reply's band under the cards when quote (the passage and the
+        characters cut off; then at least two cards wide, and as tall as the passage wrapped, up to 1/QUOTE_CAP of
+        the work area, past which it scrolls inside; n may be 0). Where the user dropped it, its top-right corner kept (so a strip of more
         pictures grows to the left), pulled wholly back onto the nearest screen when it would leave it (a monitor
         gone, a smaller resolution). Never dragged: at the top of the panel's screen, just left of the column when
         the panel is docked on the right (it covers none of it), just under the bar on the right when it is docked
@@ -2683,8 +2687,12 @@ class Panel:
             right, top = right - gap, top + gap
         cols = max(1, min(max(n, 2 if quote else 1), int(((right - wa.left) / s - SHOT_PAD) // (SHOT_W + SHOT_PAD))))
         rows = -(-n // cols)
-        w = math.ceil((SHOT_PAD + cols * (SHOT_W + SHOT_PAD)) * s)  # never a pixel short: the page would wrap early
-        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD) + (QUOTE_H if quote else 0)) * s)
+        lw = SHOT_PAD + cols * (SHOT_W + SHOT_PAD)
+        w = math.ceil(lw * s)  # never a pixel short: the page would wrap early
+        # the band spans the strip inside its 1 px border and 5 px padding; the page measures it at that width
+        cap = int((wa.bottom - wa.top) / s / QUOTE_CAP) // QUOTE_LINE * QUOTE_LINE
+        band = self.band(quote, lw - 2 * SHOT_PAD, cap) + QUOTE_BELOW if quote else 0
+        h = math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD) + band) * s)
         x, y = right - w, top
         wa = self.work_area((x, y, w, h))
         return max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h
@@ -2716,12 +2724,13 @@ class Panel:
             counts[i["pin"]] += 1
             i["num"] = counts[i["pin"]]
             i["title"], i["when"] = shot_label(i["path"])  # in the key: "14:32" becomes "yesterday 14:32" at midnight
-        rect = self.strip_rect(len(items), bool(quote)) if items or quote else None
+        rect = self.strip_rect(len(items), quote) if items or quote else None
+        if not quote:
+            self.band(None)
         key = (json.dumps(items), rect, quote)
         if key == self.strip_key:
             return
         fresh = self.strip_key is None or key[0] != self.strip_key[0]
-        said = self.strip_key is None or key[2] != self.strip_key[2]
         self.strip_key, self.strip_items, self.strip_now = key, items, rect
         # the page first, hidden or not: a strip shown again later must not bring back cards it no longer has
         if fresh:
@@ -2729,8 +2738,6 @@ class Panel:
                      "num": i["num"], "title": i["title"], "when": i["when"]} for i in items]
             self.strip.evaluate_js("shotStrip.update(%s)" % json.dumps(data))
             self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))
-        if said:
-            self.strip.evaluate_js("shotStrip.quote(%s)" % json.dumps(quote))
         if not items:
             self.view_close()
         if not items and not quote:
@@ -2743,6 +2750,21 @@ class Panel:
         user32.SetWindowPos(self.strip_hwnd, 0, x, y, w, h, 0x0004 | 0x0010 | 0x0040)
         if fresh:
             self.feed_view(items)  # after the strip shows: a large new picture takes a moment to hand over
+
+    def band(self, quote, width=0, cap=0):
+        """Hands the strip's band its passage (quote: the text and the characters cut off; None hides it), to be laid
+        out width logical pixels wide and at most cap tall, and returns the height it takes (the page measures the
+        wrapped text, so the window is sized to it). Asked again only when one of the three changed."""
+        key = (quote, width, cap) if quote else None
+        if key != self.band_key:
+            text, more = quote or (None, 0)
+            try:
+                h = self.strip.evaluate_js("shotStrip.quote(%s, %d, %d, %d)" % (json.dumps(text), more, width, cap))
+                self.band_h = max(QUOTE_LINE, min(int(math.ceil(float(h))), cap)) if quote else 0
+            except Exception:
+                self.band_h = 2 * QUOTE_LINE if quote else 0  # the band still shows, scrolling what does not fit
+            self.band_key = key
+        return self.band_h
 
     def quote_poll(self):
         """What a ":" reply would quote right now (quote-reply.py, the UserPromptSubmit hook): the clipboard's text,
@@ -2760,7 +2782,7 @@ class Panel:
             if private is None:
                 return False
             self.quote_seq = n
-            self.quote_text = q.flat(text, QUOTE_CHARS) if text and text.strip() and not private else None
+            self.quote_text = q.passage(text) if text and not private else None  # exactly what the hook would send
         try:
             m = os.stat(q.USED).st_mtime
         except OSError:

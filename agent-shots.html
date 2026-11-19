@@ -29,11 +29,14 @@
      3 s or on a press); the strip window is exactly the strip, so it sits inside it, over the card's title, its
      foot just above the time.
      Reply band (2026-11-19): under the cards, the clipboard's text that a ":" reply would quote (quote-reply.py, the
-     UserPromptSubmit hook), in two lines at most, cut with "…", led by a blue ":". Text only, with no box of its own:
+     UserPromptSubmit hook), led by a blue ":". Whole, wrapped, line breaks kept: the band grows with it up to a third
+     of the screen's work area, then scrolls inside on the mouse wheel (the strip still never takes the keyboard);
+     past the hook's 4,000 characters a muted "Cut here, N more characters not sent" line marks where the quote
+     ends, as the band shows only what is sent. Text only, with no box of its own:
      it sits on the strip's own surface, so no terminal text is ever behind it and it reads the same on light and dark
      terminals. agent-panel.pyw sends it with shotStrip.quote(text) and hides it (null) when the clipboard has no text,
-     holds a password manager's private format, or a ":" prompt already used it; the window then loses the band
-     (QUOTE_H), and with no screenshot left the strip is that band alone. A press on it drags the strip like any. -->
+     holds a password manager's private format, or a ":" prompt already used it; the window then loses the band, and
+     with no screenshot left the strip is that band alone. A press on it drags the strip like any. -->
 <style>
 :root {
   --panel: #ffffff; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672; --blue: #1b4df5; --green: #16a34a;
@@ -54,13 +57,16 @@ body.moving, body.moving * { cursor: grabbing !important; }
 /* a card: SHOT_W x SHOT_H (150 x 94; 150 so the top row holds a pinned 2-digit badge, Pin and "Reading…"). The
    whole card is the button that opens the preview; its text starts under the top row (6 + 20 + 4), the title up to
    3 lines of 14 px, the time on the last line, never cut */
-/* the ":" reply's band: a full row under the cards, 2 lines of 14 px (agent-panel.pyw QUOTE_H = 28 + the 6 below) */
+/* the ":" reply's band: a full row under the cards (agent-panel.pyw sets its width and the cap, QUOTE_BELOW under
+   it), the passage whole in lines of 14 px, line breaks kept, growing to the cap and scrolling inside past it */
 #quote {
-  flex: 0 0 100%; height: 28px; padding: 0 3px; color: var(--text); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
-  overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  flex: none; padding: 0 3px; color: var(--text); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
+  white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
 }
 #quote[hidden] { display: none; }
 #quote b { color: var(--blue); font-weight: 700; }
+#quote .cut { display: block; color: var(--muted); font-style: italic; }  /* where the 4,000 characters end */
 #strip.solo { justify-content: flex-end; }  /* one card under a two-card band: at the strip's anchored right end */
 .shot { position: relative; flex: none; width: 150px; height: 94px; }
 .pic {
@@ -171,10 +177,20 @@ window.shotStrip = {
     band();
     tipHide();
   },
-  quote(text) {  // what a ":" reply would quote; null hides the band
+  // what a ":" reply would quote, exactly: text as the hook sends it, more = the characters its cap leaves out
+  // (shown as a muted line where the cut falls); null hides the band. Laid out width px wide, at most cap px tall
+  // (past that it scrolls, from the top); returns the height it takes, which agent-panel.pyw sizes the window to
+  quote(text, more, width, cap) {
     quoteEl.hidden = !text;
-    quoteEl.innerHTML = text ? "<b>:</b> " + esc(text) : "";
+    quoteEl.innerHTML = text ? "<b>:</b> " + esc(text) + (more > 0 ? '<span class="cut">Cut here, ' +
+      more.toLocaleString("en-US") + " more characters not sent</span>" : "") : "";
     band();
+    if (!text) return 0;
+    Object.assign(quoteEl.style, {width: width + "px", maxHeight: "none"});
+    const h = Math.ceil(quoteEl.getBoundingClientRect().height);
+    quoteEl.style.maxHeight = cap + "px";
+    quoteEl.scrollTop = 0;
+    return Math.min(h, cap);
   },
   open(at) {  // the picture the preview shows is outlined; null: none
     strip.querySelectorAll(".pic").forEach(b => b.classList.toggle("open", Number(b.dataset.at) === at));

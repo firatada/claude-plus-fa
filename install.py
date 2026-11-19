@@ -14,6 +14,8 @@
 #   Agent Panel.lnk  -> the user's Desktop  (starts the panel, or brings the running one up)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
+#   Windows Terminal -> "copyOnSelect": true in each settings file, once (copy_on_select.py; the record in
+#                       ~/.claude/state/copy-on-select.json keeps a later reinstall from undoing your choice)
 import ctypes, json, os, shutil, stat, subprocess, sys, time, winreg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -124,6 +126,19 @@ def register_hook():
     print("ok      hooks registered in %s: StopFailure, Stop, PreCompact, SessionStart(compact, startup|clear, resume), UserPromptSubmit"
           % SETTINGS)
     print(status_note)
+
+
+def terminal_copy():
+    """Windows Terminal's copyOnSelect on, so a selection is on the clipboard for a ":" reply (quote-reply.py).
+    Once per settings file: a file set up before is left as the user has it (copy_on_select.py)."""
+    sys.path.insert(0, HERE)
+    import copy_on_select
+    found = copy_on_select.files()
+    if not found:
+        print("note    no Windows Terminal settings file found; in another terminal press Ctrl+C after selecting "
+              "a passage to reply to")
+    for line in copy_on_select.apply(found):
+        print(line)
 
 
 def ensure_key():
@@ -244,6 +259,7 @@ def main():
     copy_files()
     ensure_on_path()
     register_hook()
+    terminal_copy()
     install_panel()
     has_key = ensure_key()
     print()

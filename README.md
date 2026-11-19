@@ -21,8 +21,8 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 **Reply to a passage**
 - Select a passage of Claude's answer with the mouse, type `: your answer` and press Enter. Claude gets the passage you selected as the thing you are replying to, and a line under your prompt shows what was quoted (`Quoted: the first words…`). A prompt that does not start with `:` is sent as it is.
-- This needs the selection on the clipboard as you select it. In Windows Terminal turn on **Settings** > **Interaction** > **Automatically copy selection to clipboard** (`"copyOnSelect": true` in its settings file). Otherwise press `Ctrl+C` after selecting.
-- The screenshot strip shows the text a `:` reply would quote, in two lines under its cards, until a `:` prompt uses it or you copy something else.
+- The installer turns on Windows Terminal's **Automatically copy selection to clipboard** once, so a selection is on the clipboard as you make it; turn it off under **Settings** > **Interaction** and it stays off, even after a reinstall. In another terminal press `Ctrl+C` after selecting.
+- The screenshot strip shows the whole text a `:` reply would quote, under its cards, until a `:` prompt uses it or you copy something else. A long passage scrolls there with the mouse wheel, and where the 4,000-character limit cuts it, a line says how many characters are not sent.
 - A password manager's copy is never quoted or shown: the clipboard formats it uses to keep a copy private are respected. A passage longer than 4,000 characters is cut, and Claude is told so.
 
 **Context Tracker**
@@ -131,6 +131,7 @@ The installer:
 - registers the hooks in `~/.claude/settings.json`, after saving a backup as `settings.json.before-claude-plus`;
 - sets up the status line only if you do not already have one;
 - creates `~/.claudex/profiles/glm/.env`, where you can store the optional z.ai key;
+- turns on Windows Terminal's copy on select once, keeping a backup of its settings file as `settings.json.before-claude-plus` (see *Reply to a passage*);
 - installs what the Agent Panel needs (`pywebview` for its window, `pystray` for the tray icon), starts the panel, adds it to Windows sign-in and puts an **Agent Panel** icon on your desktop.
 
 ## Use your own steps
@@ -149,6 +150,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 
 - It removes the claude-plus-fa hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus-fa one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
 - It closes the Agent Panel, removes it from Windows sign-in and its desktop icon, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
+- It turns Windows Terminal's copy on select back to how it was, if the installer changed it and you have not changed it since.
 - Your own hooks and your own status line are left untouched.
 - Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them. Your screenshots stay where they are.
 - Restart any open Claude Code session afterwards.
@@ -179,6 +181,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `tools/mascot-export.py` | Cuts `mascot/` from the octopus sheet in `tools/mascot-source/` |
 | `tools/knock-sound.py` | Synthesizes the alert's knock, `mascot/knock.wav` |
 | `install.cmd`, `install.py` | The installer |
+| `copy_on_select.py` | Turns Windows Terminal's copy on select on once, and back on uninstall |
 | `uninstall.cmd`, `uninstall.py` | Removes claude-plus-fa in one step |
 
 ## License

@@ -6,7 +6,7 @@
 # Never quotes a secret: a clipboard a password manager marked private (any of the formats in PRIVATE) is not read.
 # Never quotes the same clipboard twice: the sequence number it quoted is kept in USED, and the Agent Panel's
 # screenshot strip, which shows what a ":" reply would quote, hides the passage once it is used. The panel loads
-# this file as a module for clip(), so both read the clipboard the same way.
+# this file as a module for clip() and passage(), so both read the clipboard and cut it the same way.
 #
 # Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
 import ctypes, json, os, sys, time
@@ -94,6 +94,13 @@ def flat(text, n):
     return line if len(line) <= n else line[:n].rstrip() + "…"
 
 
+def passage(text):
+    """What a ":" reply sends of this clipboard text: (the passage, the number of characters CAP cut off), or None
+    when there is nothing to quote. The strip's preview shows the same, so it never promises more than goes."""
+    quote = (text or "").replace("\r\n", "\n").strip()
+    return (quote[:CAP], max(0, len(quote) - CAP)) if quote else None
+
+
 def reply(prompt):
     """The hook's answer for one prompt: None (prompt untouched, nothing printed), or the JSON object to print."""
     if not prompt.lstrip().startswith(":"):
@@ -108,12 +115,11 @@ def reply(prompt):
     elif n and n == used():
         note = "nothing to quote (that passage was already quoted; select it again to quote it again)"
     else:
-        quote = text.replace("\r\n", "\n").strip()
-        cut = len(quote) > CAP
+        quote, more = passage(text)
         context = ("The user is replying to this passage from the conversation (they selected it, and the \":\" "
-                   "at the start of their prompt marks the reply):\n<quote>\n%s\n</quote>" % quote[:CAP])
-        if cut:
-            context += "\nThe passage was cut to its first %d of %d characters." % (CAP, len(quote))
+                   "at the start of their prompt marks the reply):\n<quote>\n%s\n</quote>" % quote)
+        if more:
+            context += "\nThe passage was cut to its first %d of %d characters." % (CAP, CAP + more)
         try:
             os.makedirs(os.path.dirname(USED), exist_ok=True)
             with open(USED + ".tmp", "w", encoding="utf-8") as f:

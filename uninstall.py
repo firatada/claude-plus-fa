@@ -3,10 +3,13 @@
 #                       (backed up first as settings.json.before-claude-plus-uninstall)
 #   ~/.claude        -> statusline.py, the four hook scripts, the state folder
 #   ~/.local/bin     -> glm.cmd
+#   Windows Terminal -> copyOnSelect as it was before the install, where the install changed it and it is still
+#                       on (copy_on_select.py); where you changed it since, it stays as you set it
 # Kept on purpose: your z.ai key file and ~/.claude/claude-plus.local.json (yours,
 # not ours), the install backup, and ~/.local/bin on PATH (other tools live there).
 import ctypes, json, os, shutil, stat, subprocess, sys, time, winreg
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
 HOOKS = os.path.join(CLAUDE_DIR, "hooks")
@@ -162,8 +165,21 @@ def remove_panel():
             print("deleted %s" % panel_state)
 
 
+def terminal_copy():
+    """copyOnSelect given back where the installer turned it on and it is still on (copy_on_select.py). The record
+    of every other file stays, so a reinstall never turns on what the user turned off."""
+    sys.path.insert(0, HERE)
+    try:
+        import copy_on_select
+    except ImportError:
+        return
+    for line in copy_on_select.restore():
+        print(line)
+
+
 def main():
     clean_settings()
+    terminal_copy()
     remove_panel()
     remove_files()
     for path in KEPT:
