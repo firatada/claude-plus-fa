@@ -21,8 +21,13 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 **Reply to a passage**
 - Select a passage of Claude's answer with the mouse, type `: your answer` and press Enter. Claude gets the passage you selected as the thing you are replying to, and a line under your prompt shows what was quoted (`Quoted: the first words…`). A prompt that does not start with `:` is sent as it is.
+- Several questions to answer: select each one in turn. The screenshot strip lists your selections, numbered in the order you made them (`:1`, `:2`, ...). Answer them in one prompt, on one line or on several: `:1 yes, fix it :3 no :4 your call`. Each `:N` starts the answer to selection N and runs to the next `:N` or the end. Claude gets each answered passage with its answer; the ones you skip are not sent. The line under your prompt shows which went (`Quoted: :1 :3 :4`).
+- A `:N` counts only on its own: at the start of a line or after a space, and followed by a space or the end, so `10:20` or `a:1b` stay as they are. A number that is not in the list stays plain text, and the line under your prompt says it matched nothing.
+- A bare `:` with several selections listed sends them all, and Claude is told the answer was not numbered, so it may ask which one you meant.
+- The x on a row drops that selection; the other numbers stay as they are. After a prompt that used the list it empties, and numbering starts again at 1. A selection older than an hour drops by itself, and at most 9 are kept (the oldest goes first).
 - The installer turns on Windows Terminal's **Automatically copy selection to clipboard** once, so a selection is on the clipboard as you make it; turn it off under **Settings** > **Interaction** and it stays off, even after a reinstall. In another terminal press `Ctrl+C` after selecting.
-- The screenshot strip shows the whole text a `:` reply would quote, under its cards, until a `:` prompt uses it or you copy something else. A long passage scrolls there with the mouse wheel, and where the 4,000-character limit cuts it, a line says how many characters are not sent.
+- The screenshot strip shows the whole text of each selection under its cards, until a prompt uses the list. A long passage scrolls there with the mouse wheel, and where the 4,000-character limit cuts it, a line says how many characters are not sent.
+- The numbered list needs the Agent Panel running with the screenshot strip on. Without it, `: your answer` quotes whatever is on the clipboard, as before.
 - A password manager's copy is never quoted or shown: the clipboard formats it uses to keep a copy private are respected. A passage longer than 4,000 characters is cut, and Claude is told so.
 
 **Context Tracker**
@@ -168,7 +173,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 |---|---|
 | `statusline.py` | Draws the status line and records the context figure |
 | `prompt-recall.py` | Keeps your last prompt for the status line |
-| `quote-reply.py` | Adds the passage you selected to a prompt that starts with `:` |
+| `quote-reply.py` | Adds the passages you selected to a prompt that starts with `:` or answers them by number (`:1`) |
 | `context-guard.py` | Handles the 90 % auto save, the compaction notes and the read-back |
 | `glm-fallback.py` | Shows the GLM / Codex switch dialog when the usage limit is reached, and carries what happened in Codex back to Claude |
 | `glm.cmd` | Runs Claude Code on z.ai's GLM models |

@@ -255,7 +255,8 @@ dwmapi.DwmSetWindowAttribute.argtypes = [wt.HWND, wt.DWORD, ctypes.c_void_p, wt.
 
 
 # ---------- one instance only ----------
-kernel32.CreateMutexW(None, False, "Local\\claude-plus-fa-agent-panel")
+MUTEX = "Local\\claude-plus-fa-agent-panel"  # also named in the ":" reply's list, so the hook knows this panel runs
+kernel32.CreateMutexW(None, False, MUTEX)
 if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
     # started again (the desktop shortcut, the Run key): ask the running panel to come up, then leave.
     # This process was started by the user, so it may hand its right to take the foreground on.
@@ -1585,6 +1586,9 @@ class StripApi:
     def pin(self, at):
         self._p.events.put("pin:" + json.dumps(at))  # done on the poll loop's thread, as every other strip change
 
+    def drop(self, n):
+        self._p.events.put("qdrop:%d" % int(n))  # a selection's x in the band: out of the ":" reply's list
+
 
 class ViewApi:
     """What the large preview may call."""
@@ -1739,11 +1743,12 @@ class Panel:
                                            min_size=(100, 26), frameless=True, easy_drag=False, on_top=False,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
-        # what a ":" reply would quote (quote_poll): the clipboard's sequence number and text last read, the hook's
-        # record of the one it used (and that file's mtime), and the text the strip shows now (None: nothing)
-        self.quote_mod, self.quote_seq, self.quote_text, self.quote_m, self.quote_used, self.quote = (
-            load_quote(), None, None, None, None, None)
-        self.band_key, self.band_h = None, 0  # what the band was last given (passage, width, cap) and its height
+        # the ":" reply's numbered list (quote_poll): the clipboard's sequence number last read, the USED file's mtime
+        # and the sequence number it holds, the list itself (kept in the hook's LIST file, read back at start so a
+        # restart keeps it) and what the strip's band shows now (((n, text, more), ...) or None)
+        self.quote_mod, self.quote_seq, self.quote_m, self.quote_used, self.quote = load_quote(), None, None, None, None
+        self.qlist = self.quote_load()
+        self.band_key, self.band_h = None, 0  # what the band was last given (list, width, cap) and its height
         self.pins = strip_pins()
         if self.pins != local("shot_pins") and local("shot_pins") is not None:  # a repeat or a bad entry: written clean
             try:
@@ -1798,6 +1803,8 @@ class Panel:
                         self.toggle_strip()
                     elif ev.startswith("pin:"):
                         self.toggle_pin(float(ev[4:]))
+                    elif ev.startswith("qdrop:"):
+                        self.quote_drop(int(ev[6:]))
                     elif ev.startswith("dock:"):
                         self.set_dock(ev[5:])
                     elif ev.startswith("opt:"):
@@ -2663,8 +2670,8 @@ class Panel:
         return mi.rcWork
 
     def strip_rect(self, n, quote=None):
-        """Screen pixels for a strip of n, with the ":" reply's band under the cards when quote (the passage and the
-        characters cut off; then at least two cards wide, and as tall as the passage wrapped, up to 1/QUOTE_CAP of
+        """Screen pixels for a strip of n, with the ":" reply's band under the cards when quote (its numbered list of
+        passages; then at least two cards wide, and as tall as the list wrapped, up to 1/QUOTE_CAP of
         the work area, past which it scrolls inside; n may be 0). Where the user dropped it, its top-right corner kept (so a strip of more
         pictures grows to the left), pulled wholly back onto the nearest screen when it would leave it (a monitor
         gone, a smaller resolution). Never dragged: at the top of the panel's screen, just left of the column when
@@ -2754,48 +2761,114 @@ class Panel:
             self.feed_view(items)  # after the strip shows: a large new picture takes a moment to hand over
 
     def band(self, quote, width=0, cap=0):
-        """Hands the strip's band its passage (quote: the text and the characters cut off; None hides it), to be laid
-        out width logical pixels wide and at most cap tall, and returns the height it takes (the page measures the
-        wrapped text, so the window is sized to it). Asked again only when one of the three changed."""
+        """Hands the strip's band the ":" reply's list (quote: ((n, text, more), ...), each passage as sent and the
+        characters cut off; None hides it), to be laid out width logical pixels wide and at most cap tall, and returns
+        the height it takes (the page measures the wrapped text, so the window is sized to it). Asked again only when
+        one of the three changed."""
         key = (quote, width, cap) if quote else None
         if key != self.band_key:
-            text, more = quote or (None, 0)
+            rows = [{"n": n, "text": t, "more": m} for n, t, m in quote or ()]
             try:
-                h = self.strip.evaluate_js("shotStrip.quote(%s, %d, %d, %d)" % (json.dumps(text), more, width, cap))
+                h = self.strip.evaluate_js("shotStrip.quote(%s, %d, %d)" % (json.dumps(rows), width, cap))
                 self.band_h = max(QUOTE_LINE, min(int(math.ceil(float(h))), cap)) if quote else 0
             except Exception:
                 self.band_h = 2 * QUOTE_LINE if quote else 0  # the band still shows, scrolling what does not fit
             self.band_key = key
         return self.band_h
 
+    def quote_load(self):
+        """The ":" reply's list as the last run left it (LIST), so a restart (a reinstall) keeps what the strip showed;
+        a fresh one when there is none. Old entries are dropped on the first poll (the hook's fresh())."""
+        q, d = self.quote_mod, None
+        if q:
+            d = q.load(q.LIST)
+        lst = {"on": False, "gen": int(time.time() * 1000), "next": 1, "items": []}
+        if isinstance(d, dict) and isinstance(d.get("items"), list) and d["items"]:
+            try:
+                items = [{"n": int(i["n"]), "seq": i.get("seq"), "at": float(i["at"]), "text": str(i["text"]),
+                          "more": int(i.get("more") or 0)} for i in d["items"]]
+                lst.update(gen=d.get("gen") or lst["gen"], next=max(int(d.get("next") or 1), items[-1]["n"] + 1),
+                           items=items)
+            except (KeyError, TypeError, ValueError):
+                pass
+        return lst
+
     def quote_poll(self):
-        """What a ":" reply would quote right now (quote-reply.py, the UserPromptSubmit hook): the clipboard's text,
-        whitespace collapsed; nothing when it holds no text, holds a password manager's private format, or is the
-        clipboard a ":" prompt already used (the hook keeps its sequence number in quote-used.json). One clipboard
-        and one strip for the whole PC, so with several terminals open it is the passage any of them would quote.
-        The clipboard is opened only when its sequence number moved (well under a millisecond, once per copy); a
-        clipboard another program still holds is read on a later turn. True when the strip's text changed."""
+        """Keeps the ":" reply's numbered list (quote-reply.py, the UserPromptSubmit hook, reads it from LIST): every
+        new text clipboard joins it in the order made, as 1, 2, 3, ..., while the strip is switched on, the keeper is
+        on and the panel shows (else the list is empty and "off", and a ":" prompt quotes the clipboard itself). Not
+        listed: no text, a password manager's private format, the same text as the last entry, and the clipboard a
+        ":" prompt already quoted. A prompt that used the list (the hook writes USED with the list's generation and
+        its highest number) empties it; so do age and the cap (fresh(): MAX_ITEMS, AGE), dropping the oldest without
+        renumbering the rest; numbering restarts at 1 only when the list is empty. One clipboard and one strip for the
+        whole PC, so with several terminals open any of them answers the same list. The clipboard is opened only when
+        its sequence number moved (well under a millisecond, once per copy); a clipboard another program still holds
+        is read on a later turn. True when what the band shows changed."""
         q = self.quote_mod
         if not q:
             return False
-        n = q.seq()
-        if n != self.quote_seq:
-            n, text, private = q.clip(tries=1)
-            if private is None:
-                return False
-            self.quote_seq = n
-            self.quote_text = q.passage(text) if text and not private else None  # exactly what the hook would send
+        lst, now, changed = self.qlist, time.time(), False
         try:
             m = os.stat(q.USED).st_mtime
         except OSError:
             m = None
-        if m != self.quote_m:
-            self.quote_m, self.quote_used = m, q.used()
-        shown = self.quote_text if self.quote_seq != self.quote_used else None
+        if m != self.quote_m:  # a ":" prompt quoted: the clipboard it used, and the list it used up
+            self.quote_m, u = m, q.load(q.USED) or {}
+            self.quote_used = u.get("seq")
+            if u.get("gen") == lst["gen"] and lst["items"]:
+                lst["items"] = [i for i in lst["items"] if i["n"] > (u.get("upto") or 0)]
+                changed = True
+        live = self.strip_on and self.keeping() and self.visible
+        if not live:
+            self.quote_seq = None  # when it comes back, the clipboard of that moment is the first entry
+            if lst["on"] or lst["items"]:
+                lst.update(on=False, items=[])
+                changed = True
+        else:
+            if not lst["on"]:
+                lst["on"], changed = True, True
+            n = q.seq()
+            if n != self.quote_seq:
+                n, text, private = q.clip(tries=1)
+                if private is not None:
+                    self.quote_seq = n
+                    p = q.passage(text) if text and not private else None
+                    last = lst["items"][-1] if lst["items"] else None
+                    if p and n != self.quote_used and not (last and (last["text"], last["more"]) == p):
+                        lst["items"].append({"n": lst["next"], "seq": n, "at": now, "text": p[0], "more": p[1]})
+                        lst["next"] += 1
+                        changed = True
+        kept = q.fresh(lst["items"], now)
+        if len(kept) != len(lst["items"]):
+            lst["items"], changed = kept, True
+        if changed:
+            self.quote_save()
+        shown = tuple((i["n"], i["text"], i["more"]) for i in lst["items"]) or None
         if shown == self.quote:
             return False
         self.quote = shown
         return True
+
+    def quote_save(self):
+        """Writes the list for the hook (whole, swapped in); an empty list starts numbering at 1 again, under a new
+        generation, so a prompt that read the old list cannot empty the new one."""
+        lst = self.qlist
+        if not lst["items"]:
+            lst.update(next=1, gen=max(lst["gen"] + 1, int(time.time() * 1000)))
+        try:
+            self.quote_mod.write_json(self.quote_mod.LIST, dict(lst, mutex=MUTEX))
+        except OSError:
+            pass  # the hook then reads the last list written; the next change writes again
+
+    def quote_drop(self, n):
+        """A selection's x in the strip's band: out of the list; the others keep their numbers."""
+        lst = self.qlist
+        kept = [i for i in lst["items"] if i["n"] != n]
+        if len(kept) != len(lst["items"]):
+            lst["items"] = kept
+            self.quote_save()
+        if self.quote_poll():  # what the band shows, from the list as it is now
+            self.update_strip()
 
     # ----- dragging the strip -----
     def strip_press(self):

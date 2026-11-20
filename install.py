@@ -4,7 +4,7 @@
 #                                            UserPromptSubmit with --carry: a Codex record carried in by hand)
 #   context-guard.py -> ~/.claude/hooks     (Stop at 90 % context, PreCompact, SessionStart compact + startup)
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
-#   quote-reply.py   -> ~/.claude/hooks     (UserPromptSubmit: a prompt starting with ":" replies to the copied passage)
+#   quote-reply.py   -> ~/.claude/hooks     (UserPromptSubmit: ": answer" or ":1 answer :3 answer" quotes the selections)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
 #   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge or a strip on the top edge; starts at sign-in)
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
