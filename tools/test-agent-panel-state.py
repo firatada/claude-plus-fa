@@ -183,5 +183,23 @@ class Page(unittest.TestCase):
         self.assertEqual(self.r["order"], ["asking-with-child", "working", "old-delegating", "new-idle", "old-idle", "closed"])
 
 
+class FolderForm(unittest.TestCase):
+    """One form of a session's folder for the cards, the alert and the strip: Windows separators, no trailing one."""
+
+    def where(self, cwd, distro=None, folder="f"):
+        return pyw_functions("where_of")["where_of"]({"cwd": cwd, "distro": distro, "folder": folder})
+
+    def test_forms(self):
+        self.assertEqual(self.where("/home/dev/my-app/", "Ubuntu"), "\\\\wsl.localhost\\Ubuntu\\home\\dev\\my-app")
+        self.assertEqual(self.where("/home/dev/my-app", "Ubuntu"), "\\\\wsl.localhost\\Ubuntu\\home\\dev\\my-app")
+        self.assertEqual(self.where("/", "Ubuntu"), "\\\\wsl.localhost\\Ubuntu")
+        self.assertEqual(self.where("\\\\wsl$\\Ubuntu\\home\\dev\\my-app\\"), "\\\\wsl$\\Ubuntu\\home\\dev\\my-app")
+        self.assertEqual(self.where("//wsl.localhost/Ubuntu/home/dev/my-app/"), "\\\\wsl.localhost\\Ubuntu\\home\\dev\\my-app")
+        self.assertEqual(self.where("C:\\work\\my-app\\"), "C:\\work\\my-app")
+        self.assertEqual(self.where("C:\\work\\my-app"), "C:\\work\\my-app")
+        self.assertEqual(self.where("C:\\"), "C:\\")
+        self.assertEqual(self.where(None, folder="my-app"), "my-app")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

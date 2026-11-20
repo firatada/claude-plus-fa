@@ -35,7 +35,9 @@ h1 { font-size: 16px; font-weight: 700; color: var(--red-deep); }
   background: none; color: var(--muted); font-size: 16px; line-height: 26px;
 }
 #x:hover { background: var(--red-tint); color: var(--red-deep); }
-ul { list-style: none; padding: 0; margin-top: 8px; display: grid; gap: 4px; }
+/* one column exactly as wide as the card: an auto column grew to a long path's full width and pushed
+   the row's right edge out of the window */
+ul { list-style: none; padding: 0; margin-top: 8px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
 li button {
   width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px; text-align: left;
   border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel); color: var(--text);
@@ -44,8 +46,11 @@ li button {
 li button:hover { border-color: var(--red); background: var(--red-tint); }
 li button:active { transform: scale(.98); }
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
-.t { flex: none; max-width: 45%; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.p { flex: 1; min-width: 0; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+/* the name keeps its whole width up to 60 % of the row; the folder takes the rest and, when cut, loses its
+   start ("…\home\dev\my-app"), since its last part is what tells it apart. The rtl box puts the ellipsis
+   on the left; the bdi keeps the path itself left to right, or its leading "\\" would show at the end */
+.t { flex: 0 0 auto; max-width: 60%; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p { flex: 1 1 0; min-width: 0; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
 .go { flex: none; color: var(--muted); }
 .more { padding: 4px 10px; color: var(--muted); }
 /* entering: drops in, then a short shake as the knock sounds */
@@ -89,8 +94,13 @@ window.alertCard = {
     $("h").textContent = sessions.length > 1 ? `${sessions.length} sessions need your answer` : "Waiting for your answer";
     $("list").innerHTML = sessions.slice(0, SHOWN).map(s =>
       `<li><button type="button" data-id="${esc(s.id)}" title="${esc(s.path)}"><span class="dot"></span>` +
-      `<span class="t">${esc(s.title)}</span><span class="p">${esc(s.path)}</span><span class="go" aria-hidden="true">↗</span></button></li>`).join("") +
+      `<span class="t">${esc(s.title)}</span><span class="p"><bdi dir="ltr">${esc(s.path)}</bdi></span><span class="go" aria-hidden="true">↗</span></button></li>`).join("") +
       (sessions.length > SHOWN ? `<li class="more">and ${sessions.length - SHOWN} more in the panel</li>` : "");
+    // the tooltip carries the full folder, and the full name too when the row cut it (as the panel's cards do)
+    for (const b of $("list").querySelectorAll("button[data-id]")) {
+      const t = b.querySelector(".t");
+      if (t.scrollWidth > t.clientWidth) b.title = t.textContent + "\n" + b.title;
+    }
     if (knock) { const c = $("card"); c.classList.remove("in"); void c.offsetWidth; c.classList.add("in"); }
   }
 };

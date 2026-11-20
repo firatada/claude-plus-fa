@@ -454,13 +454,15 @@ def claude_status():
 
 
 def where_of(s):
-    """The session's folder as a full path, written the Windows way."""
+    """The session's folder as a full path, written the Windows way, without a trailing separator
+    (a drive root keeps its own). The cards' tooltips, the alert and the strip all show this form."""
     cwd = s["cwd"] or ""
     if s["distro"] and cwd.startswith("/"):
-        return "\\\\wsl.localhost\\%s%s" % (s["distro"], cwd.replace("/", "\\"))
-    if cwd.startswith("//"):
+        cwd = "\\\\wsl.localhost\\%s%s" % (s["distro"], cwd.replace("/", "\\"))
+    elif cwd.startswith("//"):
         cwd = cwd.replace("/", "\\")
-    return cwd or s["folder"]
+    bare = cwd.rstrip("\\/")
+    return (bare if bare and not bare.endswith(":") else cwd) or s["folder"]
 
 
 def scan(cache):
