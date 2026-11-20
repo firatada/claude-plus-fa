@@ -1,0 +1,160 @@
+# Unit tests for the Agent Panel's card state: a card whose background work runs counts as working.
+# Run: python -I tools/test-agent-panel-state.py   (needs node for the page's half)
+# The .pyw is never imported (that would trip its one-instance mutex and raise the running panel): the functions
+# under test are taken from it by ast and given a fake process table and fake creation times, so no process is
+# started or read. The page's state functions are cut out of agent-panel.html and run in node.
+import ast, json, os, subprocess, time, unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.join(HERE, "..")
+
+
+def pyw_functions(*names, cls_methods=()):
+    with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    for c in tree.body:
+        if isinstance(c, ast.ClassDef):
+            keep += [m for m in c.body if isinstance(m, ast.FunctionDef) and m.name in cls_methods]
+    ns = {"os": os, "time": time, "json": json, "FT_EPOCH": 116444736000000000}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+    return ns
+
+
+FT = lambda unix: int(unix * 1e7) + 116444736000000000  # a unix time as a FILETIME
+
+
+class ChildRunStart(unittest.TestCase):
+    """A run's start is its own process's creation time, not that of the shells between it and the session."""
+
+    def test_since_is_the_runs_own_start(self):
+        ns = pyw_functions("child_runs")
+        # session claude.exe 100 -> powershell 200 (an old shell) -> cmd 300 -> claude.exe 400 (the run)
+        table = {100: (1, "claude.exe"), 200: (100, "powershell.exe"), 300: (200, "cmd.exe"), 400: (300, "claude.exe")}
+        times = {1: FT(0), 100: FT(1000), 200: FT(1100), 300: FT(1500), 400: FT(1501)}
+        ns["born"] = lambda pid: times.get(pid)
+        ns["claude_code"] = lambda pid, name: name == "claude.exe"
+        live = {"S": {"pid": 100, "cwd": "C:\\work\\mindmap"}, "R": {"pid": 400, "cwd": "C:\\work\\run"}}
+        out = ns["child_runs"](live, table)
+        self.assertEqual(list(out), ["S"])
+        self.assertEqual(out["S"][0]["what"], "run")
+        self.assertAlmostEqual(out["S"][0]["since"], 1501, places=3)
+
+    def test_reused_pid_breaks_the_chain(self):
+        ns = pyw_functions("child_runs")
+        table = {100: (1, "claude.exe"), 400: (100, "claude.exe")}
+        times = {1: FT(0), 100: FT(2000), 400: FT(1501)}  # the "parent" is younger: a reused number
+        ns["born"] = lambda pid: times.get(pid)
+        ns["claude_code"] = lambda pid, name: name == "claude.exe"
+        out = ns["child_runs"]({"S": {"pid": 100}, "R": {"pid": 400}}, table)
+        self.assertEqual(out, {})
+
+
+class BgStart(unittest.TestCase):
+    def setUp(self):
+        ns = pyw_functions(cls_methods=("bg_start",))
+
+        class P:
+            bg_start = ns["bg_start"]
+        self.p = P()
+        self.p.bg_seen = {}
+
+    def test_none_without_work_or_closed(self):
+        self.assertIsNone(self.p.bg_start({"id": "a", "status": "idle", "bg": []}, {}))
+        self.assertIsNone(self.p.bg_start({"id": "a", "status": None, "bg": [{"since": 5}]}, {}))
+
+    def test_oldest_still_running(self):
+        s = {"id": "a", "status": "idle", "bg": [{"kind": "run", "since": 1000.5}, {"kind": "subagent", "since": 900.25}]}
+        self.assertEqual(self.p.bg_start(s, {}), 900250)
+
+    def test_oldest_ends_then_the_next(self):
+        s = {"id": "a", "status": "idle", "bg": [{"since": 1000}]}
+        self.assertEqual(self.p.bg_start(s, {}), 1000000)
+
+    def test_fallback_first_read_stands_in(self):
+        seen = {}
+        s = {"id": "a", "status": "busy", "bg": [{"kind": "run", "since": None}]}
+        t1 = self.p.bg_start(s, seen)
+        self.assertAlmostEqual(t1 / 1000, time.time(), delta=2)
+        self.p.bg_seen = seen  # the next read keeps the first one's time
+        time.sleep(0.02)
+        self.assertEqual(self.p.bg_start(s, {}), t1)
+
+    def test_fallback_never_later_than_a_known_start(self):
+        self.p.bg_seen = {"a": 5_000_000}
+        s = {"id": "a", "status": "idle", "bg": [{"since": None}, {"since": 4000}]}
+        self.assertEqual(self.p.bg_start(s, {}), 4_000_000)
+
+    def test_work_gone_forgets_first_read(self):
+        self.p.bg_seen = {"a": 1}
+        seen = {}
+        self.assertIsNone(self.p.bg_start({"id": "a", "status": "idle", "bg": []}, seen))
+        self.assertEqual(seen, {})
+
+
+PAGE_TESTS = r"""
+const T0 = 1_000_000_000_000, NOW = T0 + 190_000;
+Date.now = () => NOW;
+const S = (o) => Object.assign({id: o.title, here: true, bg: []}, o);
+const run = {kind: "run", what: "mindmap", for: "3 min"};
+const cases = {
+  idleNoChild: stateOf(S({title: "a", status: "idle"})),
+  idleChild: stateOf(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
+  busyChild: stateOf(S({title: "c", status: "busy", turn: T0 + 150_000, bg: [run], bgSince: T0})),
+  askChild: stateOf(S({title: "d", status: "busy", waiting: true, bg: [run], bgSince: T0})),
+  closed: stateOf(S({title: "e", status: null, bg: [run]})),
+  idleChildSince: runSince(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
+  busyChildSince: runSince(S({title: "c", status: "busy", turn: T0 + 150_000, bg: [run], bgSince: T0})),
+  busyNoTurnSince: runSince(S({title: "c", status: "busy", bg: [run], bgSince: T0})),
+  askSince: runSince(S({title: "d", status: "busy", waiting: true, bg: [run], bgSince: T0})),
+  idleNoChildSince: runSince(S({title: "a", status: "idle"})),
+  saidIdleChild: said(S({title: "b", status: "idle", bg: [run], bgSince: T0}), "busy"),
+  saidBusyChild: said(S({title: "c", status: "busy", turn: T0 + 150_000, bg: [run], bgSince: T0}), "busy"),
+  saidChildNoStart: said(S({title: "b", status: "idle", bg: [run]}), "busy"),
+  order: byState([
+    S({title: "new-idle", status: "idle"}),
+    S({title: "closed", status: null}),
+    S({title: "working", status: "busy", turn: T0}),
+    S({title: "old-delegating", status: "idle", bg: [run], bgSince: T0}),
+    S({title: "asking-with-child", status: "busy", waiting: true, bg: [run], bgSince: T0}),
+    S({title: "old-idle", status: "idle"}),
+  ]).map(s => s.title),
+};
+console.log(JSON.stringify(cases));
+"""
+
+
+class Page(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, "agent-panel.html"), encoding="utf-8") as f:
+            html = f.read()
+        a = html.index("// hidden by the user, its folder is gone")
+        b = html.index("// green under 50 %")
+        out = subprocess.run(["node", "-e", html[a:b] + PAGE_TESTS], capture_output=True, text=True, check=True)
+        cls.r = json.loads(out.stdout)
+
+    def test_states(self):
+        r = self.r
+        self.assertEqual((r["idleNoChild"], r["idleChild"], r["busyChild"], r["askChild"], r["closed"]),
+                         ("idle", "busy", "busy", "ask", ""))
+
+    def test_timer_source(self):
+        r, T0 = self.r, 1_000_000_000_000
+        self.assertEqual(r["idleChildSince"], T0)               # delegated only: the oldest background work
+        self.assertEqual(r["busyChildSince"], T0 + 150_000)     # working itself: its own turn
+        self.assertEqual(r["busyNoTurnSince"], T0)              # working, no turn stamp yet: the work
+        self.assertIsNone(r["askSince"])                        # asking: no timer
+        self.assertIsNone(r["idleNoChildSince"])
+
+    def test_words(self):
+        self.assertEqual(self.r["saidIdleChild"], "Working in the background, 3:10")
+        self.assertEqual(self.r["saidBusyChild"], "Working, 0:40")
+        self.assertEqual(self.r["saidChildNoStart"], "Working")
+
+    def test_order(self):
+        self.assertEqual(self.r["order"], ["asking-with-child", "working", "old-delegating", "new-idle", "old-idle", "closed"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

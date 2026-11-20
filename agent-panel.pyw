@@ -948,6 +948,7 @@ def child_runs(live, table):
         if not mine and table[pid][0] in cli:
             continue
         cur, t = pid, born(pid)
+        t0 = t  # the run's own start: the shells between it and the session may be older
         for _ in range(16):
             up = table.get(cur, (0, ""))[0]
             bu = born(up) if up else None
@@ -957,7 +958,7 @@ def child_runs(live, table):
             if sid and sid != mine:  # the same session (GLM taking it over) is no child run
                 r = live.get(mine) or {}
                 out.setdefault(sid, []).append({"kind": "run", "what": os.path.basename((r.get("cwd") or "").rstrip("\\/")),
-                                                "since": (t - FT_EPOCH) / 1e7})
+                                                "since": (t0 - FT_EPOCH) / 1e7})
                 break
             cur, t = up, bu
     return out
@@ -1720,6 +1721,7 @@ class Panel:
         self.repairing, self.update_note = False, None  # a failed Claude Code update: being repaired; what is left
         self.claude_status = False  # status.claude.com, read every STATUS_EVERY by watch_status(); False: not read yet, None: unreadable
         self.turns = {}  # session id -> its current turn, for the working card's timer; see turn_start()
+        self.bg_seen = {}  # session id -> first read that saw its background work (ms); see bg_start()
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
@@ -3036,9 +3038,22 @@ class Panel:
         turns[s["id"]] = t
         return t["start"]
 
+    def bg_start(self, s, seen):
+        """When an open session's background work began, in ms since the epoch, for the timer on a card that shows as
+        working because of it: the start of the oldest child run or subagent still running (a run's own process
+        creation time, an agent's transcript creation time; see child_runs() and subagents()). None when nothing
+        runs. Work without a start of its own falls back as the turn timer does: the first read that saw the
+        session's background work stands in."""
+        bg = s.get("bg") or []
+        if not s["status"] or not bg:
+            return None
+        first = seen[s["id"]] = self.bg_seen.get(s["id"]) or int(time.time() * 1000)
+        known = [int(w["since"] * 1000) for w in bg if w.get("since")]
+        return min(known) if len(known) == len(bg) else min(known + [first])
+
     def state(self):
         lim, now = read_limits(), time.time()
-        turns = {}
+        turns, seen = {}, {}
 
         def usage(v, fmt):
             try:
@@ -3051,6 +3066,7 @@ class Panel:
         out = {"sessions": [{"id": s["id"], "title": s["title"], "folder": s["folder"], "path": where_of(s),
                              "status": s["status"], "waiting": bool(s["status"] and s.get("waiting")),
                              "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden, "turn": self.turn_start(s, turns),
+                             "bgSince": self.bg_start(s, seen),
                              "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
                              "headless": s.get("headless", False),
                              "via": (self.returns.get(s["id"]) or {}).get("via"),
@@ -3062,6 +3078,7 @@ class Panel:
                "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime(),
                "claude": self.claude_status, "strip": self.strip_on if self.keeping() else None}
         self.turns = turns  # only the sessions in a turn now: one that left its turn starts afresh next time
+        self.bg_seen = seen
         return out
 
     def watch_status(self):

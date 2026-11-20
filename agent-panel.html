@@ -8,7 +8,9 @@
      closed a grey dot, asking red; green means working and nothing else. A working card holds a still
      green tint and shows how long its turn has run where the others show their age; a card whose prompt
      waits for an answer pulses red, the only thing that pulses (the maintainer, 2026-11-19, replacing a
-     slow green breathing that "is not enough"). The folder path shows only in the title's tooltip.
+     slow green breathing that "is not enough"). An open session whose child runs or subagents are running
+     (the background badge) counts as working too, timing that work while it has no turn of its own
+     (2026-11-20: an idle session waiting on its `claude -p` sat at the bottom while it was the only one at work). The folder path shows only in the title's tooltip.
      Mascot (2026-11-09): a purple octopus (the maintainer's sheet, cut by tools/mascot-export.py into
      mascot/ and inlined by agent-panel.pyw as window.MASCOT). It is the header's logo and sits on every
      card: reading a tablet while the session works, puzzled with a question mark while it asks, calm and
@@ -474,7 +476,7 @@ function syncRegion() {
 requestAnimationFrame(tick);
 // the header's octopus shows the most pressing state in the list
 function headerMascot() {
-  const st = state.sessions.map(s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle");
+  const st = state.sessions.map(stateOf);
   const top = st.includes("ask") ? "ask" : st.includes("busy") ? "busy" : "idle";
   // in the octopus's own purple, the strips' "-purple" copies: the cards carry the state colours
   const [key, ...rest] = MOOD[top];
@@ -485,7 +487,12 @@ function headerMascot() {
 // kept out of the main list
 const aside = s => s.hidden || !s.here || s.headless;
 const STATUS = {ask: "A prompt in it waits for your answer", busy: "Working", idle: "Open, waiting for you", "": "Closed"};
-const stateOf = s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
+// an open session with child runs or subagents running (the background badge) is working too; asking beats it
+const delegated = s => !!s.status && !!(s.bg || []).length;
+const stateOf = s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" || delegated(s) ? "busy" : "idle";
+// what a working card times: its own turn, or, while it has none, its background work from the oldest still running
+const own = s => s.status === "busy" && !!s.turn;
+const runSince = s => stateOf(s) !== "busy" ? null : own(s) ? s.turn : s.bgSince || null;
 // The main list in groups by state: asking (it needs you), working, open and waiting, closed. Within a group
 // the order agent-panel.pyw sends stays, newest transcript first, so the session that last moved leads its
 // group. The sort is stable, so equal states never trade places.
@@ -497,8 +504,13 @@ function clock(ms) {
   const two = n => String(n).padStart(2, "0");
   return h ? `${h}:${two(m)}:${two(t % 60)}` : `${m}:${two(t % 60)}`;
 }
-// the state in words; a working session's carries how long its turn has run ("Working, 0:42")
-const said = (s, st) => st === "busy" && s.turn ? "Working, " + clock(Date.now() - s.turn) : STATUS[st];
+// the state in words; a working session's carries how long its turn has run ("Working, 0:42"), or its
+// background work ("Working in the background, 3:10")
+function said(s, st) {
+  const t = st === "busy" && runSince(s);
+  if (!t) return STATUS[st];
+  return (own(s) ? "Working, " : "Working in the background, ") + clock(Date.now() - t);
+}
 
 // green under 50 %, gold under 80 %, red above, as on the status line; colour and figure both
 // come from the same rounded value, so the two can never disagree
@@ -544,13 +556,13 @@ function fill(el, s, q) {
   n.dataset.full = n.classList.contains("cut") ? s.title + "\n" + s.path : s.path;
   // a working card shows how long its turn has run instead of its age, moved on each second by ticking();
   // that text stays out of the fade of changed figures, which would otherwise blur it at every refresh
-  const a = el.querySelector(".age"), run = st === "busy" && !!s.turn;
+  const a = el.querySelector(".age"), t = runSince(s), run = !!t;
   a.classList.toggle("run", run);
   a.toggleAttribute("data-tip", run);
   if (run) {
-    a.dataset.turn = s.turn;
-    a.dataset.full = "How long the current turn has run";
-    a.textContent = clock(Date.now() - s.turn);
+    a.dataset.turn = t;
+    a.dataset.full = own(s) ? "How long the current turn has run" : "How long its background work has run";
+    a.textContent = clock(Date.now() - t);
     delete a.dataset.k;
   } else {
     delete a.dataset.turn;
@@ -589,7 +601,7 @@ function fill(el, s, q) {
 // what a screen reader hears for a card: "my-app, working, 0:42, <its folder>, context 41%"
 function cardLabel(s, st) {
   const bg = s.bg || [];
-  return [s.title, said(s, st).toLowerCase(), s.path, st === "busy" && s.turn ? "" : s.age,
+  return [s.title, said(s, st).toLowerCase(), s.path, runSince(s) ? "" : s.age,
     s.ctx == null ? "" : "context " + pct(s.ctx), flagsOf(s),
     bg.length ? bg.length + " running in the background" : ""].filter(Boolean).join(", ");
 }
@@ -598,9 +610,9 @@ function cardLabel(s, st) {
 // not re-read it every second; it is at most a second old when the card gets the keyboard.
 function ticking() {
   for (const a of document.querySelectorAll(".card[data-id] .age[data-turn]")) {
-    const el = a.closest(".card"), s = find(el.dataset.id);
-    if (!s || !s.turn) continue;
-    a.textContent = clock(Date.now() - s.turn);
+    const el = a.closest(".card"), s = find(el.dataset.id), t = s && runSince(s);
+    if (!t) continue;
+    a.textContent = clock(Date.now() - t);
     el.querySelector(".dot").dataset.full = said(s, "busy");
     el.querySelector(".dot").setAttribute("aria-label", said(s, "busy"));
     if (el !== document.activeElement) el.setAttribute("aria-label", cardLabel(s, "busy"));
