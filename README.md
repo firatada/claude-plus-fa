@@ -2,196 +2,182 @@
 
 # claude-plus-fa
 
-A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows safer and more pleasant to work with over long sessions.
+Add-ons for [Claude Code](https://code.claude.com) on Windows, so a long session and its context are never lost.
 
-- Everything runs through Claude Code's own extension points, its hooks and its status line, so Claude Code itself is never modified.
-- This is an independent project and is not affiliated with or endorsed by Anthropic.
+- It works through Claude Code's own hooks and status line; Claude Code itself is never changed.
+- An independent project, not made or endorsed by Anthropic.
 
 ## What you get
 
-![The claude-plus-fa status line: model, context, 5-hour and weekly usage, and the last prompt](docs/status-line-v2.png)
+### Status line
 
-**Status line**
-- Shows the active model, how much of the context window is in use, and your 5-hour and weekly usage together with their reset times.
-- Each bar changes colour as it fills: green below 50 %, yellow below 80 %, and red above that.
+<img src="docs/img/status-line.png" alt="The status line under the prompt: model, context, 5-hour and weekly usage with reset times, and the last prompt" width="825">
 
-**Last prompt**
-- You will be able to see your last prompt here, on the second line, in full: a long prompt wraps over as many lines as it needs, up to 12.
-- There is no need to scroll back through a long answer to recall what you asked.
+- The model, how full the context is, and your 5-hour and weekly usage with their reset times.
+- Bars are green under 50 %, yellow under 80 %, red above.
+- The second line shows your last prompt in full (up to 12 lines), so you never scroll up to find it.
 
-**Reply to a passage**
-- Select a passage of Claude's answer with the mouse, type `: your answer` and press Enter. Claude gets the passage you selected as the thing you are replying to, and a line under your prompt shows what was quoted (`Quoted: the first words…`). A prompt that does not start with `:` is sent as it is.
-- Several questions to answer: select each one in turn. The screenshot strip lists your selections, numbered in the order you made them (`:1`, `:2`, ...), under the name of the session you made them in. Answer them in one prompt, on one line or on several: `:1 yes, fix it :3 no :4 your call`. Each `:N` starts the answer to selection N and runs to the next `:N` or the end. Claude gets each answered passage with its answer; the ones you skip are not sent. The line under your prompt shows which went (`Quoted: :1 :3 :4`).
-- A `:N` counts only on its own: at the start of a line or after a space, and followed by a space or the end, so `10:20` or `a:1b` stay as they are. Inside `code` (backticks) or a fenced code block it is never a marker, so you can quote an example like `` `:1 yes` ``. A number that is not in the list stays plain text, and the line under your prompt says it matched nothing.
-- A bare `:` with several selections listed sends them all, and Claude is told the answer was not numbered, so it may ask which one you meant.
-- Each session has its own list. A selection joins the list of the session whose terminal tab you selected it in, and stays there until you send a prompt in that session; any prompt there, with or without `:N`, empties that list and numbering starts again at 1. Lists of other sessions are never touched. The strip shows the list of the session in front (or, while another program is in front, of the session last in front).
-- A selection the panel cannot tie to exactly one session joins no list: one made outside a session's terminal (another program, a shell tab, the strip's own **Copy**), or in a tab whose title does not show its session's name (Claude Code sets the title to the session's name).
-- The x on a row drops that selection; the other numbers stay as they are. A list keeps at most 50 selections (the oldest goes first), and the panel keeps lists for at most 20 sessions.
-- The installer turns on Windows Terminal's **Automatically copy selection to clipboard** once, so a selection is on the clipboard as you make it; turn it off under **Settings** > **Interaction** and it stays off, even after a reinstall. In another terminal press `Ctrl+C` after selecting.
-- The screenshot strip shows the whole text of each selection under its cards, until a prompt in that session empties the list. A long passage scrolls there with the mouse wheel, and where the 4,000-character limit cuts it, a line says how many characters are not sent.
-- The numbered list needs the Agent Panel running with the screenshot strip on. Without it, `: your answer` quotes whatever is on the clipboard, as before.
-- A password manager's copy is never quoted or shown: the clipboard formats it uses to keep a copy private are respected. A passage longer than 4,000 characters is cut, and Claude is told so.
+### Nothing lost at compaction
 
-**Context Tracker**
-- The status line lets you watch the context yourself, while claude-plus-fa keeps track of it for you in the background at all times.
+- At 90 % context, well before Claude Code compacts on its own, Claude commits the finished work, updates the project's `memory.md` and writes a `handoff.md` saying where the work stands and what comes next.
+- Right after a compaction, Claude reads `handoff.md` and `memory.md` back and tells you which files it read.
+- A new session in a project that has a `handoff.md` starts by reading it.
 
-**Auto Save Before /compact, at 90 %**
-- When the context reaches 90 %, well before Claude Code's own auto-compaction at about 97 %, Claude **automatically**:
-  - commits the work that is finished and verified;
-  - updates the project's `memory.md` with the current state, the decisions taken and the reasons behind them;
-  - writes a `handoff.md` that records exactly where the work stands and what comes next.
-- As a result, nothing learned during the session is lost when the conversation is compacted.
+### Usage limit: carry on with GLM or Codex
 
-**After compaction**
-- Right after the conversation has been compacted, Claude **automatically** reads `handoff.md` and `memory.md` back, so it continues from the full record instead of the short summary alone.
-- Once it has read them, it tells you which `.md` files it read, so you always know what the session is working from.
-- The same read-back also takes place when you start a new session in a project that has a `handoff.md`.
+<img src="docs/img/limit-dialog.png" alt="The Usage Limit Reached window with Cancel, Continue With GLM and Continue With Codex" width="540">
 
-**Auto Switch to GLM or Codex When Claude Tokens End**
-- When your Claude usage limit runs out, a dialog offers two ways to carry on in a new window, from where the session stopped: **Continue With GLM**, a **free** model by [z.ai](https://z.ai), or **Continue With Codex**, OpenAI's coding agent on your ChatGPT plan.
-- **GLM** resumes the very same session: it reads the same conversation and keeps writing into the same conversation file.
-- **Codex** gets the conversation through the Codex plugin's own transfer, which turns it into a Codex thread with the full history, then opens `codex resume` on it. Codex keeps its own thread file.
-- When Claude's limit resets, the Agent Panel waits until GLM or Codex has finished its turn, then offers to bring the session back to Claude: Continue With Claude reopens it in a new Claude window and closes the GLM or Codex one. Coming back from Codex, Claude's first message is a record of everything that happened in Codex (each message, each reply, each command with its exit code, the files it changed), so the Claude conversation stays one unbroken file. Not Now asks once more 30 minutes later, never again after that.
-- Until the session is back on Claude, its card in the Agent Panel says **on GLM** or **on Codex**. While the GLM or Codex window is open, a click on the card brings that window up. Right-click the card and pick **Back to Claude** to go back at any time: it waits for GLM or Codex to finish its turn, then continues in a new Claude window and closes the other one. With that window closed, a double-click on the card continues the session with Claude, with the Codex record if it came from Codex.
-- Resuming by hand works too: `claude --resume <id>` after Codex gets the Codex record added to the conversation, exactly once. After GLM, a hand-typed resume needs the model named: `claude --resume <id> --model default` (plain `claude --resume <id>` asks Anthropic for GLM's model and fails with a model error). Inside a window that already shows that error, `/model default` and sending again works for that window only.
-- **GLM is completely free!** The models it uses, GLM-4.7-Flash and GLM-4.5-Flash, cost nothing on z.ai. It needs a free z.ai API key.
-- Codex needs the [Codex CLI](https://github.com/openai/codex), the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) and a ChatGPT sign-in.
-- Anything that is not set up yet shows its steps in the dialog instead (**Set Up GLM**, **Set Up Codex**), with buttons that open the z.ai pages, open the key file, install the CLI and the plugin, and start the Codex sign-in in your browser. The dialog notices each finished step by itself.
+- When your Claude limit runs out, this window offers to continue the session in a new window, from where it stopped.
+- **Continue With GLM**: free models from [z.ai](https://z.ai) (GLM-4.7-Flash, GLM-4.5-Flash). It keeps writing into the same conversation. Needs a free z.ai key (see below).
+- **Continue With Codex**: OpenAI's coding agent on your ChatGPT plan. The conversation moves to a Codex thread with its full history.
+- Whatever is not ready yet shows **Set Up GLM** or **Set Up Codex**, with a button for each step. The window notices each finished step by itself.
 
-**Agent Panel**
+<img src="docs/img/limit-dialog-setup.png" alt="The same window with the Set up Codex steps open: one done, two with buttons" width="540">
 
-<img src="docs/agent-panel.png" alt="The Agent Panel: seven sessions, two working, one asking, one open and three closed, with the 5-hour and weekly usage at the bottom" width="280">
+- When the limit resets, the Agent Panel waits for GLM or Codex to finish its turn, then offers to bring the session back to Claude. Coming back from Codex, Claude first gets a record of everything Codex did, so the Claude conversation stays one piece.
+- To go back any time, right-click the session in the Agent Panel and pick **Back to Claude**.
+- The `glm` command runs Claude Code on GLM by hand, with your usual sessions and settings: `glm`, or `glm --resume <session>`.
 
-- Every Claude Code session on your PC, old and current, in a narrow list over the right edge of the screen, newest first, with a search box. Drag its header to the top edge and it becomes a strip of tabs there, one per session, newest first, as many as fit; drag it down again and it is the list once more (the tray menu switches it too, and the choice is kept). It takes no screen space either way: desktop icons and maximised windows keep their place, and the window you are working in covers it.
-- Each session shows its title (point at it to see the session's full folder path) and a `ctx` bar with how much of its context is used, as on the status line. The bottom of the panel shows your `5h` and `week` usage and when each resets. Both come from the claude-plus-fa status line, so a session that never ran with it shows no bar, and a usage figure not reported yet says *no figure yet*.
-- Double-click a closed session and it **automatically** opens in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`. Sessions you started from a WSL folder open there too.
-- A little octopus sits beside every session, in the colour of its state: green, it reads a tablet while the session works; in its own purple, it blinks now and then while the session is open and waits for you; red, it looks puzzled with a question mark when the session asks you something; light grey, it sleeps when the session is closed. The one beside the panel's title keeps its own purple.
-- Green means working and nothing else: a working session's dot is a turning green arc, its card is tinted green, and where other cards show their age it shows how long the current turn has run, counting each second (`0:42`, `12:05`, `1:02:10`). A session waiting on work it started in the background (a `claude -p` run or a subagent) sorts with the working sessions until the last of that work ends, but keeps its own look: only the small badge on the right of its card turns, with the number of runs (point at it for how long they have run and what they are), and while the session is not working itself its time shows how long that work has run. A session that asks you something stays first and red. An open session waiting for you has a purple ring, a closed one a grey dot. The card of a session whose window asks you something (a permission prompt) pulses red, the only thing in the panel that pulses. A single click on an open session does not start a second copy: it brings that session's window to the front, at the size and place it had (restored if it was minimised).
-- When a session starts waiting for your answer, an alert drops in at the top of the screen over every window, with three knocks. It lists every session still waiting; click one to go to its window. It does not take the keyboard from what you are typing, it is not shown for a session whose window is already in front, and it goes by itself once nothing waits. The tray menu turns the alert and its sound off and on.
-- Its tray icon shows how much of the 5-hour limit you have used, as a number in the status line's colours (green under 50, amber under 80, red above; `!` at 100), with the reset time in its tooltip. Until Claude Code reports a figure it shows the octopus.
-- **Status**, to the right of that link (in the strip on top), opens [status.claude.com](https://status.claude.com/) in your browser. Its dot shows Anthropic's status, read from that page every 3 minutes: green when all is fine, amber for a minor outage or maintenance, red for a major or critical one, a grey ring when the page could not be reached. Point at it to see the status and the first open incident. When Claude Code logs you out or `/login` fails, look there first.
-- When a Claude Code auto-update fails (on Windows it can leave a `claude` that no longer starts), the panel repairs it in the background with Claude Code's own `claude update`, without closing any session. If it cannot, its bottom line says so and gives the reinstall command.
-- It starts **automatically** when you sign in to Windows. To open it, double-click the **Agent Panel** icon on your desktop (it starts the panel, or brings it up if it already runs), press `Ctrl+Alt+C`, or click its tray icon; the last two also hide it when it is in front.
-- Right-click a session to **Hide** it from the list, **Close** it if it is open, or **Delete** it. Hidden sessions, sessions whose folder no longer exists, and headless runs (a `claude -p` that another session started) leave the main list; *Hidden, Deleted and Headless* at the bottom of the panel lists them in a section of their own.
-- Delete asks once more on the spot (*Yes, Delete*), then moves the session's conversation to the Recycle Bin, so you can restore it. It never touches the files in the project folder (`CLAUDE.md`, `memory.md` and the rest). An open session is closed first; a session stored inside WSL cannot be deleted from the panel.
+### Agent Panel
 
-**Screenshots, kept in one place**
-- Every screenshot you take (`Win+Shift+S`, the Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named after the window it shows (for a snip, the window under the area you dragged, even if another window had the focus) and the time (`chrome_youtube-video-title_2026-11-13_1405.png`, `excel_budget-2026_2026-11-13_1405.png`, `desktop_2026-11-13_1405.png`). The name is read from the window's title on your PC; nothing is sent anywhere. Pictures Windows itself saves on `Win+PrintScreen` are moved there too, without a second copy. Images you copy from a browser or any other program are left alone.
-- While the Agent Panel runs, `Ctrl+V` or `Alt+V` in a Claude Code session pastes a copied picture (a screenshot, an image from a browser) at once, where the cursor is, instead of Claude Code's own `Alt+V`, which on Windows can stall for seconds; text pastes as before, and other windows are not affected. To turn it off, put `"paste_keys": false` in `~/.claude/claude-plus.local.json`.
-- When you paste a screenshot into a Claude Code session (`Alt+V`), it moves from the desktop into a `screenshots` folder in that session's project folder, named after the session (`fix-login-page_2026-11-13_1405.png`). Pasted into a session of another project too, it is copied there. So the desktop folder keeps only the screenshots you never gave to Claude.
-- That folder never reaches git or a website: the panel adds `screenshots/` to the project's `.gitignore` (creating one only in a git repository that has none) and to its `.assetsignore` when there is one. These two files are the only project files it ever edits.
-- Nothing is ever deleted, and nothing is added to what Claude reads: the panel only watches the clipboard and the session's conversation file. To turn it off, put `"screenshots": false` in `~/.claude/claude-plus.local.json`.
-- Your last three screenshots stay on screen in a small strip at the top, beside the panel, together with any you pin: **Pin** on one keeps it there however many new screenshots come (click it again to unpin), also after a restart and after the file moves into a project. Pinned ones come first, then the last three others; when they no longer fit on one row, the strip continues in a row below. The strip shows text, not the pictures. Each card has a number at its top left: the last three count 1, 2, 3 from the newest (a new screenshot becomes 1), and the pinned ones count 1, 2, 3 in the order you pinned them, shown with a small pin before the number so the two never look alike. The large view shows the same number. Under them each card says where and when it was taken: the window or session title (up to three lines; a longer one ends in `…`) and, on its own last line, the time, with `yesterday` or the date in front when it is not from today (`14:32`, `yesterday 23:10`, `3 Nov 08:00`). Point at a card to see its full file name. Deleting a pinned file unpins it. It goes behind other windows and comes forward together with the panel, and hides with it; a click on it never takes the keyboard from the program you work in. A new screenshot appears in it at once. Press anywhere on the strip and move to drag it; it stays where you drop it, also after a restart. Click a card to see the screenshot large at once (the only place the picture shows); click it again, click anywhere else or press `Esc` to close it, **Open** to open it in your picture viewer, **Copy** to copy it as text (the same as the card's **Copy**, and the large view stays open), or **Delete** to send the file to the Recycle Bin, wherever it is now (the strip then shows the next older screenshot). A card's **Copy** button puts the file's path and the text Windows reads in it (OCR) on the clipboard as text, so pasting it into a Claude prompt costs a few tokens instead of a picture:
-  ```
-  [screenshot: C:\Users\you\my-project\screenshots\fix-login-page_2026-11-13_1405.png]
-  the text in the picture, one line per line
-  ```
-  The button with the picture icon at the right end of the panel's header shows or hides the strip; your choice is kept (`"shot_strip"` in `~/.claude/claude-plus.local.json`).
+<img src="docs/img/agent-panel.png" alt="The Agent Panel: one session asking, one working, one with background work, one open, three closed, usage bars at the bottom" width="280">
 
-**Get your free z.ai API key**
+Every Claude Code session on your PC in one list on the right edge of the screen, newest first, with a search box. It takes no screen space: the window you work in covers it.
 
-It is completely free!
+- **Red**: the session asks you something. It stays at the top; a permission prompt makes its card pulse.
+- **Green**: the session is working. Its dot turns and the clock shows how long the current turn has run.
+- **Turning badge**: work the session started in the background (a subagent or a `claude -p` run), with the number of runs. Point at it to see what they are.
+- **Purple**: open and waiting for you. **Grey**: closed.
+- Each card shows how full that session's context is. The bottom shows your 5-hour and weekly usage.
 
-1. Create an account at [z.ai/model-api](https://z.ai/model-api).
-2. Go to the [API Keys](https://z.ai/manage-apikey/apikey-list) page and create a new key.
-3. Copy the key.
-4. Ask Claude Code to open the key file, which the installer created:
+Using it:
+- Click an open session to bring its window to the front.
+- Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
+- Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
+- Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Agent Panel** icon on your desktop. It starts when you sign in to Windows.
+- The tray icon shows your 5-hour usage as a number.
+- **Status** opens [status.claude.com](https://status.claude.com/); its dot shows whether Claude has an outage.
+- If a Claude Code update breaks `claude`, the panel repairs it with `claude update`.
+- Drag the header to the top edge to make it a row of tabs (the tray menu does this too):
 
-```
-Open the claude-plus-fa z.ai key file ~/.claudex/profiles/glm/.env in Notepad.
-```
+<img src="docs/img/agent-panel-top.png" alt="The Agent Panel docked at the top as a row of session tabs" width="880">
 
-5. Replace `PASTE_YOUR_KEY_HERE` with your key and save the file. Never paste the key into a chat.
+When a session starts waiting for your answer, this alert drops in at the top of the screen with three knocks. Click the session to go to it. It never takes the keyboard from what you are typing.
 
-The key is optional: without it, everything else in claude-plus-fa works as usual. When the limit is reached without a key, the dialog shows these steps itself under **Set Up GLM**, with a button that opens the key file.
+<img src="docs/img/waiting-alert.png" alt="The Waiting for your answer alert listing one session" width="420">
+
+### Reply to passages
+
+Answer Claude's questions without retyping them.
+
+<img src="docs/img/reply-numbered.png" alt="A Claude answer with three questions and the prompt :1 yes, keep it :2 no, only in the app :3 after the release" width="825">
+
+1. Select a question in Claude's answer with the mouse. Do the same for each question you want to answer.
+2. Each selection joins a numbered list under the screenshot strip, under the name of its session:
+
+   <img src="docs/img/screenshot-strip.png" alt="The screenshot strip with four cards and below them a numbered list :1, :2, :3 of selected questions" width="630">
+
+3. Type your answers by number: `:1 yes :3 no`. Press Enter.
+
+- Claude gets each passage you answered, with your answer. Passages you skip are not sent.
+- With one selection, a prompt that starts with `:` is enough: `: yes, do it`.
+- Sending any prompt in that session empties its list. The x on a row drops that selection.
+- `:1` inside backticks or a code block is plain text.
+- A passage is cut at 4,000 characters, and Claude is told so.
+- The numbered list needs the Agent Panel running with its strip on. Without it, `: your answer` quotes whatever is on the clipboard.
+- The installer turns on Windows Terminal's **Automatically copy selection to clipboard** once. In another terminal, press `Ctrl+C` after selecting.
+
+### Screenshots in one place
+
+- Every screenshot you take (`Win+Shift+S`, Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named after the window and the time.
+- Paste one into a Claude Code session and it moves into a `screenshots` folder in that project. The panel adds that folder to the project's `.gitignore`, so it never reaches git.
+- The strip at the top (picture above) shows your last three screenshots and the ones you **Pin**. Click a card to see it large. **Copy** puts the file's path and the text read from the picture on the clipboard, which costs Claude far fewer tokens than the picture.
+- While the panel runs, `Ctrl+V` or `Alt+V` in a Claude Code session pastes a copied picture at once, where the cursor is:
+
+<img src="docs/img/paste-image.png" alt="A prompt with [Image #1] and [Image #2] between words" width="825">
+
+The panel never deletes a screenshot by itself and sends nothing anywhere.
 
 ## Requirements
 
 - Windows 10 or 11
-- [Claude Code](https://code.claude.com) and Python 3.8 or newer, both available on `PATH`
-- For the GLM switch only: a free [z.ai API key](https://z.ai/manage-apikey/apikey-list)
-- For the Codex switch only: the [Codex CLI](https://github.com/openai/codex), the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) and a ChatGPT sign-in (the dialog's **Set Up Codex** walks you through all three)
+- [Claude Code](https://code.claude.com) and Python 3.8 or newer, both on `PATH`
+- For GLM only: a free [z.ai API key](https://z.ai/manage-apikey/apikey-list)
+- For Codex only: the [Codex CLI](https://github.com/openai/codex), the [Codex plugin for Claude Code](https://github.com/openai/codex-plugin-cc) and a ChatGPT sign-in (**Set Up Codex** walks you through all three)
 
 ## Install
 
-The easiest way is to ask Claude Code:
+Ask Claude Code:
 
 ```
 Install claude-plus-fa from github.com/firatada/claude-plus-fa.
 ```
 
-By hand instead:
+Or by hand:
 
-1. Download the ZIP from this page (Code, Download ZIP) and extract it.
-2. Open the extracted claude-plus-fa folder and double-click `install.cmd`.
+1. On this page, click **Code**, then **Download ZIP**, and extract it.
+2. In the extracted claude-plus-fa folder, double-click `install.cmd`.
+3. Restart any open Claude Code session.
 
-- If you prefer git, clone the repository instead and double-click `install.cmd` in the cloned folder:
-
-```
-git clone https://github.com/firatada/claude-plus-fa
-```
-
-- To update, double-click `install.cmd` again; it is safe to run as often as you like.
-- Restart any Claude Code session that is already open, since hooks are loaded when a session starts.
+To update, double-click `install.cmd` again. It is safe to run as often as you like.
 
 The installer:
-- copies the scripts into `~/.claude`, and `glm.cmd` into `~/.local/bin`, which it adds to your `PATH`;
-- registers the hooks in `~/.claude/settings.json`, after saving a backup as `settings.json.before-claude-plus`;
-- sets up the status line only if you do not already have one;
-- creates `~/.claudex/profiles/glm/.env`, where you can store the optional z.ai key;
-- turns on Windows Terminal's copy on select once, keeping a backup of its settings file as `settings.json.before-claude-plus` (see *Reply to a passage*);
-- installs what the Agent Panel needs (`pywebview` for its window, `pystray` for the tray icon), starts the panel, adds it to Windows sign-in and puts an **Agent Panel** icon on your desktop.
+- copies the scripts into `~/.claude`, and `glm.cmd` into `~/.local/bin` (added to your `PATH`);
+- adds its hooks to `~/.claude/settings.json`, after a backup (`settings.json.before-claude-plus`);
+- sets the status line only if you have none;
+- creates the z.ai key file `~/.claudex/profiles/glm/.env`;
+- turns on Windows Terminal's copy on select once, after a backup;
+- installs `pywebview`, `pystray` and `pillow`, starts the Agent Panel, adds it to Windows sign-in and puts its icon on your desktop.
 
-## Use your own steps
+## Get a free z.ai key
 
-- If you already keep your own procedure for saving work, for example in your `CLAUDE.md`, you can point claude-plus-fa to it in `~/.claude/claude-plus.local.json`:
+1. Sign up at [z.ai/model-api](https://z.ai/model-api).
+2. On the [API Keys](https://z.ai/manage-apikey/apikey-list) page, create a key and copy it.
+3. Ask Claude Code:
+
+   ```
+   Open the claude-plus-fa z.ai key file ~/.claudex/profiles/glm/.env in Notepad.
+   ```
+
+4. Replace `PASTE_YOUR_KEY_HERE` with your key and save. Never paste the key into a chat.
+
+Without a key everything else works; the limit window then shows these steps under **Set Up GLM**.
+
+## Turn things off
+
+Put any of these in `~/.claude/claude-plus.local.json` (the installer never changes this file):
 
 ```json
-{ "rule": "the global CLAUDE.md, section \"Saving work before compaction\"" }
+{ "screenshots": false, "paste_keys": false, "shot_strip": false }
 ```
 
-- Claude will then follow your steps instead of the built-in ones. The installer never modifies this file, so your setting survives every update.
+| Setting | Turns off |
+|---|---|
+| `"screenshots": false` | Keeping screenshots, the strip and the numbered reply list |
+| `"paste_keys": false` | Fast picture paste with `Ctrl+V` and `Alt+V` |
+| `"shot_strip": false` | The strip and the numbered reply list (also the picture button in the panel's header) |
+| `"rule": "<where your steps live>"` | The built-in 90 % steps: Claude follows yours instead, for example `"the global CLAUDE.md, section \"Saving work\""` |
+
+- The alert and its sound: the panel's tray menu, **Alerts** and **Alert Sound**.
+- The Agent Panel: **Quit** in its tray menu (it starts again at the next sign-in).
+- Copy on select: Windows Terminal, **Settings** > **Interaction**. It stays off, even after a reinstall.
 
 ## Uninstall
 
-Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer the terminal, run `.\uninstall.cmd` inside that folder instead.
+In the claude-plus-fa folder, double-click `uninstall.cmd`.
 
-- It removes the claude-plus-fa hooks from `~/.claude/settings.json`, together with the status line if it is the claude-plus-fa one, after saving a backup as `settings.json.before-claude-plus-uninstall`.
-- It closes the Agent Panel, removes it from Windows sign-in and its desktop icon, and deletes the installed scripts, `glm.cmd` and the state files claude-plus-fa keeps.
-- It turns Windows Terminal's copy on select back to how it was, if the installer changed it and you have not changed it since.
-- Your own hooks and your own status line are left untouched.
-- Your z.ai key file and `~/.claude/claude-plus.local.json` are kept, in case you reinstall; delete them yourself if you no longer need them. Your screenshots stay where they are.
-- Restart any open Claude Code session afterwards.
+- It removes its hooks, and the status line if it is this one, after a backup (`settings.json.before-claude-plus-uninstall`).
+- It closes the Agent Panel, removes it from sign-in and the desktop, and deletes the installed scripts.
+- It turns copy on select back to how it was, unless you changed it since.
+- Your own hooks and status line stay. So do your z.ai key file, `claude-plus.local.json` and your screenshots.
+- Restart any open Claude Code session.
 
 ## Limits
 
-- claude-plus-fa runs on Windows only.
-- Codex keeps its own conversation file. What Codex did reaches the Claude conversation once, when the session comes back to Claude (from the Agent Panel, or a resume or a prompt in a Claude window of that session); until then it is in Codex only. What Codex does after that point stays in Codex.
-- A session resumed by hand after GLM needs `--model default` (see above); Claude Code picks the model before any hook runs, so claude-plus-fa cannot add it for you. Sessions opened from the Agent Panel get it automatically.
-- The way back needs the Agent Panel running, except a hand-typed resume after Codex, which only needs the hooks.
-
-## Files
-
-| File | Role |
-|---|---|
-| `statusline.py` | Draws the status line and records the context figure |
-| `prompt-recall.py` | Keeps your last prompt for the status line |
-| `quote-reply.py` | Adds the passages you selected to a prompt that starts with `:` or answers them by number (`:1`) |
-| `context-guard.py` | Handles the 90 % auto save, the compaction notes and the read-back |
-| `glm-fallback.py` | Shows the GLM / Codex switch dialog when the usage limit is reached, and carries what happened in Codex back to Claude |
-| `glm.cmd` | Runs Claude Code on z.ai's GLM models |
-| `agent-panel.pyw` | The Agent Panel on the right or the top edge of the screen |
-| `agent-panel.html` | The Agent Panel's look (shown in a WebView2 window) |
-| `agent-alert.html` | The alert shown when a session waits for your answer |
-| `agent-shots.html` | The strip of your last three screenshots and the pinned ones, and their large preview |
-| `agent-panel-shots.py` | Keeps your screenshots: the desktop folder, then the project they were pasted into |
-| `agent-panel-paste.py` | Pastes a copied picture fast with `Ctrl+V` or `Alt+V` in a session's terminal (started by the panel) |
-| `mascot/` | The octopus: the logo (also the tray icon until a 5-hour figure is known) and the panel's animation strips |
-| `tools/mascot-export.py` | Cuts `mascot/` from the octopus sheet in `tools/mascot-source/` |
-| `tools/knock-sound.py` | Synthesizes the alert's knock, `mascot/knock.wav` |
-| `install.cmd`, `install.py` | The installer |
-| `copy_on_select.py` | Turns Windows Terminal's copy on select on once, and back on uninstall |
-| `uninstall.cmd`, `uninstall.py` | Removes claude-plus-fa in one step |
+- Windows only.
+- Codex keeps its own conversation. What it did reaches Claude once, when the session comes back to Claude.
+- After GLM, a session you resume by hand needs `claude --resume <session> --model default`. The Agent Panel adds this for you.
+- Going back to Claude needs the Agent Panel running, except a resume by hand after Codex.
 
 ## License
 
