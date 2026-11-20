@@ -29,16 +29,19 @@
      Pointing at a card shows the full file name in the panel's tooltip (agent-panel.html .tip: 400 ms, gone after
      3 s or on a press); the strip window is exactly the strip, so it sits inside it, over the card's title, its
      foot just above the time.
-     Reply band (2026-11-19; numbered 2026-11-20): under the cards, the ":" reply's list (quote-reply.py, the
-     UserPromptSubmit hook, reads it; agent-panel.pyw keeps it): one row per selection in the order made, led by a
+     Reply band (2026-11-19; numbered 2026-11-20; one list per session 2026-11-20): under the cards, the ":" reply's
+     list of one session, the one in front or last in front (quote-reply.py, the UserPromptSubmit hook, reads it;
+     agent-panel.pyw keeps it), under that session's name so it is clear whose selections these are (the name stays
+     at the band's top while it scrolls): one row per selection in the order made, led by a
      blue badge reading exactly what the user types to answer it (":1", ":2", ...), then the passage as it would be
      sent, and a small x that drops it (the other numbers never shift). Whole, wrapped, line breaks kept: the band
      grows with it up to a third of the screen's work area, then scrolls inside on the mouse wheel (the strip still
      never takes the keyboard); past the hook's 4,000 characters a muted "Cut here, N more characters not sent" line
      marks where that passage ends, as the band shows only what is sent. Text only, with no box of its own:
      it sits on the strip's own surface, so no terminal text is ever behind it and it reads the same on light and dark
-     terminals. agent-panel.pyw sends it with shotStrip.quote(items) and hides it ([]) when the list is empty (no
-     selection yet, or a ":" prompt used it); the window then loses the band, and with no screenshot left the strip
+     terminals. agent-panel.pyw sends it with shotStrip.quote(items, width, cap, name, sid) and hides it ([]) when
+     the list is empty (no selection yet, or a prompt in that session reset it); the window then loses the band, and
+     with no screenshot left the strip
      is that band alone. A press on it drags the strip like any; only the x is a button. -->
 <style>
 :root {
@@ -69,11 +72,16 @@ body.moving, body.moving * { cursor: grabbing !important; }
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
 }
 #quote[hidden] { display: none; }
+/* whose list this is: the session's name, one line, kept at the top while the band scrolls */
+#quote .qh {
+  position: sticky; top: 0; z-index: 1; background: var(--panel); color: var(--muted); font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 #quote .q { display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px; column-gap: 3px; align-items: start; }
-#quote .q + .q { box-shadow: inset 0 1px var(--line); }
+#quote .q { box-shadow: inset 0 1px var(--line); }
 #quote b { color: var(--blue); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* a long passage scrolled: its badge and x stay at the band's top while any of the row shows */
-#quote .q > b, #quote .qx { position: sticky; top: 0; }
+#quote .q > b, #quote .qx { position: sticky; top: 14px; }
 #quote .qx {
   width: 14px; height: 14px; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--muted);
   display: flex; align-items: center; justify-content: center;
@@ -198,13 +206,15 @@ window.shotStrip = {
     band();
     tipHide();
   },
-  // the ":" reply's list: items [{n, text, more}], each passage exactly as the hook sends it, more = the characters
-  // its cap leaves out (shown as a muted line where the cut falls); [] hides the band. Laid out width px wide, at
-  // most cap px tall (past that it scrolls, from the top); returns the height it takes, which agent-panel.pyw sizes
-  // the window to. No whitespace between the tags: the band keeps line breaks (pre-wrap)
-  quote(items, width, cap) {
+  // one session's ":" reply list: items [{n, text, more}], each passage exactly as the hook sends it, more = the
+  // characters its cap leaves out (shown as a muted line where the cut falls), under name, the session's name; sid
+  // goes back with an x; [] hides the band. Laid out width px wide, at most cap px tall (past that it scrolls, from
+  // the top); returns the height it takes, which agent-panel.pyw sizes the window to. No whitespace between the
+  // tags: the band keeps line breaks (pre-wrap)
+  quote(items, width, cap, name, sid) {
     quoteEl.hidden = !items.length;
-    quoteEl.innerHTML = items.map(i => `<div class="q"><b>:${i.n}</b><span>${esc(i.text)}${i.more > 0 ?
+    quoteEl.dataset.sid = sid || "";
+    quoteEl.innerHTML = `<div class="qh">${esc(name || "")}</div>` + items.map(i => `<div class="q"><b>:${i.n}</b><span>${esc(i.text)}${i.more > 0 ?
       '<span class="cut">Cut here, ' + i.more.toLocaleString("en-US") + " more characters not sent</span>" : ""
       }</span><button type="button" class="qx" data-n="${i.n}" aria-label="Drop :${i.n} from the list">${X}</button></div>`).join("");
     band();
@@ -280,7 +290,7 @@ strip.addEventListener("pointerup", e => {
     document.body.classList.remove("moving");
     if (moved || !b) return;
     const at = Number(b.dataset.at);
-    if (b.classList.contains("qx")) api().drop(Number(b.dataset.n));  // agent-panel.pyw redraws the band
+    if (b.classList.contains("qx")) api().drop(quoteEl.dataset.sid, Number(b.dataset.n));  // agent-panel.pyw redraws the band
     else if (b.classList.contains("copy")) copy(b, at);
     else if (b.classList.contains("pin")) pin(b, at);
     else api().enlarge(at);

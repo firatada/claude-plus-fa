@@ -607,6 +607,34 @@ def shown_name(title):
     return re.sub(r"^\W+", "", title or "").strip()
 
 
+user32.GetClipboardOwner.restype = wt.HWND
+
+
+def tab_session(hwnd, title, sessions, window):
+    """The one open session whose terminal tab shows in window hwnd, else None. A session counts when its terminal
+    is that window (window(s): the window its process's console belongs to) and the window's title, which Claude
+    Code sets to "<status glyph> <session name>" for the tab in view, shows its name. None when no listed session's
+    tab shows there (another program, a shell tab, a title the user set), when the session has no name, and when
+    two sessions in that window go by the shown name: never a guess."""
+    shown = shown_name(title)
+    if not hwnd or not shown:
+        return None
+    hits = [o for o in sessions if o.get("status") and o.get("pid") and not o.get("headless") and o.get("name")
+            and shown_name(o["name"]) == shown]
+    hits = [o for o in hits if window(o) == hwnd]
+    return hits[0] if len(hits) == 1 else None
+
+
+def copied_in(owner, title, before, sessions, window):
+    """The session a new text clipboard was selected in, else None. owner: the window that put it on the clipboard
+    (Windows Terminal names the very window the selection was made in); title: that window's title now (its tab in
+    view); before: (window, shown name) in front at the previous poll turn. A tab switch in that window since then
+    (its shown name changed) leaves the tab of the copy unknown: None."""
+    if not owner or (before and before[0] == owner and before[1] != shown_name(title)):
+        return None
+    return tab_session(owner, title, sessions, window)
+
+
 def focus_session(s, others=()):
     """Raise the window of an open session where it was (restored if minimised). When its title shows another
     listed session's name (others: those names, through shown_name), the window is a terminal holding several
@@ -1587,8 +1615,9 @@ class StripApi:
     def pin(self, at):
         self._p.events.put("pin:" + json.dumps(at))  # done on the poll loop's thread, as every other strip change
 
-    def drop(self, n):
-        self._p.events.put("qdrop:%d" % int(n))  # a selection's x in the band: out of the ":" reply's list
+    def drop(self, sid, n):
+        # a selection's x in the band: out of that session's ":" reply list
+        self._p.events.put("qdrop:" + json.dumps([str(sid), int(n)]))
 
 
 class ViewApi:
@@ -1745,11 +1774,14 @@ class Panel:
                                            min_size=(100, 26), frameless=True, easy_drag=False, on_top=False,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
-        # the ":" reply's numbered list (quote_poll): the clipboard's sequence number last read, the USED file's mtime
-        # and the sequence number it holds, the list itself (kept in the hook's LIST file, read back at start so a
-        # restart keeps it) and what the strip's band shows now (((n, text, more), ...) or None)
-        self.quote_mod, self.quote_seq, self.quote_m, self.quote_used, self.quote = load_quote(), None, None, None, None
-        self.qlist = self.quote_load()
+        # the ":" reply's numbered lists, one per session (quote_poll): the clipboard's sequence number last read,
+        # the lists ({session id: list}, kept in the hook's LIST file, read back at start so a restart keeps them)
+        # and whether they are live, the mtime of each session's reset record last seen, the session whose list the
+        # band shows (the one last in front), the window and shown name in front at the last turn, and what the
+        # band shows now ((session id, name, ((n, text, more), ...)) or None)
+        self.quote_mod, self.quote_seq, self.quote = load_quote(), None, None
+        self.qlists, self.quote_on, self.qreset = self.quote_load(), False, {}
+        self.quote_sid, self.quote_before = None, None
         self.band_key, self.band_h = None, 0  # what the band was last given (list, width, cap) and its height
         self.pins = strip_pins()
         if self.pins != local("shot_pins") and local("shot_pins") is not None:  # a repeat or a bad entry: written clean
@@ -1806,7 +1838,7 @@ class Panel:
                     elif ev.startswith("pin:"):
                         self.toggle_pin(float(ev[4:]))
                     elif ev.startswith("qdrop:"):
-                        self.quote_drop(int(ev[6:]))
+                        self.quote_drop(*json.loads(ev[6:]))
                     elif ev.startswith("dock:"):
                         self.set_dock(ev[5:])
                     elif ev.startswith("opt:"):
@@ -2763,15 +2795,17 @@ class Panel:
             self.feed_view(items)  # after the strip shows: a large new picture takes a moment to hand over
 
     def band(self, quote, width=0, cap=0):
-        """Hands the strip's band the ":" reply's list (quote: ((n, text, more), ...), each passage as sent and the
-        characters cut off; None hides it), to be laid out width logical pixels wide and at most cap tall, and returns
-        the height it takes (the page measures the wrapped text, so the window is sized to it). Asked again only when
-        one of the three changed."""
+        """Hands the strip's band one session's ":" reply list (quote: (session id, its name, ((n, text, more), ...)),
+        each passage as sent and the characters cut off; None hides it), to be laid out width logical pixels wide
+        under the session's name and at most cap tall, and returns the height it takes (the page measures the
+        wrapped text, so the window is sized to it). Asked again only when one of the three changed."""
         key = (quote, width, cap) if quote else None
         if key != self.band_key:
-            rows = [{"n": n, "text": t, "more": m} for n, t, m in quote or ()]
+            sid, name, items = quote or ("", "", ())
+            rows = [{"n": n, "text": t, "more": m} for n, t, m in items]
             try:
-                h = self.strip.evaluate_js("shotStrip.quote(%s, %d, %d)" % (json.dumps(rows), width, cap))
+                h = self.strip.evaluate_js("shotStrip.quote(%s, %d, %d, %s, %s)" % (
+                    json.dumps(rows), width, cap, json.dumps(name), json.dumps(sid)))
                 self.band_h = max(QUOTE_LINE, min(int(math.ceil(float(h))), cap)) if quote else 0
             except Exception:
                 self.band_h = 2 * QUOTE_LINE if quote else 0  # the band still shows, scrolling what does not fit
@@ -2779,97 +2813,104 @@ class Panel:
         return self.band_h
 
     def quote_load(self):
-        """The ":" reply's list as the last run left it (LIST), so a restart (a reinstall) keeps what the strip showed;
-        a fresh one when there is none. Old entries are dropped on the first poll (the hook's fresh())."""
-        q, d = self.quote_mod, None
-        if q:
-            d = q.load(q.LIST)
-        lst = {"on": False, "gen": int(time.time() * 1000), "next": 1, "items": []}
-        if isinstance(d, dict) and isinstance(d.get("items"), list) and d["items"]:
+        """The ":" reply's lists as the last run left them (LIST: {session id: list}), so a restart (a reinstall)
+        keeps what each session had selected; none when there are none. A file of the one machine-wide list kept
+        before 2026-11-20 holds no "lists" and is not read back (its selections have no session)."""
+        q = self.quote_mod
+        d = q.load(q.LIST) if q else None
+        lists = {}
+        for sid, lst in ((d.get("lists") if isinstance(d, dict) else None) or {}).items():
             try:
                 items = [{"n": int(i["n"]), "seq": i.get("seq"), "at": float(i["at"]), "text": str(i["text"]),
-                          "more": int(i.get("more") or 0)} for i in d["items"]]
-                lst.update(gen=d.get("gen") or lst["gen"], next=max(int(d.get("next") or 1), items[-1]["n"] + 1),
-                           items=items)
-            except (KeyError, TypeError, ValueError):
+                          "more": int(i.get("more") or 0)} for i in lst["items"]]
+                if items:
+                    lists[str(sid)] = {"gen": int(lst["gen"]), "name": lst.get("name"), "added": lst.get("added"),
+                                       "next": max(int(lst.get("next") or 1), items[-1]["n"] + 1), "items": items}
+            except (KeyError, TypeError, ValueError, AttributeError):
                 pass
-        return lst
+        return lists
 
     def quote_poll(self):
-        """Keeps the ":" reply's numbered list (quote-reply.py, the UserPromptSubmit hook, reads it from LIST): every
-        new text clipboard joins it in the order made, as 1, 2, 3, ..., while the strip is switched on, the keeper is
-        on and the panel shows (else the list is empty and "off", and a ":" prompt quotes the clipboard itself). Not
-        listed: no text, a password manager's private format, the same text as the last entry, and the clipboard a
-        ":" prompt already quoted. A prompt that used the list (the hook writes USED with the list's generation and
-        its highest number) empties it; so do age and the cap (fresh(): MAX_ITEMS, AGE), dropping the oldest without
-        renumbering the rest; numbering restarts at 1 only when the list is empty. One clipboard and one strip for the
-        whole PC, so with several terminals open any of them answers the same list. The clipboard is opened only when
-        its sequence number moved (well under a millisecond, once per copy); a clipboard another program still holds
-        is read on a later turn. True when what the band shows changed."""
+        """Keeps the ":" reply's numbered lists, one per session (quote-reply.py, the UserPromptSubmit hook, reads its
+        own session's from LIST), while the strip is switched on, the keeper is on and the panel shows (else they are
+        empty and "off", and a ":" prompt quotes the clipboard itself). Every new text clipboard joins the list of the
+        session it was selected in (copied_in(): the window Windows Terminal names as the clipboard's owner, and the
+        session whose name that window's title shows), as 1, 2, 3, ...; a copy that cannot be tied to exactly one
+        session joins no list. Not listed either: no text, a password manager's private format, the same text as that
+        list's last entry, and what was on the clipboard when the lists went live (copied while nobody watched). A
+        prompt in a session (the hook writes its reset record, with the list's generation and its highest number)
+        empties that session's list only. The band shows the list of the session in front, or of the one last in
+        front while no session is. The clipboard is opened only when its sequence number moved (well under a
+        millisecond, once per copy); a clipboard another program still holds is read on a later turn. True when what
+        the band shows changed."""
         q = self.quote_mod
         if not q:
             return False
-        lst, now, changed = self.qlist, time.time(), False
-        try:
-            m = os.stat(q.USED).st_mtime
-        except OSError:
-            m = None
-        if m != self.quote_m:  # a ":" prompt quoted: the clipboard it used, and the list it used up
-            self.quote_m, u = m, q.load(q.USED) or {}
-            self.quote_used = u.get("seq")
-            if u.get("gen") == lst["gen"] and lst["items"]:
-                lst["items"] = [i for i in lst["items"] if i["n"] > (u.get("upto") or 0)]
-                changed = True
+        lists, now, changed = self.qlists, time.time(), False
+        for sid in list(lists):  # a prompt submitted in that session: its hook wrote a reset record
+            path = q.reset_path(sid)
+            try:
+                m = os.stat(path).st_mtime
+            except OSError:
+                m = None
+            if m != self.qreset.get(sid):
+                self.qreset[sid] = m
+                if m is not None and q.apply_reset(lists, sid, q.load(path)):
+                    changed = True
         live = self.strip_on and self.keeping() and self.visible
         if not live:
-            self.quote_seq = None  # when it comes back, the clipboard of that moment is the first entry
-            if lst["on"] or lst["items"]:
-                lst.update(on=False, items=[])
+            self.quote_seq = None
+            if self.quote_on or lists:
+                self.quote_on = False
+                lists.clear()
                 changed = True
         else:
-            if not lst["on"]:
-                lst["on"], changed = True, True
+            if not self.quote_on:
+                self.quote_on, changed = True, True
+                self.quote_seq = q.seq()  # on the clipboard before the lists went live: no telling where it was made
+            fg = user32.GetForegroundWindow()
+            front = (fg, shown_name(window_title(fg))) if fg else None
             n = q.seq()
             if n != self.quote_seq:
                 n, text, private = q.clip(tries=1)
-                if private is not None:
+                owner = user32.GetClipboardOwner()
+                owner = owner and (user32.GetAncestor(owner, 3) or owner)  # GA_ROOTOWNER, as window_of() gives
+                if private is not None and q.seq() == n:  # else another copy came meanwhile: read on the next turn
                     self.quote_seq = n
                     p = q.passage(text) if text and not private else None
-                    last = lst["items"][-1] if lst["items"] else None
-                    if p and n != self.quote_used and not (last and (last["text"], last["more"]) == p):
-                        lst["items"].append({"n": lst["next"], "seq": n, "at": now, "text": p[0], "more": p[1]})
-                        lst["next"] += 1
+                    o = p and copied_in(owner, window_title(owner), self.quote_before, self.sessions,
+                                        lambda o: window_of(o["pid"]))
+                    if o and q.add(lists, o["id"], o["name"], n, p[0], p[1], now):
                         changed = True
-        kept = q.fresh(lst["items"], now)
-        if len(kept) != len(lst["items"]):
-            lst["items"], changed = kept, True
+            if front and not own(fg):
+                o = tab_session(fg, window_title(fg), self.sessions, lambda o: self.wins.get(o["pid"]))
+                if o:
+                    self.quote_sid = o["id"]
+            self.quote_before = front
         if changed:
             self.quote_save()
-        shown = tuple((i["n"], i["text"], i["more"]) for i in lst["items"]) or None
+        lst = lists.get(self.quote_sid)
+        shown = None
+        if lst and lst["items"]:
+            name = next((o.get("name") for o in self.sessions if o["id"] == self.quote_sid), None) or lst.get("name")
+            shown = (self.quote_sid, name or "", tuple((i["n"], i["text"], i["more"]) for i in lst["items"]))
         if shown == self.quote:
             return False
         self.quote = shown
         return True
 
     def quote_save(self):
-        """Writes the list for the hook (whole, swapped in); an empty list starts numbering at 1 again, under a new
-        generation, so a prompt that read the old list cannot empty the new one."""
-        lst = self.qlist
-        if not lst["items"]:
-            lst.update(next=1, gen=max(lst["gen"] + 1, int(time.time() * 1000)))
+        """Writes the lists for the hook (whole, swapped in)."""
         try:
-            self.quote_mod.write_json(self.quote_mod.LIST, dict(lst, mutex=MUTEX))
+            self.quote_mod.write_json(self.quote_mod.LIST, {"on": self.quote_on, "mutex": MUTEX, "lists": self.qlists})
         except OSError:
-            pass  # the hook then reads the last list written; the next change writes again
+            pass  # the hook then reads the last lists written; the next change writes again
 
-    def quote_drop(self, n):
-        """A selection's x in the strip's band: out of the list; the others keep their numbers."""
-        lst = self.qlist
-        kept = [i for i in lst["items"] if i["n"] != n]
-        if len(kept) != len(lst["items"]):
-            lst["items"] = kept
+    def quote_drop(self, sid, n):
+        """A selection's x in the strip's band: out of that session's list; the others keep their numbers."""
+        if self.quote_mod and self.quote_mod.drop(self.qlists, sid, n):
             self.quote_save()
-        if self.quote_poll():  # what the band shows, from the list as it is now
+        if self.quote_poll():  # what the band shows, from the lists as they are now
             self.update_strip()
 
     # ----- dragging the strip -----

@@ -5,10 +5,12 @@
 # The passages go to Claude as additionalContext and a one-line systemMessage shows the user what was quoted. A
 # prompt with neither form is left alone and this prints nothing.
 #
-# The numbered list: while the Agent Panel's screenshot strip is on and shown, the panel adds every new text
-# clipboard to LIST (1, 2, 3, ... in the order made) and shows it in the strip's band; this hook only reads it,
-# and after a prompt that used it writes USED, from which the panel empties the list. Without that live list (no
-# panel, strip off) a bare ":" quotes the clipboard itself, as before the list.
+# The numbered lists, one per session: while the Agent Panel's screenshot strip is on and shown, the panel adds
+# every new text clipboard to the list of the session whose terminal tab it was selected in (1, 2, 3, ... in the
+# order made; a copy it cannot tie to exactly one session joins no list) and shows the list of the session in front
+# in the strip's band. This hook reads only its own session's list (session_id), and after ANY prompt in that
+# session writes reset_path(session_id), from which the panel empties that list; other sessions' lists are never
+# read or touched. Without a live list (no panel, strip off) a bare ":" quotes the clipboard itself, as before.
 #
 # Never quotes a secret: a clipboard a password manager marked private (any of the formats in PRIVATE) is not read.
 # Never quotes the same clipboard twice: what was quoted is kept in USED. The panel loads this file as a module
@@ -21,12 +23,15 @@ from ctypes import wintypes as wt
 CAP = 4000      # characters of the passage sent to Claude; a longer one is cut and the context says so
 PREVIEW = 60    # characters of the passage in the line the user sees
 STATE = os.path.join(os.path.expanduser("~"), ".claude", "state", "context")
-USED = os.path.join(STATE, "quote-used.json")   # what the last ":" prompt quoted: {seq, at} or {seq, gen, upto, at}
-LIST = os.path.join(STATE, "quote-list.json")   # the panel's numbered list: {on, mutex, gen, next, items: [...]}
+USED = os.path.join(STATE, "quote-used.json")   # the clipboard a bare ":" without a live list last quoted: {seq, at}
+LIST = os.path.join(STATE, "quote-list.json")   # the panel's lists: {on, mutex, lists: {session_id: {gen, next, name, items}}}
+RESETS = os.path.join(STATE, "quote-used")      # <session_id>.json: {gen, upto, at}, written after a prompt in that session
 MUTEX = "Local\\claude-plus-fa-agent-panel"     # the panel's one-instance mutex: the list is live while it exists
-MAX_ITEMS = 9   # a list never used: past 9 selections the oldest drops (its number is not reused)
-AGE = 3600      # ... and a selection older than an hour drops; numbering restarts at 1 only when the list is empty
+MAX_ITEMS = 50  # a safety cap only: a list never used keeps its 50 newest selections (numbers are not reused)
+MAX_LISTS = 20  # ... and the panel keeps the lists of the 20 sessions last selected in
 MARK = re.compile(r"(?<!\S):(\d+)(?!\S)")  # ":N" at the start, after whitespace, followed by whitespace or the end
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")    # a line opening (or closing) a fenced code block
+TICKS = re.compile(r"`+")                       # a run of backticks: opens or closes inline code
 BARE = re.compile(r"\s*:(?!\d)")           # a prompt starting with ":" that is not a ":N" marker
 # Formats a password manager (or any app) sets to keep a copy out of clipboard history, cloud sync and monitors:
 # the first by being there at all, the other two when their DWORD is 0.
@@ -145,10 +150,57 @@ def passage(text):
     return (quote[:CAP], max(0, len(quote) - CAP)) if quote else None
 
 
-def fresh(items, now):
-    """The list's items still in it: none older than AGE, at most MAX_ITEMS (the newest). Numbers are kept."""
-    items = [i for i in items if now - i.get("at", 0) < AGE]
-    return items[-MAX_ITEMS:]
+def reset_path(sid):
+    """Where the hook records that a prompt was submitted in session sid (the panel then empties its list)."""
+    return os.path.join(RESETS, re.sub(r"[^\w-]", "", sid) + ".json")
+
+
+def add(lists, sid, name, seq_no, text, more, now):
+    """A selection made in session sid joins its list (lists: the panel's {sid: list}) under the next number. Not
+    when it is the same passage as that list's last entry (one selection copied twice). Past MAX_ITEMS the oldest
+    drops, past MAX_LISTS the list least recently added to. True when the lists changed."""
+    lst = lists.get(sid)
+    if not lst:
+        gen = max([int(now * 1000)] + [l["gen"] + 1 for l in lists.values()])
+        lst = lists[sid] = {"gen": gen, "next": 1, "name": name, "items": []}
+    last = lst["items"][-1] if lst["items"] else None
+    if last and (last["text"], last["more"]) == (text, more):
+        return False
+    lst["name"] = name or lst.get("name")
+    lst["items"] = (lst["items"] + [{"n": lst["next"], "seq": seq_no, "at": now, "text": text, "more": more}])[-MAX_ITEMS:]
+    lst["next"] += 1
+    lst["added"] = now
+    for old in sorted(lists, key=lambda k: lists[k].get("added") or 0)[:max(0, len(lists) - MAX_LISTS)]:
+        del lists[old]
+    return True
+
+
+def apply_reset(lists, sid, record):
+    """A prompt was submitted in session sid (record: what its hook wrote): the entries that hook saw go, those
+    added after its read keep their numbers. A record of an older list (another gen) changes nothing. An emptied
+    list is removed, so the next selection there is :1 again under a new gen. True when the lists changed."""
+    lst = lists.get(sid)
+    if not lst or not isinstance(record, dict) or record.get("gen") != lst["gen"]:
+        return False
+    kept = [i for i in lst["items"] if i["n"] > (record.get("upto") or 0)]
+    if len(kept) == len(lst["items"]):
+        return False
+    if kept:
+        lst["items"] = kept
+    else:
+        del lists[sid]
+    return True
+
+
+def drop(lists, sid, n):
+    """A selection's x in the strip's band: out of its session's list; the others keep their numbers."""
+    lst = lists.get(sid)
+    if not lst or not any(i["n"] == n for i in lst["items"]):
+        return False
+    lst["items"] = [i for i in lst["items"] if i["n"] != n]
+    if not lst["items"]:
+        del lists[sid]
+    return True
 
 
 def alive(name):
@@ -159,14 +211,47 @@ def alive(name):
     return bool(h)
 
 
-def listed(now):
-    """The panel's live list ({gen, items: [{n, seq, at, text, more}]}), or None when there is none: no file, the
-    strip off or hidden ("on" false), or the panel that wrote it gone. Then a bare ":" quotes the clipboard."""
+def listed(sid):
+    """This session's live list ({gen, items: [{n, seq, at, text, more}]}, items empty when nothing was selected in
+    it), or None when there is no live list at all: no session id, no file, the strip off or hidden ("on" false),
+    or the panel that wrote it gone. Then a bare ":" quotes the clipboard. Other sessions' lists are not looked at."""
     d = load(LIST)
-    if not isinstance(d, dict) or not d.get("on") or not alive(d.get("mutex") or MUTEX):
+    if not sid or not isinstance(d, dict) or not d.get("on") or not alive(d.get("mutex") or MUTEX):
         return None
-    d["items"] = fresh([i for i in d.get("items") or [] if isinstance(i, dict) and i.get("text")], now)
-    return d
+    lst = (d.get("lists") or {}).get(sid)
+    lst = lst if isinstance(lst, dict) else {}
+    return {"gen": lst.get("gen"), "items": [i for i in lst.get("items") or [] if isinstance(i, dict) and i.get("text")]}
+
+
+def code_spans(prompt):
+    """Where the prompt holds code, as (start, end) offsets: fenced blocks (``` or ~~~ to the matching fence, or
+    the end) and inline code (a run of backticks to the next run of the same length; an unmatched run is a plain
+    backtick). A ":N" inside them is text the user quotes ("`:1 yes :3 no`"), never a marker."""
+    spans, prose, pos, fence, start = [], [], 0, None, 0
+    for line in prompt.splitlines(True):
+        m = FENCE.match(line)
+        if fence is None and m:
+            fence, start = m.group(1), pos
+        elif fence is not None:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end():].strip():
+                spans.append((start, pos + len(line)))
+                fence = None
+        else:
+            prose.append((pos, line))
+        pos += len(line)
+    if fence is not None:
+        spans.append((start, len(prompt)))
+    text = "".join(line for _, line in prose)  # inline code may run over lines, never into a fenced block
+    where = [o + k for o, line in prose for k in range(len(line))]
+    runs, k = list(TICKS.finditer(text)), 0
+    while k < len(runs):
+        close = next((j for j in range(k + 1, len(runs)) if len(runs[j].group()) == len(runs[k].group())), None)
+        if close is None:
+            k += 1
+            continue
+        spans.append((where[runs[k].start()], where[runs[close].end() - 1] + 1))
+        k = close + 1
+    return spans
 
 
 def parse(prompt, known):
@@ -176,7 +261,10 @@ def parse(prompt, known):
     prompt starts with a ":" that is not a marker. A reply runs from its marker to the next known marker or the
     end; a marker with nothing after it before the next one shares that one's reply (":1 :3 no")."""
     hits, unknown = [], []
+    code = code_spans(prompt) if "`" in prompt or "~~~" in prompt else []
     for m in MARK.finditer(prompt):
+        if any(a <= m.start() < b for a, b in code):
+            continue  # inside code: text the user quotes, not a marker
         if int(m.group(1)) in known:
             hits.append(m)
         elif m.group(1) not in unknown:
@@ -227,10 +315,16 @@ def mark(record):
         pass  # the quote still goes; only the strip's preview stays up
 
 
-def used_up(lst, items):
-    """The USED record for a prompt that used the live list: its generation and every number in it, so the panel
-    empties the list (numbers it added after this read stay)."""
-    mark({"seq": max(i.get("seq") or 0 for i in items.values()), "gen": lst.get("gen"), "upto": max(items)})
+def reset(sid, lst):
+    """A prompt was submitted in this session: record the list's generation and every number this read saw, so the
+    panel empties it (a selection it added after this read keeps its number). Written only when there is something
+    to empty, and only this session's own file: other sessions' lists are never touched."""
+    if not sid or not lst or not lst["items"]:
+        return
+    try:
+        write_json(reset_path(sid), {"gen": lst["gen"], "upto": max(i["n"] for i in lst["items"]), "at": time.time()})
+    except OSError:
+        pass  # the quote still went; the strip keeps showing the list until the next prompt
 
 
 def from_clipboard():
@@ -251,16 +345,26 @@ def from_clipboard():
     return {"systemMessage": "Reply: " + note}
 
 
-def reply(prompt, now=None):
-    """The hook's answer for one prompt: None (prompt untouched, nothing printed), or the JSON object to print."""
+def reply(prompt, sid=None):
+    """The hook's answer for one prompt in session sid: None (prompt untouched, nothing printed), or the JSON object
+    to print. Any prompt, whatever it holds, resets the session's list (reset())."""
+    lst = listed(sid)
+    try:
+        return answer_for(prompt, lst)
+    finally:
+        reset(sid, lst)
+
+
+def answer_for(prompt, lst):
+    """The answer for one prompt given its session's list (None: no live list)."""
     if ":" not in prompt:
-        return None  # the common case, decided without reading anything
+        return None  # the common case
     if not MARK.search(prompt) and not BARE.match(prompt):
         return None
-    now = time.time() if now is None else now
-    lst = listed(now)
     items = {i["n"]: i for i in (lst["items"] if lst else [])}
     answers, unknown, bare = parse(prompt, items)
+    if not (answers or unknown or bare):
+        return None  # its only ":N" sat in code
     nothing = " ".join(":" + u for u in unknown) + " matched nothing" if unknown else ""
     if answers:  # numbered: each answered passage with its reply; the list is used up
         context = ("The user selected passages from the conversation and replied to some of them in this prompt. "
@@ -271,14 +375,12 @@ def reply(prompt, now=None):
             context += (" Markers that match no passage (%s) are ordinary text of the reply around them."
                         % " ".join(":" + u for u in unknown))
         context += "\n" + "\n".join(block(n, items[n], a) for n, a in answers)
-        used_up(lst, items)
         sent = " ".join(":%d" % n for n, _ in answers)
         return answer("Quoted: " + sent + (" (%s)" % nothing if nothing else ""), context)
     if bare and lst is None:
         out = from_clipboard()
     elif bare and len(items) == 1:  # one listed selection: exactly as a ":" reply always was
         item = next(iter(items.values()))
-        used_up(lst, items)
         out = answer("Quoted: " + flat(item["text"], PREVIEW), single(item["text"], item.get("more")))
     elif bare and items:  # several and no number: all of them go, and Claude is told the reply was not numbered
         context = ("The user selected %d passages from the conversation and replied with a bare \":\" at the start "
@@ -286,7 +388,6 @@ def reply(prompt, now=None):
                    "of them. If it is not clear which passage the reply is about, ask the user which item they "
                    "mean before acting." % len(items))
         context += "\n" + "\n".join(block(n, items[n]) for n in sorted(items))
-        used_up(lst, items)
         nums = " ".join(":%d" % n for n in sorted(items))
         out = answer("Quoted all %d (%s): the reply was not numbered, so Claude may ask which one is meant"
                      % (len(items), nums), context)
@@ -302,7 +403,7 @@ def reply(prompt, now=None):
 if __name__ == "__main__":
     try:
         data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        out = reply(data.get("prompt") or "")
+        out = reply(data.get("prompt") or "", data.get("session_id"))
         if out:
             sys.stdout.write(json.dumps(out, ensure_ascii=True))  # ASCII: the console code page cannot spoil it
     except Exception:
