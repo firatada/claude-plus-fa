@@ -24,6 +24,8 @@ BROKER = "svchost.exe"
 CF_BITMAP, CF_DIB, CF_PALETTE, CF_DIBV5 = 2, 8, 9, 17
 # formats Windows' clipboard history adds by itself; they say nothing about where an image came from
 QUIET = {"ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"}
+PASTE_MARK = "claude-plus-fa paste"  # agent-panel-paste.py marks the clipboards it sets (a path, then the user's own
+                                     # content put back): never a new screenshot
 HOLD = 3.0             # seconds a clipboard capture waits for the same picture as a file in Windows' Screenshots
 SNIP_RECENT = 5.0      # seconds after a snipping tool was seen running that the broker's images still count:
                        # it sets the clipboard twice, the second time (0.5 s later) after ScreenClippingHost ended
@@ -541,6 +543,40 @@ def shot_text(path, lines):
     return "\n".join(["[screenshot: %s]" % path] + list(lines))
 
 
+def load_index(state=STATE):
+    try:
+        with open(state, encoding="utf-8") as f:
+            v = json.load(f)
+        for e in v:
+            e["sig"] = base64.b64decode(e["sig"])
+        return v
+    except Exception:
+        return []
+
+
+def where(e):
+    """Where the screenshot is now: the Desktop file, else a project copy that still exists."""
+    if e.get("file") and os.path.exists(e["file"]):
+        return e["file"]
+    for p in e["places"]:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def saved_file(img, state=STATE):
+    """For the paste key (agent-panel-paste.py, its own process): the file of a screenshot the keeper saved that is
+    this very picture, pixel for pixel, wherever it is now (newest first); None when there is none. Read from the
+    index file; a capture still waiting HOLD is not there yet."""
+    s, size = sig(img), list(img.size)
+    for e in reversed(load_index(state)):
+        if e["size"] == size and diff(e["sig"], s) < SAME:
+            p = where(e)
+            if p and identical(p, img):
+                return p
+    return None
+
+
 # ---------- the work ----------
 class Shots:
     """Owned by the Agent Panel: start() runs a clipboard listener and a worker on threads of the panel's
@@ -570,14 +606,7 @@ class Shots:
 
     # ----- state -----
     def load(self):
-        try:
-            with open(self.state, encoding="utf-8") as f:
-                v = json.load(f)
-            for e in v:
-                e["sig"] = base64.b64decode(e["sig"])
-            return v
-        except Exception:
-            return []
+        return load_index(self.state)
 
     def save(self):
         cut, keep = len(self.index) - KEEP, self.keep
@@ -787,6 +816,9 @@ class Shots:
 
     # ----- captures -----
     def clipboard(self, ev):
+        if PASTE_MARK in ev["formats"]:
+            self.log("ignored own paste")  # the paste key's path, or the clipboard it put back
+            return
         if ev["running"] & SNIP_TOOLS:
             self.snip_at = ev["at"]
         if not is_screenshot(ev, self.snip_at):
@@ -937,13 +969,7 @@ class Shots:
                 self.log("pasted image is no saved screenshot", img.size)
 
     def where(self, e):
-        """Where the screenshot is now: the Desktop file, else a project copy that still exists."""
-        if e.get("file") and os.path.exists(e["file"]):
-            return e["file"]
-        for p in e["places"]:
-            if os.path.exists(p):
-                return p
-        return None
+        return where(e)
 
     def match(self, img, when):
         s, (w, h) = sig(img), img.size

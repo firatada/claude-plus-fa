@@ -22,6 +22,7 @@ FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "agent-alert.html"),
     os.path.join(CLAUDE_DIR, "agent-shots.html"),
     os.path.join(CLAUDE_DIR, "agent-panel-shots.py"),
+    os.path.join(CLAUDE_DIR, "agent-panel-paste.py"),
     os.path.join(CLAUDE_DIR, "session-panel.pyw"),
     os.path.join(HOME, ".local", "bin", "glm.cmd"),
 ]
@@ -114,7 +115,7 @@ def stop_panel():
         time.sleep(3)
     subprocess.run(["powershell.exe", "-NoProfile", "-Command",
                     "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
-                    "Where-Object { $_.CommandLine -like '*agent-panel.pyw*' -or $_.CommandLine -like '*session-panel.pyw*' } | "
+                    "Where-Object { $_.CommandLine -like '*agent-panel.pyw*' -or $_.CommandLine -like '*session-panel.pyw*' -or $_.CommandLine -like '*agent-panel-paste.py*' } | "
                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
                    capture_output=True)
 

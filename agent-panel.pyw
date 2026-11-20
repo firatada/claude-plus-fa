@@ -9,7 +9,9 @@
 # follows that page's public API. Screenshots the user takes are kept in Desktop\screenshots and move into a
 # session's folder when pasted there (agent-panel-shots.py); the last three, and any the user pinned, stay on
 # screen in a strip over every window (agent-shots.html), switched by a header button, dragged anywhere; a click
-# shows one large at once, with Open and Delete (to the Recycle Bin).
+# shows one large at once, with Open and Delete (to the Recycle Bin). While a session's terminal is in front,
+# Ctrl+V and Alt+V paste a copied picture as its file path, which Claude Code attaches at the cursor without its
+# PowerShell clipboard read (agent-panel-paste.py, a process of its own, started and watched by watch_paste()).
 import base64, ctypes, ctypes.wintypes as wt, datetime, glob, importlib.util, io, json, math, os, queue, re, shutil, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
@@ -27,6 +29,11 @@ ALERT_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-ale
 KNOCK = os.path.join(MASCOT, "knock.wav")
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-shots.py")
 SHOTS_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-shots.html")
+PASTE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-paste.py")
+PASTE_WINDOWS = os.path.join(STATE_DIR, "paste-windows.json")  # the session windows, for agent-panel-paste.py
+PASTE_CLASS = "claude-plus-fa paste"  # its message-only window
+PASTE_ANSWER = 700     # ms the paste key's process gets to answer; two misses in a row end it (freeing its keys)
+PASTE_RESTART = 10     # seconds between starts of the paste key's process
 OPTS_FILE = os.path.join(STATE_DIR, "options.json")
 LOCAL = os.path.join(CLAUDE, "claude-plus.local.json")  # the user's own settings, outside the repo
 
@@ -1302,6 +1309,45 @@ class Shade:
             user32.PostMessageW(self.hwnd, 0x0010, 0, 0)  # WM_CLOSE: destroyed on its own thread
 
 
+# ---------- the paste key: agent-panel-paste.py, a process of its own ----------
+user32.FindWindowExW.restype = wt.HWND
+user32.FindWindowExW.argtypes = [wt.HWND, wt.HWND, wt.LPCWSTR, wt.LPCWSTR]
+user32.SendMessageTimeoutW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, wt.UINT, wt.UINT,
+                                       ctypes.POINTER(ctypes.c_size_t)]
+PASTE_MARK = user32.RegisterClipboardFormatW("claude-plus-fa paste")  # on every clipboard the paste key sets
+
+
+def paste_wanted():
+    """Ctrl+V and Alt+V paste a picture as its path in a session's terminal; off with "paste_keys": false."""
+    return local("paste_keys") is not False
+
+
+def start_paste():
+    try:
+        return subprocess.Popen([sys.executable, PASTE, str(os.getpid())], creationflags=CREATE_NO_WINDOW,
+                                env=clean_env())
+    except OSError:
+        return None
+
+
+def paste_window():
+    return user32.FindWindowExW(wt.HWND(-3), None, PASTE_CLASS, None)  # HWND_MESSAGE: message-only windows
+
+
+def answers(hwnd, ms=PASTE_ANSWER):
+    """The window's thread handles a message within ms (a stuck one holds Ctrl+V and Alt+V)."""
+    res = ctypes.c_size_t()
+    return bool(user32.SendMessageTimeoutW(hwnd, 0, 0, 0, 0x0002, ms, ctypes.byref(res)))  # WM_NULL, ABORTIFHUNG
+
+
+def save_paste_windows(windows):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = PASTE_WINDOWS + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"windows": windows}, f)
+    os.replace(tmp, PASTE_WINDOWS)
+
+
 # ---------- hotkey and tray, each on its own thread ----------
 def hotkey_loop(events):
     if not user32.RegisterHotKey(None, 1, 0x0002 | 0x0001 | 0x4000, ord("C")):  # Ctrl+Alt, no repeat
@@ -1747,6 +1793,7 @@ class Panel:
         self.nc = None  # the DWM frame policy last set (see frame())
         self.front = None  # the last window that came to the front, not counting the panel's own (follow_front())
         self.wins = {}  # pid of an open session -> the window showing it (window_of), kept between scans
+        self.paste_proc, self.paste_windows = None, None  # the paste key's process; the windows last written for it
         self.opening = threading.Lock()  # open() calls arrive on threads of their own, at once
         self.launched = {}  # session id -> when open() started it; cleared once ~/.claude/sessions shows it
         self.repairing, self.update_note = False, None  # a failed Claude Code update: being repaired; what is left
@@ -1822,6 +1869,7 @@ class Panel:
         threading.Thread(target=self.follow_front, daemon=True).start()
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
         threading.Thread(target=self.watch_status, daemon=True).start()
+        threading.Thread(target=self.watch_paste, daemon=True).start()
         self.icon = tray(self.events, self.opts)
         self.shots = load_shots()
         self.last_scan = self.last_live = 0
@@ -2196,9 +2244,51 @@ class Panel:
             if h:
                 wins[pid] = h
         self.wins = wins
+        windows = sorted(set(wins.values()))
+        if windows != self.paste_windows:  # the paste key's process reads them from this file
+            try:
+                save_paste_windows(windows)
+                self.paste_windows = windows
+            except OSError:
+                pass  # written again at the next pass
         fg = user32.GetForegroundWindow()
         if fg in wins.values() and fg not in before:
             self.lift(fg)
+
+    def watch_paste(self):
+        """Its own thread: keeps the paste key's process (agent-panel-paste.py) running while "paste_keys" is not
+        false. Once a second its window must answer within PASTE_ANSWER; after two misses in a row (stuck, so Ctrl+V
+        and Alt+V would stay dead in the terminal) it is ended, which frees its keys at once, and started again. It
+        ends by itself when the panel ends."""
+        misses, started = 0, 0.0
+        while True:
+            time.sleep(1)
+            p = self.paste_proc
+            alive = bool(p) and p.poll() is None
+            if not paste_wanted():
+                if alive:
+                    h = paste_window()
+                    if h:
+                        user32.PostMessageW(h, 0x0010, 0, 0)  # WM_CLOSE
+                    else:
+                        p.kill()
+                continue
+            if alive:
+                h = paste_window()
+                if (h and answers(h)) or (not h and time.time() - started < 5):  # answering, or still starting
+                    misses = 0
+                    continue
+                misses += 1
+                if misses < 2:
+                    continue
+                try:
+                    p.kill()
+                    p.wait(3)
+                except Exception:
+                    pass
+            misses = 0
+            if time.time() - started >= PASTE_RESTART:
+                self.paste_proc, started = start_paste(), time.time()
 
     def window_for(self, s):
         h = window_of(s["pid"]) if s.get("pid") else None
@@ -2873,7 +2963,9 @@ class Panel:
             fg = user32.GetForegroundWindow()
             front = (fg, shown_name(window_title(fg))) if fg else None
             n = q.seq()
-            if n != self.quote_seq:
+            if n != self.quote_seq and user32.IsClipboardFormatAvailable(PASTE_MARK):
+                self.quote_seq = n  # the paste key's own clipboard (a path, or the user's put back): no passage
+            elif n != self.quote_seq:
                 n, text, private = q.clip(tries=1)
                 owner = user32.GetClipboardOwner()
                 owner = owner and (user32.GetAncestor(owner, 3) or owner)  # GA_ROOTOWNER, as window_of() gives
@@ -3270,6 +3362,8 @@ class Panel:
             self.shadow.close()
         if getattr(self, "shots", None):
             self.shots.stop()
+        if self.paste_proc and self.paste_proc.poll() is None and paste_window():
+            user32.PostMessageW(paste_window(), 0x0010, 0, 0)  # WM_CLOSE; it also ends when this process does
         self.view_close()
         self.alert.destroy()  # a hidden window left behind keeps the program running
         self.strip.destroy()

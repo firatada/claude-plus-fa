@@ -77,6 +77,7 @@ A set of add-ons that makes [Claude Code](https://code.claude.com) on Windows sa
 
 **Screenshots, kept in one place**
 - Every screenshot you take (`Win+Shift+S`, the Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named after the window it shows (for a snip, the window under the area you dragged, even if another window had the focus) and the time (`chrome_youtube-video-title_2026-11-13_1405.png`, `excel_budget-2026_2026-11-13_1405.png`, `desktop_2026-11-13_1405.png`). The name is read from the window's title on your PC; nothing is sent anywhere. Pictures Windows itself saves on `Win+PrintScreen` are moved there too, without a second copy. Images you copy from a browser or any other program are left alone.
+- While the Agent Panel runs, `Ctrl+V` or `Alt+V` in a Claude Code session pastes a copied picture (a screenshot, an image from a browser) at once, where the cursor is, instead of Claude Code's own `Alt+V`, which on Windows can stall for seconds; text pastes as before, and other windows are not affected. To turn it off, put `"paste_keys": false` in `~/.claude/claude-plus.local.json`.
 - When you paste a screenshot into a Claude Code session (`Alt+V`), it moves from the desktop into a `screenshots` folder in that session's project folder, named after the session (`fix-login-page_2026-11-13_1405.png`). Pasted into a session of another project too, it is copied there. So the desktop folder keeps only the screenshots you never gave to Claude.
 - That folder never reaches git or a website: the panel adds `screenshots/` to the project's `.gitignore` (creating one only in a git repository that has none) and to its `.assetsignore` when there is one. These two files are the only project files it ever edits.
 - Nothing is ever deleted, and nothing is added to what Claude reads: the panel only watches the clipboard and the session's conversation file. To turn it off, put `"screenshots": false` in `~/.claude/claude-plus.local.json`.
@@ -184,6 +185,7 @@ Open the claude-plus-fa folder and double-click `uninstall.cmd`. If you prefer t
 | `agent-alert.html` | The alert shown when a session waits for your answer |
 | `agent-shots.html` | The strip of your last three screenshots and the pinned ones, and their large preview |
 | `agent-panel-shots.py` | Keeps your screenshots: the desktop folder, then the project they were pasted into |
+| `agent-panel-paste.py` | Pastes a copied picture fast with `Ctrl+V` or `Alt+V` in a session's terminal (started by the panel) |
 | `mascot/` | The octopus: the logo (also the tray icon until a 5-hour figure is known) and the panel's animation strips |
 | `tools/mascot-export.py` | Cuts `mascot/` from the octopus sheet in `tools/mascot-source/` |
 | `tools/knock-sound.py` | Synthesizes the alert's knock, `mascot/knock.wav` |
