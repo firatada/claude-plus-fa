@@ -1601,6 +1601,8 @@ class ViewApi:
         if p and os.path.exists(p):
             os.startfile(p)  # the default viewer
 
+    copy = StripApi.copy  # the strip's Copy, the very same call: the same clipboard text for the same picture
+
     def delete(self, at):
         return self._p.view_delete(at)
 
