@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Agent Panel</title>
 <!-- The Agent Panel's face, shown by agent-panel.pyw in a WebView2 window. Spark tokens
-     (mindmap/design_themes/spark_theme). Dots: working is a turning green arc, open a still grey ring,
+     (mindmap/design_themes/spark_theme). Dots: working is a turning green arc, open a still purple ring,
      closed a grey dot, asking red; green means working and nothing else. A working card holds a still
      green tint and shows how long its turn has run where the others show their age; a card whose prompt
      waits for an answer pulses red, the only thing that pulses (the maintainer, 2026-11-19, replacing a
@@ -13,7 +13,7 @@
      mascot/ and inlined by agent-panel.pyw as window.MASCOT). It is the header's logo and sits on every
      card: reading a tablet while the session works, puzzled with a question mark while it asks, calm and
      blinking now and then while it is open, asleep and still when closed, and on a card takes its
-     state's colour (green working, red asking, slate open, light grey closed; the strips are recoloured at export); the header's stays purple. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
+     state's colour (green working, red asking, its own purple open, light grey closed; the strips are recoloured at export); the header's stays purple. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
      one shape": the header's logo (36, the octopus), count pill (18, pill radius) and hide and screenshot-strip buttons (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
@@ -29,6 +29,7 @@
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
   --faint: #687189;          /* quiet text, still 4.5:1 on --bg */
   --gone: #8a93a8;           /* the closed dot, 3:1 on white */
+  --violet: #5c3bcd;         /* the octopus's own purple (its median body colour): open, 7:1 on white */
   --blue: #1b4df5; --green: #16a34a; --gold: #f5a623; --red: #e11d48; --on-accent: #ffffff;
   --red-deep: #be123c; --red-tint: #fde8ec; --green-tint: #e7f6ec; --amber-tint: #fff7e6; --amber-line: #f5d9a8; --hit: #dbe4ff; --thumb: #d5dcea; --thumb-hover: #b5bdd0;
   --ring: 0 0 0 3px rgba(27, 77, 245, .12);
@@ -128,8 +129,9 @@ h1 { font-size: 15px; font-weight: 600; }
 .dot.busy { width: 10px; height: 10px; margin: 0 -1px; background: none; border: 2px solid var(--green);
             border-right-color: transparent; animation: spin 1s linear infinite; }
 .dot.ask { background: var(--red); }
-/* open and waiting for you: a still ring, neither green (working) nor filled grey (closed) */
-.dot.idle { background: none; box-shadow: inset 0 0 0 1.5px var(--muted); }
+/* open and waiting for you: a still ring in the octopus's own purple, as its octopus is, so an open card
+   reads as alive: neither green (working) nor grey (closed, which alone looks asleep) */
+.dot.idle { background: none; box-shadow: inset 0 0 0 1.5px var(--violet); }
 /* the whole card shows the state: working holds a still green tint and ring for as long as Claude reports
    the session busy; a prompt in it waiting for an answer pulses red, the family's "this needs you", and
    is the only thing that pulses. Background and ring only, so the hover's blue border still shows. */

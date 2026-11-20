@@ -8,8 +8,8 @@ Each row used here is cut into its frames (alpha bands between the drawings), ev
 on one square canvas per row, standing on the drawing's baseline and centred on it, so the frames
 line up when played; then scaled to 96 px frames (shown at 36 to 38 px, sharp on scaled screens),
 and recoloured to its state's dot colour: only the octopus's purple changes hue (the blue eyes, the
-white and the props keep theirs), green for open and working, red for asking, grey for closed;
-the header's moods also as <name>-purple.webp, in the octopus's own colour.
+white and the props keep theirs), green for working, red for asking, grey for closed; open keeps
+the octopus's own purple; the header's moods also as <name>-purple.webp, in the octopus's own colour.
 Output: mascot/<name>.webp next to this folder's parent, one horizontal strip per name, and
 mascot/logo.png, the package's logo (256 px), mascot/tray.png, the tray icon (64 px), and
 mascot/agent-panel.ico, the desktop shortcut's icon (16 to 256 px).
@@ -25,7 +25,7 @@ OUT = os.path.join(os.path.dirname(HERE), "mascot")
 OUT_PX = 96
 # name: (column 0 or 1, row band 0..5, frames to keep in play order, colour)
 STRIPS = {
-    "calm": (0, 0, [0, 1, 2, 3, 4], "slate"),     # 1 Calm: looks around, blinks
+    "calm": (0, 0, [0, 1, 2, 3, 4], "purple"),    # 1 Calm: looks around, blinks
     "reading": (1, 0, [0, 1, 2, 3, 4], "green"),  # 2 Watching / reading a tablet
     "sleeping": (0, 1, [0, 1, 2], "grey"),        # 3 Asleep (cap and bubble frames left out)
     "asking": (1, 3, [1, 2, 4, 2], "red"),        # 8 Puzzled, question marks (the box frame left out)
@@ -35,11 +35,13 @@ STRIPS = {
 # brightness scaled; green is darker than the dot's own (0.87, 0.64): a lighter green read as pale,
 # and the dot's brightness still read as too light on the octopus
 HEADER = ("calm", "reading", "asking")  # the moods the header shows (never asleep)
-COLOURS = {"green": (142, 1.2, 0.65), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85),
-           "slate": (225, 0.3, 0.7)}
+# "purple" (open) is not recoloured: open is the octopus in its own colour, alive but not green
+COLOURS = {"green": (142, 1.2, 0.65), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85)}
 
 
 def recolour(img, colour):
+    if colour == "purple":
+        return img
     hue, sat, val = COLOURS[colour]
     rgba = np.array(img)
     hsv = np.array(Image.fromarray(rgba[:, :, :3]).convert("HSV")).astype(float)
