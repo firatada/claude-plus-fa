@@ -1,4 +1,5 @@
-# Unit tests for the Agent Panel's card state: a card whose background work runs counts as working.
+# Unit tests for the Agent Panel's card state: a card whose background work runs sorts with the working cards,
+# while its dot, tint and words keep the session's own state and its badge carries the work.
 # Run: python -I tools/test-agent-panel-state.py   (needs node for the page's half)
 # The .pyw is never imported (that would trip its one-instance mutex and raise the running panel): the functions
 # under test are taken from it by ast and given a fake process table and fake creation times, so no process is
@@ -98,19 +99,31 @@ Date.now = () => NOW;
 const S = (o) => Object.assign({id: o.title, here: true, bg: []}, o);
 const run = {kind: "run", what: "mindmap", for: "3 min"};
 const cases = {
+  // the look: the session's own state only
   idleNoChild: stateOf(S({title: "a", status: "idle"})),
   idleChild: stateOf(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
   busyChild: stateOf(S({title: "c", status: "busy", turn: T0 + 150_000, bg: [run], bgSince: T0})),
   askChild: stateOf(S({title: "d", status: "busy", waiting: true, bg: [run], bgSince: T0})),
   closed: stateOf(S({title: "e", status: null, bg: [run]})),
+  // the sort group: background work puts an open session with the working ones
+  gIdleNoChild: groupOf(S({title: "a", status: "idle"})),
+  gIdleChild: groupOf(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
+  gBusyChild: groupOf(S({title: "c", status: "busy", turn: T0 + 150_000, bg: [run], bgSince: T0})),
+  gAskChild: groupOf(S({title: "d", status: "busy", waiting: true, bg: [run], bgSince: T0})),
+  gClosed: groupOf(S({title: "e", status: null, bg: [run]})),
   idleChildSince: runSince(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
   busyChildSince: runSince(S({title: "c", status: "busy", turn: T0 + 150_000, bg: [run], bgSince: T0})),
   busyNoTurnSince: runSince(S({title: "c", status: "busy", bg: [run], bgSince: T0})),
   askSince: runSince(S({title: "d", status: "busy", waiting: true, bg: [run], bgSince: T0})),
   idleNoChildSince: runSince(S({title: "a", status: "idle"})),
-  saidIdleChild: said(S({title: "b", status: "idle", bg: [run], bgSince: T0}), "busy"),
+  saidIdleChild: said(S({title: "b", status: "idle", bg: [run], bgSince: T0}), "idle"),
   saidBusyChild: said(S({title: "c", status: "busy", turn: T0 + 150_000, bg: [run], bgSince: T0}), "busy"),
-  saidChildNoStart: said(S({title: "b", status: "idle", bg: [run]}), "busy"),
+  saidBusyNoTurn: said(S({title: "c", status: "busy", bg: [run], bgSince: T0}), "busy"),
+  badgeOne: bgSaid(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
+  badgeTwo: bgSaid(S({title: "b", status: "busy", turn: T0 + 150_000, bg: [run, {kind: "subagent", what: "Explore"}], bgSince: T0})),
+  badgeNoStart: bgSaid(S({title: "b", status: "idle", bg: [run]})),
+  badgeTip: bgTip(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
+  labelIdleChild: cardLabel(S({title: "b", status: "idle", path: "C:/b", age: "2h", bg: [run], bgSince: T0}), "idle"),
   order: byState([
     S({title: "new-idle", status: "idle"}),
     S({title: "closed", status: null}),
@@ -129,14 +142,22 @@ class Page(unittest.TestCase):
     def setUpClass(cls):
         with open(os.path.join(ROOT, "agent-panel.html"), encoding="utf-8") as f:
             html = f.read()
-        a = html.index("// hidden by the user, its folder is gone")
-        b = html.index("// green under 50 %")
-        out = subprocess.run(["node", "-e", html[a:b] + PAGE_TESTS], capture_output=True, text=True, check=True)
+        cut = lambda a, b: html[html.index(a):html.index(b)]
+        code = (cut("// hidden by the user, its folder is gone", "// green under 50 %") +
+                cut("const pct = ", "\n// the search hits") +
+                cut('// "on GLM" / "on Codex"', "// Cards are kept and patched") +
+                cut("// what a screen reader hears for a card", "// Each second the timers move on"))
+        out = subprocess.run(["node", "-e", code + PAGE_TESTS], capture_output=True, encoding="utf-8", check=True)
         cls.r = json.loads(out.stdout)
 
-    def test_states(self):
-        r = self.r
+    def test_look_is_the_sessions_own_state(self):
+        r = self.r  # background work never turns the dot green or tints the card
         self.assertEqual((r["idleNoChild"], r["idleChild"], r["busyChild"], r["askChild"], r["closed"]),
+                         ("idle", "idle", "busy", "ask", ""))
+
+    def test_group_counts_background_work(self):
+        r = self.r
+        self.assertEqual((r["gIdleNoChild"], r["gIdleChild"], r["gBusyChild"], r["gAskChild"], r["gClosed"]),
                          ("idle", "busy", "busy", "ask", ""))
 
     def test_timer_source(self):
@@ -148,9 +169,15 @@ class Page(unittest.TestCase):
         self.assertIsNone(r["idleNoChildSince"])
 
     def test_words(self):
-        self.assertEqual(self.r["saidIdleChild"], "Working in the background, 3:10")
-        self.assertEqual(self.r["saidBusyChild"], "Working, 0:40")
-        self.assertEqual(self.r["saidChildNoStart"], "Working")
+        r = self.r  # the dot never says working for background work alone; the badge says it, with its time
+        self.assertEqual(r["saidIdleChild"], "Open, waiting for you")
+        self.assertEqual(r["saidBusyChild"], "Working, 0:40")
+        self.assertEqual(r["saidBusyNoTurn"], "Working")
+        self.assertEqual(r["badgeOne"], "1 background run, 3:10")
+        self.assertEqual(r["badgeTwo"], "2 background runs, 3:10")
+        self.assertEqual(r["badgeNoStart"], "1 background run")
+        self.assertEqual(r["badgeTip"], "1 background run, 3:10\nrun · mindmap · 3 min")
+        self.assertEqual(r["labelIdleChild"], "b, open, waiting for you, C:/b, 1 background run, 3:10")
 
     def test_order(self):
         self.assertEqual(self.r["order"], ["asking-with-child", "working", "old-delegating", "new-idle", "old-idle", "closed"])
