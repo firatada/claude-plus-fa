@@ -203,6 +203,7 @@ async function poll() {
     first = false;
     const f = [$("glm"), $("codex")].find(b => b.classList.contains("go")) || $("glm");
     f.focus();
+    if (window.FAIL) { $("fail").textContent = window.FAIL; $("fail").hidden = false; render(); }
     if (window.PRESS) choose(window.PRESS);  // the preview only: press a button on its own
   }
 }
@@ -444,14 +445,164 @@ def thread_file(thread):
     return max(hits, key=os.path.getmtime) if hits else None
 
 
+# What Codex is given (2026-11-21). Codex's import takes every turn of the file in order, every compaction's
+# summary included, and ignores the compact boundaries: a long session (414 MB, 23 compactions) became a
+# 1,591,013-token thread for a 500,000-token model, whose own compaction then failed on every prompt
+# ("Codex ran out of room in the model's context window"). So Codex gets a copy holding only what Claude
+# itself still had: the last compact boundary, its summary, the messages the compaction preserved and
+# everything after; and if that is still over CODEX_BUDGET, the summary and the most recent turns that fit.
+# The Claude transcript itself is never cut.
+# CODEX_BUDGET: the smallest window a Codex model offers is 272,000 tokens (~/.codex/models_cache.json,
+# 2026-11-21), 95 % of it usable; Codex's instructions and tools take ~15,000. 100,000 of carried history
+# leaves ~140,000 to work before Codex compacts, and its compaction still fits in the window. Claude
+# itself restarts after a compaction with ~35,000 and works up to ~200,000.
+CODEX_BUDGET = 100000  # tokens as Codex counts them: characters / 4
+CODEX_CEILING = 2 * CODEX_BUDGET  # an import Codex counts above this is cut again, smaller
+RESULT_MAX = 4000  # characters of a tool result Codex's import keeps (Codex CLI 0.164.0)
+
+
+def codex_cost(o):
+    """Characters Codex's import makes of one transcript line: user and assistant text and tool calls whole,
+    tool results cut to RESULT_MAX; thinking, images, attachments, meta and sidechain lines dropped (all seen
+    2026-11-21). Over the real 414 MB transcript this gave 1,788,531 tokens where Codex counted 1,591,013."""
+    msg = o.get("message")
+    if o.get("isSidechain") or o.get("isMeta") or o.get("type") not in ("user", "assistant") or not isinstance(msg, dict):
+        return 0
+    content = msg.get("content")
+    if isinstance(content, str):
+        return len(content) + 20
+    n = 0
+    for b in content if isinstance(content, list) else []:
+        kind = b.get("type") if isinstance(b, dict) else None
+        if kind == "text":
+            n += len(b.get("text") or "") + 20
+        elif kind == "tool_use":
+            n += len(json.dumps(b.get("input"), ensure_ascii=False)) + len(b.get("name") or "") + 40
+        elif kind == "tool_result":
+            n += min(len(text_of(b.get("content"))), RESULT_MAX) + 60
+    return n
+
+
+def is_prompt(o):
+    """A prompt the user typed: where a turn starts (not a tool result, a meta line or a compaction summary)."""
+    msg = o.get("message")
+    if o.get("type") != "user" or o.get("isMeta") or o.get("isSidechain") or o.get("isCompactSummary") \
+            or not isinstance(msg, dict):
+        return False
+    content = msg.get("content")
+    return isinstance(content, str) or any(isinstance(b, dict) and b.get("type") == "text" for b in content or [])
+
+
+def codex_cut(source, budget=CODEX_BUDGET):
+    """The lines of the transcript Codex is given, as indexes into rows [(offset, length)], or None when it can
+    take the whole file (no compaction and within the budget)."""
+    rows, cost, kind, ids, last, meta = [], [], [], {}, None, None
+    with open(source, "rb") as f:
+        offset = 0
+        for raw in f:
+            try:
+                o = json.loads(raw)
+            except ValueError:
+                o = None
+            o = o if isinstance(o, dict) else {}
+            k = ("boundary" if o.get("subtype") == "compact_boundary" and not o.get("isSidechain") else
+                 "summary" if o.get("isCompactSummary") else "prompt" if is_prompt(o) else "")
+            if k == "boundary":
+                last, meta = len(rows), o.get("compactMetadata")
+            if isinstance(o.get("uuid"), str):
+                ids[o["uuid"]] = (len(rows), o.get("parentUuid"))
+            rows.append((offset, len(raw)))
+            cost.append(codex_cost(o))
+            kind.append(k)
+            offset += len(raw)
+    room = budget * 4
+    head, preserved, start = [], [], 0
+    if last is not None:
+        head = [last]
+        start = last + 1
+        if start < len(rows) and kind[start] == "summary":
+            head.append(start)
+            start += 1
+        # the messages the compaction kept as they were (Claude Code puts them after the summary): walk the
+        # chain back from its tail to its head; nothing is guessed when the chain is broken
+        seg = (meta or {}).get("preservedSegment") or {}
+        at, chain = seg.get("tailUuid"), []
+        while at in ids and ids[at][0] < last and len(chain) < len(rows):
+            chain.append(ids[at][0])
+            if at == seg.get("headUuid"):
+                preserved = chain[::-1]
+                break
+            at = ids[at][1]
+        room -= sum(cost[i] for i in head)
+    body = list(range(start, len(rows)))
+    if sum(cost[i] for i in preserved + body) <= room:
+        return None if last is None else (rows, head + preserved + body)
+    # too big even so: the most recent turns that fit, each from its prompt on
+    tail = [0] * (len(rows) + 1)
+    for i in range(len(rows) - 1, start - 1, -1):
+        tail[i] = tail[i + 1] + cost[i]
+    fits = [i for i in body if kind[i] == "prompt" and tail[i] <= room]
+    if fits:
+        return rows, head + list(range(fits[0], len(rows)))
+    # the last turn alone is over: its prompt and the latest of what follows that fits
+    prompts = [i for i in body if kind[i] == "prompt"]
+    p = prompts[-1] if prompts else start
+    room -= cost[p]
+    t = next((i for i in range(p + 1, len(rows)) if tail[i] <= room), len(rows))
+    return rows, head + [p] + list(range(t, len(rows)))
+
+
+def write_cut(source, rows, keep, folder):
+    """A copy of the chosen lines in folder, in that order; the transcript itself is only read."""
+    os.makedirs(folder, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d_%H%M%S")
+    copy, n = os.path.join(folder, stamp + ".jsonl"), 1
+    while os.path.exists(copy):
+        n += 1
+        copy = os.path.join(folder, "%s-%d.jsonl" % (stamp, n))
+    with open(source, "rb") as f, open(copy, "wb") as out:
+        for i in keep:
+            f.seek(rows[i][0])
+            line = f.read(rows[i][1])
+            out.write(line if line.endswith(b"\n") else line + b"\n")
+    return copy
+
+
+def imported_tokens(thread):
+    """The size Codex gave the imported history (the import's last token_count), or None."""
+    tokens, path = None, thread_file(thread)
+    for o in read_from(path, 0) if path else []:
+        p = o.get("payload") or {}
+        if o.get("type") == "event_msg" and p.get("type") == "token_count":
+            tokens = ((p.get("info") or {}).get("total_token_usage") or {}).get("total_tokens", tokens)
+    return tokens
+
+
 def transfer(transcript, cwd):
     """Import a Claude transcript into a resumable Codex thread with the Codex plugin's own transfer
-    (codex-companion.mjs transfer --source <jsonl>; it runs without Claude's model). Returns the thread id;
-    raises RuntimeError with the reason."""
+    (codex-companion.mjs transfer --source <jsonl>; it runs without Claude's model), cut to what fits (see
+    CODEX_BUDGET). Returns (thread id, whether the history was cut); raises RuntimeError with the reason."""
+    source = os.path.realpath(transcript)
+    budget = CODEX_BUDGET
+    for _ in range(2):
+        cut = codex_cut(source, budget)
+        copy = None
+        if cut:
+            copy = write_cut(source, cut[0], cut[1], os.path.join(os.path.splitext(source)[0], "codex-transfer"))
+        thread = import_once(copy or source, cwd)
+        tokens = imported_tokens(thread)
+        if not tokens or tokens <= CODEX_CEILING:
+            return thread, bool(cut)
+        # Codex counted far more than the estimate (a later import that keeps more): once more, smaller
+        budget = int(budget * CODEX_BUDGET / tokens)
+    raise RuntimeError("The conversation is too long for Codex (%d tokens after cutting it)." % tokens)
+
+
+def import_once(source, cwd):
+    """One import through the plugin; the thread id."""
     script = companion()
     if not script:
         raise RuntimeError("The Codex plugin is not installed.")
-    source = os.path.realpath(transcript)
     if any(same_path(str(r.get("source_path", "")), source) for r in ledger()):
         # Codex imports a file once: a second import of the same path is skipped, even after the transcript
         # grew (seen 2026-11-17). A session that comes to Codex again is imported from a copy, kept in the
@@ -482,11 +633,52 @@ def transfer(transcript, cwd):
     return thread
 
 
-def open_codex(thread, cwd, skip):
+def open_codex(thread, cwd, skip, whole=None):
+    """Codex's window on the thread, with the continue prompt; whole: the transcript, when Codex was given
+    only its latest part, so Codex can look further back in it."""
     cmd = "codex resume " + thread
     if skip:
         cmd += " --dangerously-bypass-approvals-and-sandbox"
-    return new_console(cmd + ' "%s"' % CONTINUE, cwd=cwd, env=clean_env())
+    return new_console(cmd + ' "%s"' % codex_prompt(whole), cwd=cwd, env=clean_env())
+
+
+def codex_prompt(whole=None):
+    prompt = CONTINUE
+    if whole:
+        prompt += (" Only the latest part of this conversation was brought over; the whole Claude transcript is "
+                   + whole.replace('"', "") + " if you need something earlier.")
+    return prompt
+
+
+WATCH = 180  # seconds the hook watches Codex's first turn in its new window
+
+
+def first_turn_error(path, offset, console, wait=WATCH):
+    """Codex's error when its first turn in the new window ended with one (2026-11-21, a history too big for
+    its window: "Error running remote compact task: Codex ran out of room in the model's context window..."),
+    None when the turn ended well, is still running after wait seconds, or the window is gone."""
+    end = time.time() + wait
+    while True:
+        gone = console.poll() is not None or time.time() > end  # then one last read
+        for o in read_from(path, offset):
+            p = o.get("payload") or {}
+            if o.get("type") != "event_msg":
+                continue
+            if p.get("type") == "error":
+                return str(p.get("message") or "Codex reported an error.")
+            if p.get("type") in ("task_complete", "turn_aborted"):
+                e = p.get("error")
+                if not e:
+                    return None
+                return str((e.get("message") if isinstance(e, dict) else e) or "Codex reported an error.")
+        if gone:
+            return None
+        time.sleep(1)
+
+
+def stopped_text(error):
+    return ("Codex stopped with an error: \u201c%s\u201d Close its window, then continue with GLM, or Cancel "
+            "and wait for Claude's limit to reset." % error.strip())
 
 
 # ---------- the record the Agent Panel reads to bring the session back to Claude ----------
@@ -845,12 +1037,13 @@ def codex_back_prompt(rec, now=None):
 
 
 # ---------- the questions ----------
-def ask_out(folder, forward=True, transcript=None, cwd=None, preview=None):
+def ask_out(folder, forward=True, transcript=None, cwd=None, preview=None, error=None):
     """The way out. Returns ("glm", None), ("codex", thread id) or (None, None). The Codex transfer runs while
     the window shows its working line, so a failure is shown there and the user can pick again.
     preview: {"glm": bool or None, "codex": dict or None, "open": "glm"/"codex"/None}; nothing is transferred,
-    started or opened, and a forced value replaces the real check."""
-    result = {"via": None, "thread": None}
+    started or opened, and a forced value replaces the real check. error: shown in red as the window opens
+    (Codex's first turn failed in the window this one opened). Returns (via, thread, whether it was cut)."""
+    result = {"via": None, "thread": None, "cut": False}
     preview_on = preview is not None
     preview = preview or {}
 
@@ -866,7 +1059,7 @@ def ask_out(folder, forward=True, transcript=None, cwd=None, preview=None):
                     if preview_on:  # the preview's failed transfer: the working line, then a made-up reason
                         time.sleep(2)
                         raise RuntimeError("Codex did not import the conversation.")
-                    result["thread"] = transfer(transcript, cwd)
+                    result["thread"], result["cut"] = transfer(transcript, cwd)
                 except Exception as e:
                     return {"ok": False, "error": "Could not move it to Codex: %s" % e}
             result["via"] = via
@@ -893,8 +1086,11 @@ def ask_out(folder, forward=True, transcript=None, cwd=None, preview=None):
         page = page.replace("<script>", '<script>window.OPEN = "%s";' % preview["open"], 1)
     if preview.get("press"):
         page = page.replace("<script>", '<script>window.PRESS = "%s";' % preview["press"], 1)
+    error = error or preview.get("error")
+    if error:
+        page = page.replace("<script>", "<script>window.FAIL = %s;" % json.dumps(stopped_text(error)), 1)
     show(TITLE, page, Api(), forward, width=540)
-    return result["via"], result["thread"]
+    return result["via"], result["thread"], result["cut"]
 
 
 def ask_native(folder):
@@ -917,7 +1113,7 @@ def ask_return(answer_file, folder, session, later, via="GLM"):
 
 def preview_args(args):
     """--glm on|off, --codex ready|cli|plugin|login (the piece that is missing; 'none' = all three), --open glm|codex"""
-    opts = {"glm": None, "codex": None, "open": None, "press": None, "fail": False}
+    opts = {"glm": None, "codex": None, "open": None, "press": None, "fail": False, "error": None}
     while args:
         k = args.pop(0)
         v = args.pop(0) if args else ""
@@ -933,6 +1129,10 @@ def preview_args(args):
             opts["open"] = v
         elif k == "--press":
             opts["press"] = v
+        elif k == "--stopped":  # the window as it opens again after Codex's first turn failed
+            opts["error"] = ("Error running remote compact task: Codex ran out of room in the model's context "
+                             "window. Start a new thread or clear earlier history before retrying.")
+            args.insert(0, v) if v else None
         elif k == "--fail":
             opts["fail"] = True
             args.insert(0, v) if v else None
@@ -941,9 +1141,10 @@ def preview_args(args):
 
 def main():
     # python glm-fallback.py --preview [folder] [--glm on|off] [--codex ready|cli|plugin|login|none] [--open glm|codex]
-    # [--press glm|codex] [--fail]: the dialog alone, its answer printed; nothing is sent, transferred or started,
+    # [--press glm|codex] [--fail] [--stopped]: the dialog alone, its answer printed; nothing is sent, transferred or started,
     # and no key is pressed. For checking its look; --press presses a button on its own, --fail makes Codex's
-    # transfer fail after 2 s (the working line, then the failure). --preview-return [folder] [GLM|Codex]: the way back's dialog.
+    # transfer fail after 2 s (the working line, then the failure), --stopped opens it as it reopens after Codex's
+    # first turn failed. --preview-return [folder] [GLM|Codex]: the way back's dialog.
     args = sys.argv[1:]
     if args[:1] == ["--preview"]:
         folder = args[1] if len(args) > 1 and not args[1].startswith("--") else "example"
@@ -975,31 +1176,38 @@ def main():
     cwd = data.get("cwd") or os.getcwd()
     transcript = data.get("transcript_path")
     folder = os.path.basename(cwd.rstrip("\\/")) or cwd
-    try:
-        import webview  # noqa: F401
-        via, thread = ask_out(folder, transcript=transcript, cwd=cwd)
-    except ImportError:
-        via, thread = ("glm" if has_key() and ask_native(folder) else None), None
-    if not via:
-        return
-
     skip = data.get("permission_mode", "bypassPermissions") == "bypassPermissions"
     orig = claude_pid(sid)
-    extra = {}
-    if via == "codex":
-        path = thread_file(thread)
-        extra = {"codex_thread": thread, "codex_file": path,
-                 "codex_from": os.path.getsize(path) if path else 0}
-        console = open_codex(thread, cwd, skip)
-    else:
-        cmd = "glm --resume " + sid
-        if skip:
-            cmd += " --dangerously-skip-permissions"
-        console = new_console(cmd + ' "%s"' % CONTINUE, cwd=cwd)
-    try:
-        record_switch(sid, cwd, console.pid, orig, skip, via=via, transcript=transcript, **extra)
-    except OSError:
-        pass  # the way back is a convenience; the move has happened either way
+    error = None
+    while True:
+        try:
+            import webview  # noqa: F401
+            via, thread, cut = ask_out(folder, transcript=transcript, cwd=cwd, error=error)
+        except ImportError:
+            via, thread, cut = ("glm" if has_key() and ask_native(folder) else None), None, False
+        if not via:
+            return
+        extra = {}
+        if via == "codex":
+            path = thread_file(thread)
+            extra = {"codex_thread": thread, "codex_file": path,
+                     "codex_from": os.path.getsize(path) if path else 0}
+            console = open_codex(thread, cwd, skip, whole=transcript if cut else None)
+        else:
+            cmd = "glm --resume " + sid
+            if skip:
+                cmd += " --dangerously-skip-permissions"
+            console = new_console(cmd + ' "%s"' % CONTINUE, cwd=cwd)
+        try:
+            record_switch(sid, cwd, console.pid, orig, skip, via=via, transcript=transcript, **extra)
+        except OSError:
+            pass  # the way back is a convenience; the move has happened either way
+        # Codex's first turn: if it ends in an error (a history its model cannot hold), the user is not left
+        # in a dead window: the way-out window opens again and says what happened
+        error = first_turn_error(extra["codex_file"], extra["codex_from"], console) \
+            if via == "codex" and extra["codex_file"] else None
+        if not error:
+            return
 
 
 if __name__ == "__main__":
