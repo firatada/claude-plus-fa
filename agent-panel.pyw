@@ -12,6 +12,8 @@
 # shows one large at once, with Open and Delete (to the Recycle Bin). While a session's terminal is in front,
 # Ctrl+V and Alt+V paste a copied picture as its file path, which Claude Code attaches at the cursor without its
 # PowerShell clipboard read (agent-panel-paste.py, a process of its own, started and watched by watch_paste()).
+# A link Ctrl+clicked in a session's terminal whose program Windows keeps behind it (the foreground lock) is brought
+# to the front (follow_links()).
 import base64, ctypes, ctypes.wintypes as wt, datetime, glob, importlib.util, io, json, math, os, queue, re, shutil, subprocess, sys, tempfile, threading, time
 import urllib.request
 import webview
@@ -241,6 +243,10 @@ STATUS_API = "https://status.claude.com/api/v2/summary.json"  # Statuspage's pub
 STATUS_EVERY = 180     # seconds between reads of STATUS_API
 LAUNCH_WAIT = 8        # seconds a session opened from the panel is not opened again while Claude Code starts
 LIFT_AGAIN = (0.1, 0.2, 0.4, 0.8)  # seconds between looks after a session's window comes to the front (stay_over)
+LINK_WAIT = 3          # seconds from a Ctrl+click in a session's terminal to the flash of the window Windows refused
+                       # the foreground to; a later flash is left alone (link_raise)
+CLICK_EVERY = 0.02     # seconds between looks at Ctrl and the primary mouse button while a session window is in front
+LINKS_LOG = os.path.join(STATE_DIR, "links.log")  # every flash judged while a session window was in front
 CREATE_NEW_CONSOLE = 0x10
 CREATE_NO_WINDOW = 0x08000000
 
@@ -644,14 +650,10 @@ def copied_in(owner, title, before, sessions, window):
     return tab_session(owner, title, sessions, window)
 
 
-def focus_session(s, others=()):
-    """Raise the window of an open session where it was (restored if minimised). When its title shows another
-    listed session's name (others: those names, through shown_name), the window is a terminal holding several
-    session tabs: step through them until the one titled with this session's name is showing. Any other title
-    (a new session's "✳ Claude Code", or anything else) sends no key: the window is only raised."""
-    hwnd = s.get("pid") and window_of(s["pid"])
-    if not hwnd:
-        return False
+def bring_front(hwnd):
+    """Put a window in front where it was: restored only if minimised (never maximised), the foreground (a lone
+    Alt lets this process take it when Windows refuses), and the top of the ordinary windows. True when it is the
+    foreground window afterwards."""
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE: back to the size and place it had before
     user32.SetForegroundWindow(hwnd)
@@ -663,6 +665,51 @@ def focus_session(s, others=()):
     flags = 0x0001 | 0x0002 | 0x0040  # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
     user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
     user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
+    return user32.GetForegroundWindow() == hwnd
+
+
+def link_raise(flash, shown, fg, wins, pid_of, click, now, used, wait=LINK_WAIT):
+    """A window Windows kept behind a session's terminal right after a Ctrl+click in it (the link it opened): True
+    when it is to be brought forward. flash: a window Windows flashed (HSHELL_FLASH: refused the foreground, or
+    asking for attention); shown: it is a visible top-level window; fg: the foreground window now; wins: the
+    session windows; click: (window, time) of the last Ctrl+click of the primary button on a session window, or
+    None; used: clicks already answered. All of these must hold: the user is still in that session's terminal
+    (fg is the clicked session window), the flash is another program's visible window (not the terminal, not
+    another window of the terminal's process), at most wait seconds after the click, the click not answered
+    before. So an app flashing for attention while the user is elsewhere or without a Ctrl+click, a late flash,
+    and WSLg's hidden window that flashes every second keep flashing."""
+    if not flash or not shown or not click or flash == fg or flash in wins or fg not in wins:
+        return False
+    win, at = click
+    if win != fg or click in used or not -0.5 <= now - at <= wait:
+        return False
+    term = pid_of(fg)
+    return bool(term) and pid_of(flash) != term
+
+
+def links_log(*a):
+    """A line in LINKS_LOG, cut back to its last 32 KB past 64 KB."""
+    try:
+        if os.path.exists(LINKS_LOG) and os.path.getsize(LINKS_LOG) > 65536:
+            with open(LINKS_LOG, encoding="utf-8", errors="replace") as f:
+                tail = f.read()[-32768:]
+            with open(LINKS_LOG, "w", encoding="utf-8") as f:
+                f.write(tail)
+        with open(LINKS_LOG, "a", encoding="utf-8") as f:
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), " ".join(str(x) for x in a)))
+    except OSError:
+        pass
+
+
+def focus_session(s, others=()):
+    """Raise the window of an open session where it was (restored if minimised). When its title shows another
+    listed session's name (others: those names, through shown_name), the window is a terminal holding several
+    session tabs: step through them until the one titled with this session's name is showing. Any other title
+    (a new session's "✳ Claude Code", or anything else) sends no key: the window is only raised."""
+    hwnd = s.get("pid") and window_of(s["pid"])
+    if not hwnd:
+        return False
+    bring_front(hwnd)
     name = s.get("name")
     title = window_title(hwnd)
     if name and name not in title and shown_name(title) in others:
@@ -1792,6 +1839,9 @@ class Panel:
         self.claims_swept = 0
         self.nc = None  # the DWM frame policy last set (see frame())
         self.front = None  # the last window that came to the front, not counting the panel's own (follow_front())
+        self.link_click = None  # (session window, time) of the last Ctrl+click on one (watch_clicks())
+        self.links_used = set()  # the clicks a window was already brought forward for (on_flash())
+        self.links_told = {}  # flashing window -> when links.log last said it was left flashing
         self.wins = {}  # pid of an open session -> the window showing it (window_of), kept between scans
         self.paste_proc, self.paste_windows = None, None  # the paste key's process; the windows last written for it
         self.opening = threading.Lock()  # open() calls arrive on threads of their own, at once
@@ -1867,6 +1917,8 @@ class Panel:
         self.place()
         user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
         threading.Thread(target=self.follow_front, daemon=True).start()
+        threading.Thread(target=self.follow_links, daemon=True).start()
+        threading.Thread(target=self.watch_clicks, daemon=True).start()
         threading.Thread(target=hotkey_loop, args=(self.events,), daemon=True).start()
         threading.Thread(target=self.watch_status, daemon=True).start()
         threading.Thread(target=self.watch_paste, daemon=True).start()
@@ -2231,6 +2283,98 @@ class Panel:
                 return False
             h = user32.GetWindow(h, 2)
         return False
+
+    # ----- a link opened from a session's terminal comes to the front -----
+    def follow_links(self):
+        """Its own thread: a hidden window on the shell hook (RegisterShellHookWindow). A Ctrl+clicked link in
+        Windows Terminal is opened with ShellExecute; when the program that shows it was already running (Chrome,
+        VS Code, ...), that program is refused the foreground by Windows' foreground lock and its window stays
+        behind the terminal, its taskbar button flashing (HSHELL_FLASH). on_flash() brings such a window forward,
+        and nothing else (see link_raise())."""
+        shell = user32.RegisterWindowMessageW("SHELLHOOK")
+
+        def proc(h, m, w, l):
+            if m == shell and w == 0x8006:  # HSHELL_FLASH (HSHELL_REDRAW | HSHELL_HIGHBIT); lParam: the window
+                try:
+                    self.on_flash(int(l))
+                except Exception as e:
+                    links_log("error", repr(e))
+                return 0
+            return DefWindowProc(h, m, w, l)
+        self.links_proc = WNDPROC(proc)  # kept alive with the window
+        inst = kernel32.GetModuleHandleW(None)
+        wc = WNDCLASSW(lpfnWndProc=self.links_proc, hInstance=inst, lpszClassName="ClaudePlusFAAgentPanelLinks")
+        user32.RegisterClassW(ctypes.byref(wc))
+        # never shown: WS_POPUP, WS_EX_TOOLWINDOW; top-level, as the shell hook wants (a message-only window is not)
+        hwnd = CreateWindowEx(0x80, "ClaudePlusFAAgentPanelLinks", "Agent Panel Links", 0x80000000, 0, 0, 0, 0,
+                              None, None, inst, None)
+        if not hwnd or not user32.RegisterShellHookWindow(hwnd):
+            return
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    def watch_clicks(self):
+        """Its own thread: remembers the last Ctrl+click of the primary mouse button on a session window, as
+        self.link_click = (that window, time). While a session window is in front, Ctrl and the button are read
+        every CLICK_EVERY with GetAsyncKeyState (no hook: the mouse and the keyboard never wait for this process,
+        and no key is read but Ctrl); otherwise it only looks every 0.25 s whether one has come to the front. A press
+        is the button going down between two looks, or Windows' pressed-since-last-look bit for a tap shorter than
+        CLICK_EVERY; the window is the one under the cursor (WindowFromPoint's root), not only the foreground, so
+        a Ctrl+click that also activates a terminal counts."""
+        down, looking, pt = False, False, wt.POINT()
+        while True:
+            if user32.GetForegroundWindow() not in self.wins.values():
+                down = looking = False
+                time.sleep(0.25)
+                continue
+            button = 0x02 if user32.GetSystemMetrics(23) else 0x01  # SM_SWAPBUTTON: the primary button
+            state = user32.GetAsyncKeyState(button)
+            if not looking:  # the pressed-since bit may be from a press made elsewhere: only a held button counts
+                state, looking = state & ~1, True
+            held = bool(state & 0x8000)
+            if (held and not down or state & 1) and user32.GetAsyncKeyState(0x11) & 0x8000:  # VK_CONTROL
+                user32.GetCursorPos(ctypes.byref(pt))
+                h = user32.WindowFromPoint(pt)
+                root = h and user32.GetAncestor(h, 2)  # GA_ROOT
+                if root and root in self.wins.values():
+                    self.link_click = (root, time.time())
+            down = held
+            time.sleep(CLICK_EVERY)
+
+    def on_flash(self, flash):
+        """A window flashed. When it is the link the user just Ctrl+clicked in the session window still in front
+        (link_raise()), bring it forward with the same raise as a card click; otherwise leave it flashing. Only
+        flashes of visible windows seen while a session window is in front are logged (WSLg's hidden window
+        flashes every second, everywhere)."""
+        now, fg = time.time(), user32.GetForegroundWindow()
+        wins = set(self.wins.values())
+        if fg not in wins or not flash or own(flash):
+            return
+        cloaked = ctypes.c_int(0)
+        dwmapi.DwmGetWindowAttribute(flash, 14, ctypes.byref(cloaked), 4)  # DWMWA_CLOAKED
+        shown = bool(user32.IsWindowVisible(flash) and not cloaked.value and user32.GetAncestor(flash, 2) == flash)
+        if not shown:
+            return
+
+        def pid_of(h):
+            p = wt.DWORD()
+            user32.GetWindowThreadProcessId(h, ctypes.byref(p))
+            return p.value
+        click = self.link_click
+        self.links_used = {u for u in self.links_used if now - u[1] < 60}
+        exe = os.path.basename(image_path(pid_of(flash)) or "?")
+        if not link_raise(flash, shown, fg, wins, pid_of, click, now, self.links_used):
+            if now - self.links_told.get(flash, 0) > 30:  # a window asking for attention flashes several times
+                self.links_told = {h: t for h, t in self.links_told.items() if now - t <= 30}
+                self.links_told[flash] = now
+                links_log("left flashing:", exe, "(no Ctrl+click in this terminal in the last %d s)" % LINK_WAIT)
+            return
+        self.links_used.add(click)
+        up = bring_front(flash)
+        links_log("brought forward:" if up else "could not bring forward:", exe,
+                  "%.2f s after the Ctrl+click" % (now - click[1]))
 
     def find_windows(self):
         """The window of every open session, looked up once per process and kept: lift() runs inside the hook's

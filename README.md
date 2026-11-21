@@ -52,6 +52,7 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 
 Using it:
 - Click an open session to bring its window to the front.
+- A link you Ctrl+click in a session's terminal opens in front, even when Windows would leave the browser or editor behind the terminal.
 - Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
 - Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
 - Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Agent Panel** icon on your desktop. It starts when you sign in to Windows.
