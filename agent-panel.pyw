@@ -1603,6 +1603,49 @@ def own_window(title, visible=True):
     return found[0] if found else None
 
 
+def quiet_forms():
+    """pywebview (6.2) activates every window it makes, and a panel that may take the foreground (started at
+    sign-in, or from the window in front) handed it to each in turn, the last (the hidden preview) keeping it:
+    the form's constructor sets MinimumSize and TopMost, which WinForms applies with SetWindowPos without
+    SWP_NOACTIVATE (TopMost always; MinimumSize unless it is the 0 x 0 it already has, hence min_size=(0, 0) at
+    create_window); Form.Show() is SW_SHOW, a hidden window too (made with Show() then Hide()); on a TopMost form
+    Show() also moves the keyboard into WebView2, which takes it into its own window about 0.4 s later; and the
+    Shown handler moves it there on every window. pywebview's focus=False only adds WS_EX_NOACTIVATE, which stops
+    a click, not a call. pywebview's form is replaced, before webview.start(), by a subclass that sets TopMost
+    itself, with SWP_NOACTIVATE (WinForms then counts the form not TopMost, so Show() moves no focus), shows the
+    form first with SW_SHOWNOACTIVATE (WinForms reads that WM_SHOWWINDOW and counts it visible, so pywebview's
+    Show() has nothing left to do), and whose Shown handler keeps only its signal. A pywebview without these
+    parts is left as it is."""
+    try:
+        from webview.platforms import winforms
+        view = winforms.BrowserView
+        base = view.BrowserForm
+        base.on_shown
+    except Exception:
+        return
+
+    class Form(base):
+        def __init__(self, window, cache_dir):
+            super().__init__(window, cache_dir)
+            if window.hidden:
+                self.Opacity = 0  # never seen in its moment on screen; pywebview hides it and sets it back to 1
+            user32.ShowWindow(self.Handle.ToInt64(), 4)  # SW_SHOWNOACTIVATE
+
+        @property
+        def TopMost(self):
+            return getattr(self, "quiet_top", False)
+
+        @TopMost.setter
+        def TopMost(self, on):
+            self.quiet_top = on
+            if self.IsHandleCreated:  # HWND_TOPMOST or HWND_NOTOPMOST; SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                user32.SetWindowPos(self.Handle.ToInt64(), -1 if on else -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+
+        def on_shown(self, *_):  # bound by the constructor in place of pywebview's
+            self.shown.set()
+    view.BrowserForm = Form
+
+
 def ok(t):
     return {"t": t, "err": False}
 
@@ -1853,24 +1896,25 @@ class Panel:
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
+        # min_size=(0, 0) on every window: a minimum set as the form is made activates it (see quiet_forms())
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
-                                            frameless=True, easy_drag=False, background_color=BG)
+                                            min_size=(0, 0), frameless=True, easy_drag=False, background_color=BG)
         # the alert: its own window, made now and kept hidden until a session waits for an answer
         self.alert_hwnd, self.alert_ready, self.alert_ids, self.alerted = None, False, [], set()
         with open(ALERT_HTML, encoding="utf-8") as f:
             ahtml = f.read().replace("/*MASCOT*/", mascot_js(("asking",)), 1)
         self.alert = webview.create_window(ALERT_TITLE, html=ahtml, js_api=AlertApi(self), width=ALERT_W, height=130,
-                                           frameless=True, easy_drag=False, on_top=True, hidden=True,
+                                           min_size=(0, 0), frameless=True, easy_drag=False, on_top=True, hidden=True,
                                            focus=False, shadow=False, background_color="#FFFFFF")
         # the strip of the last three screenshots: likewise its own window, owned by the panel, never focused
         self.strip_hwnd, self.strip_ready, self.strip_items, self.strip_key = None, False, [], None
         self.strip_on, self.strip_seen, self.strip_shown = strip_wanted(), -1, False
         with open(SHOTS_HTML, encoding="utf-8") as f:
             shtml = f.read()
-        # min_size: pywebview's default 200 x 100 cut the strip's bottom edge; 26 is the reply band alone with one
-        # line (6 + 14 + QUOTE_BELOW): a window held taller than its region loses its bottom edge
+        # min_size 0 x 0 also because pywebview's default 200 x 100 cut the strip's bottom edge: a window held
+        # taller than its region loses its bottom edge
         self.strip = webview.create_window(SHOTS_TITLE, html=shtml, js_api=StripApi(self), width=360, height=82,
-                                           min_size=(100, 26), frameless=True, easy_drag=False, on_top=False,
+                                           min_size=(0, 0), frameless=True, easy_drag=False, on_top=False,
                                            hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
         # the ":" reply's numbered lists, one per session (quote_poll): the clipboard's sequence number last read,
@@ -1892,11 +1936,12 @@ class Panel:
         self.view_hwnd, self.view_ready, self.view_shown, self.view_at, self.view_sent = None, False, False, None, {}
         self.view_watch, self.view_lock = None, threading.RLock()
         self.view = webview.create_window(VIEW_TITLE, html=shtml.replace("/*MODE*/", 'window.MODE = "view";', 1),
-                                          js_api=ViewApi(self), width=640, height=400, min_size=(100, 50),
+                                          js_api=ViewApi(self), width=640, height=400, min_size=(0, 0),
                                           frameless=True, easy_drag=False, on_top=True, hidden=True, focus=False,
                                           shadow=False, background_color="#FFFFFF")
 
     def run(self):
+        quiet_forms()
         webview.start(self.main, gui="edgechromium", private_mode=True)
 
     def main(self):
@@ -1915,7 +1960,7 @@ class Panel:
         self.dock = Edge(self.hwnd)
         self.shadow = Shade(self.hwnd)
         self.place()
-        user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
+        user32.ShowWindow(self.hwnd, 4)  # SW_SHOWNOACTIVATE: the keyboard stays where the user has it
         threading.Thread(target=self.follow_front, daemon=True).start()
         threading.Thread(target=self.follow_links, daemon=True).start()
         threading.Thread(target=self.watch_clicks, daemon=True).start()
@@ -2838,11 +2883,12 @@ class Panel:
         x, y = wa.left + (wa.right - wa.left - w) // 2, wa.top + int(gap * scale)
         rgn = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, int(32 * scale), int(32 * scale))
         user32.SetWindowRgn(self.alert_hwnd, rgn, True)
-        # HWND_TOPMOST, SWP_NOACTIVATE: over everything, the keyboard stays where it was. pywebview shows
-        # it (focus=False: without activating), as WebView2 draws nothing in a window shown behind its back
+        # HWND_TOPMOST, SWP_NOACTIVATE: over everything, the keyboard stays where it was. Shown by ShowWindow,
+        # whose WM_SHOWWINDOW tells WinForms and so WebView2 (which draws nothing in a window shown by SetWindowPos
+        # alone); not pywebview's show(), which activates it (Form.Activate) and so takes the keyboard
         user32.SetWindowPos(self.alert_hwnd, -1, x, y, w, h, 0x0010)
         if not user32.IsWindowVisible(self.alert_hwnd):
-            self.alert.show()
+            user32.ShowWindow(self.alert_hwnd, 4)  # SW_SHOWNOACTIVATE
             user32.SetWindowPos(self.alert_hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
         if knock and self.opts["sound"] and os.path.exists(KNOCK):
             import winsound
@@ -2914,19 +2960,17 @@ class Panel:
         except OSError:
             pass
 
-    def wake(self, win, hwnd, topmost):
-        """pywebview's show() activates the window (Form.Activate), so it is used once per window, now, while the
-        panel is starting anyway, off screen, and the foreground handed back; from then on Win32 shows and hides it
-        without activating. Never shown by pywebview, WebView2 would draw nothing in it (see show_alert)."""
-        fg = user32.GetForegroundWindow()
+    def wake(self, hwnd, topmost):
+        """Shown once, off screen, by ShowWindow, and hidden again: WinForms reads WM_SHOWWINDOW and tells WebView2
+        it is visible, after which WebView2 draws in it however it is shown. The panel later shows it with
+        SetWindowPos, which sends no WM_SHOWWINDOW: a window only ever shown that way stays blank. Not pywebview's
+        show(): that activates it (Form.Activate) and took the foreground."""
         if topmost:
             user32.SetWindowPos(hwnd, -1, -32000, -32000, 0, 0, 0x0001 | 0x0010)  # off screen meanwhile
         else:
             user32.SetWindowPos(hwnd, 0, -32000, -32000, 0, 0, 0x0001 | 0x0004 | 0x0010)  # the same, SWP_NOZORDER
-        win.show()
+        user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
         user32.ShowWindow(hwnd, 0)
-        if fg and fg != hwnd:
-            user32.SetForegroundWindow(fg)
 
     def work_area(self, rect=None):
         """The work area of the screen nearest a rectangle (x, y, w, h), else of the panel's screen."""
@@ -2986,10 +3030,10 @@ class Panel:
             return
         if not self.strip_shown:
             user32.SetWindowLongPtrW(self.strip_hwnd, -8, self.hwnd)  # GWLP_HWNDPARENT: the owner, before it shows
-            self.wake(self.strip, self.strip_hwnd, False)
+            self.wake(self.strip_hwnd, False)
             self.strip_shown = True
         if self.view_ready and not self.view_shown:
-            self.wake(self.view, self.view_hwnd, True)
+            self.wake(self.view_hwnd, True)
             self.view_shown = True
         if self.pins and self.keeping():  # a pinned file deleted (here or elsewhere) or gone loses its pin
             gone = [a for a in self.pins if not self.shots.alive(a)]
