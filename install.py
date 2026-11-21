@@ -12,7 +12,7 @@
 #   agent-shots.html -> ~/.claude           (the strip of the last three screenshots and their large preview, over every window)
 #   agent-panel-shots.py -> ~/.claude       (the panel keeps your screenshots: Desktop\screenshots, then the pasted-into project)
 #   agent-panel-paste.py -> ~/.claude       (Ctrl+V / Alt+V paste a picture fast in a session's terminal; started by the panel)
-#   Agent Panel.lnk  -> the user's Desktop  (starts the panel, or brings the running one up)
+#   Field Agents.lnk -> the user's Desktop  (starts the panel, or brings the running one up; replaces Agent Panel.lnk)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
 #   Windows Terminal -> "copyOnSelect": true in each settings file, once (copy_on_select.py; the record in
@@ -31,7 +31,8 @@ HOOK_TIMEOUT = 3600  # the Yes/No dialog waits inside the hook
 PANEL = os.path.join(CLAUDE_DIR, "agent-panel.pyw")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_NAME = "ClaudePlusFA agent panel"
-SHORTCUT = "Agent Panel.lnk"  # on the user's Desktop
+SHORTCUT = "Field Agents.lnk"  # on the user's Desktop
+OLD_SHORTCUTS = ("Agent Panel.lnk",)  # the same icon under the panel's earlier name
 
 
 def remove_tree(path):
@@ -157,7 +158,7 @@ def ensure_key():
 
 
 def install_panel():
-    """The Agent Panel: copied, its tray library installed, started now and at every sign-in."""
+    """Field Agents (the panel): copied, its tray library installed, started now and at every sign-in."""
     os.makedirs(CLAUDE_DIR, exist_ok=True)
     stop_panel()
     remove_old_name()
@@ -174,7 +175,7 @@ def install_panel():
     r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywebview", "pystray", "pillow"],
                        capture_output=True, text=True)
     if r.returncode != 0:
-        print("WARNING could not install pywebview, pystray and pillow (%s); the Agent Panel needs them"
+        print("WARNING could not install pywebview, pystray and pillow (%s); Field Agents needs them"
               % r.stderr.strip()[-200:])
         return
     print("ok      pywebview, pystray and pillow installed")
@@ -182,7 +183,7 @@ def install_panel():
     command = '"%s" "%s"' % (pythonw, PANEL)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
         winreg.SetValueEx(k, RUN_NAME, 0, winreg.REG_SZ, command)
-    print("ok      Agent Panel starts at sign-in (HKCU\\%s\\%s)" % (RUN_KEY, RUN_NAME))
+    print("ok      Field Agents starts at sign-in (HKCU\\%s\\%s)" % (RUN_KEY, RUN_NAME))
     desktop_shortcut(pythonw)
     # without the markers of a Claude session that may be running this installer: the panel
     # passes its environment to every session it opens, and an inherited
@@ -190,7 +191,7 @@ def install_panel():
     env = {k: v for k, v in os.environ.items()
            if not k.upper().startswith(("CLAUDE", "ANTHROPIC"))}
     subprocess.Popen([pythonw, PANEL], creationflags=0x00000008, env=env)  # DETACHED_PROCESS
-    print("started the Agent Panel (the Agent Panel desktop icon or Ctrl+Alt+C brings it up; drag its header to the top or the right edge)")
+    print("started Field Agents (the Field Agents desktop icon or Ctrl+Alt+C brings it up; drag its header to the top or the right edge)")
 
 
 def desktop():
@@ -201,7 +202,7 @@ def desktop():
 
 
 def desktop_shortcut(pythonw):
-    """An "Agent Panel" icon on the Desktop: pythonw (no console) running the panel. A panel already
+    """A "Field Agents" icon on the Desktop: pythonw (no console) running the panel. A panel already
     running is brought up instead of a second copy (the .pyw's single-instance check). The same
     file is rewritten on every install, so it never doubles."""
     if not desktop():
@@ -217,9 +218,19 @@ def desktop_shortcut(pythonw):
                         "$s.Description = 'Every Claude Code session on this PC (claude-plus-fa)'; $s.Save()"],
                        env=env, capture_output=True, text=True)
     if r.returncode != 0 or not os.path.exists(link):
-        print("WARNING could not put the Agent Panel icon on the Desktop (%s)" % r.stderr.strip()[-200:])
+        print("WARNING could not put the Field Agents icon on the Desktop (%s)" % r.stderr.strip()[-200:])
         return
     print("ok      desktop icon %s" % link)
+    for old in OLD_SHORTCUTS:  # the icon an earlier install wrote, only if it starts our panel
+        path = os.path.join(desktop(), old)
+        try:
+            with open(path, "rb") as f:
+                ours = "agent-panel.pyw".encode("utf-16-le") in f.read()
+        except OSError:
+            continue
+        if ours:
+            os.remove(path)
+            print("deleted %s" % path)
 
 
 def stop_panel():

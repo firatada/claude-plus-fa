@@ -3,17 +3,18 @@
 What is true now, nothing else. How it got here (test runs, measurements, fixes, the maintainer's requests word for word) is in [`trials.md`](./trials.md), each block headed with its line in the old file. Why each choice was made: the maintainer's mindmap page `claude-plus-fa.md`, Decisions. `~` is the user's home; paths without one are relative to the repo.
 
 ## What it is
-- Claude Code add-ons for Windows: limit fallback to GLM or Codex and back, `glm` command, status line with prompt recall, context guard, compaction read-back, start from `handoff.md`, Agent Panel (session list, alert, tray, screenshots, reply to passages, paste key, links to the front).
+- Claude Code add-ons for Windows: limit fallback to GLM or Codex and back, `glm` command, status line with prompt recall, context guard, compaction read-back, start from `handoff.md`, Field Agents (the panel; session list, alert, tray, screenshots, reply to passages, paste key, links to the front).
+- The panel's user-visible name is **Field Agents** (Agent Panel until 2026-11-22); internal names keep `agent-panel` (files, state and mascot folders, mutex and events, Run value).
 - Public repo `firatada/claude-plus-fa` (MIT), one code base for everyone; the maintainer's own behaviour differs only through `~/.claude/claude-plus.local.json`, which the installer never writes.
 - Windows only (WebView2, cmd). The move to Codex has run on a real usage-limit hit (2026-11-21); the move to GLM and the way back only in tests and harnesses (see `trials.md`).
 
 ## Repo and publishing
-- `main` is the public branch, tracking `origin` = https://github.com/firatada/claude-plus-fa (old URLs of `firatada-ctrl/claude-plus` redirect); it began as one squashed commit, "Initial public release". Work on `main`.
+- `main` is the public branch, tracking `origin` = https://github.com/firatada/claude-plus-fa (old URLs of `firatada-ctrl/claude-plus` redirect). Work on `main`.
 - `history` is a local-only branch with the full development history before the release (personal paths and session links in old commits): never pushed.
 - Every push needs the maintainer's approval. Before one, scan what goes out for keys, and run `git log main -p --format='%an %ae %cn %ce%n%B' | grep -icEf .git/info/private-names.txt`, which must print 0.
 - `.git/info/private-names.txt` holds the private names (client projects, private paths and addresses, one extended regex per line); it lives in `.git/info/` because a tracked file would publish them. A hit is removed from history with `git filter-repo --refs main --replace-text`, never only by a new commit.
 - `.gitignore`: `.env`, `__pycache__/`, `handoff.md`. `archive/` is excluded locally in `.git/info/exclude`.
-- `docs/img/*.png` and `docs/agent-panel.png` are the README's pictures, taken from the real pages fed made-up sessions (never real session names).
+- `docs/img/*.png` are the README's pictures (`docs/agent-panel.png` is an older one, not linked), taken from the real pages fed made-up sessions (never real session names).
 
 ## Install, uninstall, run
 - Install or reinstall: double-click `install.cmd` (or `python install.py`); safe to rerun. Remove: double-click `uninstall.cmd` (or `python uninstall.py`). Never run uninstall on the maintainer's own profile as a test.
@@ -22,7 +23,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - `uninstall.py`: removes every hook whose command names one of `SCRIPTS` (`glm-fallback.py`, `context-guard.py`, `prompt-recall.py`, `quote-reply.py`), keeps other hooks in the same event, drops events and `hooks` left empty, removes `statusLine` only when it names `statusline.py`, deletes the installed files and the state folders `context`, `agent-panel` and `glm-return` under `~/.claude/state`, runs `copy_on_select.restore()`, removes the Desktop icon (`remove_shortcut()`). Backup `settings.json.before-claude-plus-uninstall`, only when something changes.
 - Uninstall keeps on purpose: the GLM key file, `claude-plus.local.json`, the install backup, `~/.local/bin` on PATH, `~/.claude/state/copy-on-select.json`.
 - Hooks load at session start: open sessions need a restart after install. `statusLine` does not: open sessions pick it up live.
-- The running Agent Panel uses the installed copy in `~/.claude`, not the repo; a code change reaches it only through `install.py` (which restarts it).
+- The running panel uses the installed copy in `~/.claude`, not the repo; a code change reaches it only through `install.py` (which restarts it).
 - `install.py` installs `pywebview`, `pystray` and `pillow` with `pip install --user` into the Python that runs it. `glm.cmd` does not need claudex.
 
 ## Files and where they install
@@ -34,7 +35,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 | `prompt-recall.py` | `~/.claude/hooks` | `UserPromptSubmit`: writes the last prompt for the status line |
 | `quote-reply.py` | `~/.claude/hooks` | `UserPromptSubmit`, timeout 10: reply to passages |
 | `context-guard.py` | `~/.claude/hooks` | `stop`, `precompact`, `resumed`, `started` modes |
-| `agent-panel.pyw` | `~/.claude` | the Agent Panel; started by `pythonw.exe` from `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `ClaudePlusFA agent panel` |
+| `agent-panel.pyw` | `~/.claude` | the panel (Field Agents); started by `pythonw.exe` from `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `ClaudePlusFA agent panel` |
 | `agent-panel.html` | `~/.claude` | the panel page: look and input handling |
 | `agent-alert.html` | `~/.claude` | the alert window's page |
 | `agent-panel-shots.py` | `~/.claude` | the screenshot keeper and the resident OCR worker, loaded by the panel |
@@ -72,7 +73,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 ## Limit fallback
 - The way-out dialog, the move to GLM or Codex (transfer, cut, first-turn watch, previews) and the way back to Claude (record, steps, cards, carry): [`memory/limit-fallback.md`](./memory/limit-fallback.md).
 
-## Agent Panel: sessions
+## Field Agents: sessions
 - Sessions are the `<uuid>.jsonl` files directly under `~/.claude/projects/<folder>/` (subagent and set-aside transcripts excluded), plus the same inside each WSL distro already running (`wsl -l --running`; the panel never starts one).
 - Title: the last `custom-title`, else the last `ai-title`, else the first real prompt.
 - The `cwd` used is the one whose slug (every non-alphanumeric character as `-`) equals the folder name, since a moved session lists several.
@@ -82,7 +83,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Hidden sessions, sessions whose folder is gone and headless runs (`entrypoint` `sdk-cli`) stay out of the main list and the count; the link *Hidden, Deleted and Headless (n)* adds that section after the list and scrolls to it. Cards there are not greyed; their flags say `hidden`, `folder deleted` or `headless`; a headless card's menu has no Hide.
 - Every child process gets a clean environment (`clean_env()`), so sessions it opens never inherit `CLAUDE_CODE_CHILD_SESSION`.
 
-## Agent Panel: window and instance
+## Field Agents: window and instance
 - An ordinary window over the right edge of the work area, 280 logical px wide, or a 46 px strip over the top (Top dock); never topmost, reserves no space. It registers and removes an AppBar once at start only to clear a strip left by an older copy.
 - Python pushes state with `app.update(<json>)` only when it changed; the page calls `window.pywebview.api.<ready, click, open, set_hidden, close, delete, hide, ...>`, each returning the line shown at the bottom.
 - One instance: mutex `Local\claude-plus-fa-agent-panel`. A second start (desktop icon, Run key) calls `AllowSetForegroundWindow(ASFW_ANY)`, sets the auto-reset event `Local\claude-plus-fa-agent-panel-show` and exits; the main loop polls it and the quit event every 0.2 s and calls `show()`.
@@ -91,7 +92,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Start-up takes no foreground: `quiet_forms()`, called before `webview.start()`, replaces pywebview's `BrowserView.BrowserForm` with a subclass that sets `TopMost` itself with `SWP_NOACTIVATE`, shows the form first with `SW_SHOWNOACTIVATE` and keeps only the Shown handler's signal; every `create_window` passes `min_size=(0, 0)`; `main()` shows the panel with `SW_SHOWNOACTIVATE`. A pywebview without these parts is left as is (the windows then activate again).
 - `wake()` shows the strip and preview once off screen with `ShowWindow(SW_SHOWNOACTIVATE)` and hides them; from then on Win32 alone shows and hides them (`SWP_SHOWWINDOW | SWP_NOACTIVATE`). The alert is shown the same way.
 
-## Agent Panel: look
+## Field Agents: look
 - Spark theme (`mindmap/design_themes/spark_theme`) as CSS in `agent-panel.html`; fonts Segoe UI; no dark theme. Gold only for rewards.
 - States: working = turning green arc (10 px in the dot's 8 px slot, 1 s a turn), still green tint and 1.5 px ring, and the turn timer in the age's place (`m:ss`, `h:mm:ss`, 600 weight); open and waiting = still hollow ring in `--violet` #5c3bcd; closed = grey dot; asking = red dot and a red pulse (1.2 s), the only thing that pulses. Green means working only.
 - Title, age, meta and ctx bar look the same on every card; nothing on an open card looks disabled.
@@ -107,13 +108,13 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Search: ×, Esc, matches title and full path, marks hits, count shows `matches/total`. A skeleton shows until the first scan (`scanned`).
 - Keyboard: cards are buttons (Enter or Space opens, ignoring key repeat; Shift+F10 or the menu key opens the menu, arrows walk it).
 
-## Agent Panel: order
+## Field Agents: order
 - Groups by state: asking, working, open, closed; newest transcript first within each. Done in the page (`byState()`, a stable sort on `RANK` over `groupOf()`), so both docks follow; the `.pyw` sends newest first; the set-aside section is not regrouped.
 - An open session with background work (`s.bg`) sorts in the working group; asking beats it; closed never counts.
 - A card that changes place glides 200 ms (FLIP); a new card fades in from 4 px above.
 - The order holds while the pointer is over the list, a menu or confirm is open, or the keyboard is on a card while `document.hasFocus()`; it applies the moment that ends (`letGo()`). The window's `blur` clears the hover hold.
 
-## Agent Panel: menu and clicks
+## Field Agents: menu and clicks
 - Right-click menu (HTML inside the panel, opened at the pointer and kept inside it): Back to Claude (when a record exists), Hide / Unhide, Close (open sessions only), Delete (red, pale red hover). Closes on Escape, a click outside (which does nothing else), scroll and focus loss.
 - Close and Delete confirm in two steps: the menu turns into a small card with the question, one sentence, Cancel (focused) and *Yes, Close* / *Yes, Delete*, placed under the card (above it near the bottom).
 - Close: `WM_CLOSE` to the session's window when no other open session shares it, otherwise ends the process; the transcript stays.
@@ -125,7 +126,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - A second click minimises (`SW_MINIMIZE`) when `shown_in_front()`: not minimised, the foreground before the click (`self.front`, the last non-panel foreground), and `top_window()` now; when another open session shares the window (`shared()`), its title must show this session's name.
 - The page ignores the second click of a double click (`e.detail > 1`).
 
-## Agent Panel: session windows and z-order
+## Field Agents: session windows and z-order
 - Order: session window > panel (with its shadow and screenshot strip) > every other window.
 - `follow_front()`: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` on its own thread; when the new foreground is in `self.wins` (pid → window, from `find_windows()` on every live pass), `lift(hwnd)` = `SetWindowPos(panel, after that window, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE)`; skipped while that window is `WS_EX_TOPMOST`, while hidden or dragged.
 - Own windows are filtered in the callback (`own()`), not with `WINEVENT_SKIPOWNPROCESS`.
@@ -134,7 +135,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - A session window already in front when `find_windows()` first finds it gets the panel under it at once.
 - The shadow and the strip are owned windows of the panel, so Windows keeps them directly above it; they are never moved in z-order on their own.
 
-## Agent Panel: top dock
+## Field Agents: top dock
 - `options.json` `dock` = `right` (default) or `top`, set by dragging the header or the tray's *Dock on the Right* / *Dock at the Top*; injected as `window.DOCK`.
 - On top the window spans the work area's width, `STRIP` 46 + `DROP_ROOM` 440 logical px tall, clipped by `SetWindowRgn` to the strip plus whatever is open under it (`syncRegion` in the page reports every `.pop`, `.tip`, `.say`, non-empty `#note` and open `#drop`; `region()` unions them as rounded rects). Clicks outside the region reach the windows below. The region is set before the window grows.
 - `syncRegion` waits for `pywebviewready` (`bridged`).
@@ -146,22 +147,22 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - On top a right-click menu opens at the strip's bottom edge under the tab, a message under a tab floats under the strip, and the alert opens `STRIP` px lower.
 - Drag (`drag()`, after 4 px with the button down on the header or grip): the window takes its drop shape live; the strip while the pointer is within `TOP_ZONE` 120 px of the top edge, else the column; on release the column glides to the right edge (160 ms). The button is read before the pointer.
 
-## Agent Panel: alert
+## Field Agents: alert
 - `agent-alert.html` in a second pywebview window, made hidden (`on_top`, `focus=False`, frameless, `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`), shown top centre of the monitor holding the foreground window with `ShowWindow(SW_SHOWNOACTIVATE)`, rounded by a region, sized 93 + 36 a row, 4 rows then "and n more".
 - `check_alerts()` after every live pass and scan: a session that waits joins once per wait; while its own window is in front (`in_front()`: a terminal counts only when its title shows the session's name) it is held back and announced once that window leaves; a session no longer waiting leaves; the alert hides when none is left. Nothing is marked announced before the page says `ready()`; the window is looked up in `alert_up()`.
 - Each new row plays `mascot/knock.wav` (three deep knocks, 1.3 s, made by `tools/knock-sound.py`) through `winsound` asynchronously.
 - A click on a row brings that window forward and drops the row; the cross clears the alert. Tray menu: Alerts and Alert Sound, kept in `options.json`.
 - Rows: a grid with `grid-template-columns: minmax(0, 1fr)`; the name keeps up to 60 % of the row, the folder takes the rest and loses its start (`direction: rtl` box, ellipsis on the left, path in `<bdi dir="ltr">`); the row's tooltip is the full folder, preceded by the full name when cut.
 
-## Agent Panel: tray, status, update repair, desktop icon
-- Tray icon: the 5h figure (`read_limits()`) as a rounded tile in the level colour (`LEVELS`: under 50 #16a34a, under 80 #f5a623, else #e11d48) with digits in #0a1a40 or white, whichever contrasts more; 100 shows `!` on red; no figure or one past its reset: the octopus (`tray.png`, fallback a drawn blue tile). Tooltip `Agent Panel: 5h 69 %, resets 01:40` or `Agent Panel: 5h no figure yet`.
+## Field Agents: tray, status, update repair, desktop icon
+- Tray icon: the 5h figure (`read_limits()`) as a rounded tile in the level colour (`LEVELS`: under 50 #16a34a, under 80 #f5a623, else #e11d48) with digits in #0a1a40 or white, whichever contrasts more; 100 shows `!` on red; no figure or one past its reset: the octopus (`tray.png`, fallback a drawn blue tile). Tooltip `Field Agents: 5h 69 %, resets 01:40` or `Field Agents: 5h no figure yet`.
 - Drawn at `SM_CXSMICON` (`tray_size()`) in Bahnschrift Bold Condensed (fallback Segoe UI Bold), the largest size leaving 1 px each side and 2 px above and below. The `Icon` subclass in `tray()` overrides pystray's private `_assert_icon_handle` to load a one-size ICO at exactly that size (pystray 0.19.5; recheck after an upgrade). `tray_update()` redraws only when (size, percent, reset) changes.
 - Status button `#status` right of the set-aside link (`#foot`, 24 px; on top 34 px in the strip): opens `STATUS_PAGE` https://status.claude.com/ with `os.startfile`. Its dot from `claude_status()`: GET `STATUS_API` `api/v2/summary.json` (user agent `claude-plus-fa`), on its own thread at start and every `STATUS_EVERY` 180 s; `state.claude` = `{level, text, incidents}`, `false` before the first read, `null` on failure. none = green; minor or maintenance = gold with an amber halo; major or critical = red with a red halo; anything else = hollow grey ring, never green. Tooltip: description, first unresolved incident (+ "and n more"), "Opens status.claude.com".
 - Update repair (`watch_update()` on every scan): when `~/.claude/.last-update-result.json` has `outcome` `failed` with a `timestamp` not in `update.json`, `repair_update()` on a thread: (1) the newest file in `~/.local/share/claude/versions/` that reports its own version; (2) `<it> update` (hidden, 600 s); (3) if `claude.exe` still does not start, move it aside as `claude.exe.old.<ms>` and run `<it> install <version>`; (4) if `claude.exe` starts at or above `version_to`, write a success record in Claude Code's format (`path` `native`, `outcome`/`status` `success`). Otherwise the message stays in the bottom note (the `warn` slot) until a newer attempt is recorded. No session is closed or reopened.
 - Version files have no `.exe`: started with `subprocess` `executable=` and `stdin=DEVNULL` (pythonw's own stdin is an invalid handle).
-- Desktop icon: `install.py` `desktop_shortcut()` writes `Agent Panel.lnk` on the real Desktop (`SHGetFolderPathW(CSIDL_DESKTOPDIRECTORY)`, may be OneDrive) through PowerShell's `WScript.Shell` (paths as environment variables): target the `pythonw.exe` beside the installer's Python, argument the installed `.pyw`, working folder `~/.claude`, icon `~/.claude/agent-panel-mascot/agent-panel.ico`; rewritten in place. `remove_shortcut()` deletes it only when it holds `agent-panel.pyw` in UTF-16.
+- Desktop icon: `install.py` `desktop_shortcut()` writes `Field Agents.lnk` on the real Desktop (`SHGetFolderPathW(CSIDL_DESKTOPDIRECTORY)`, may be OneDrive) through PowerShell's `WScript.Shell` (paths as environment variables): target the `pythonw.exe` beside the installer's Python, argument the installed `.pyw`, working folder `~/.claude`, icon `~/.claude/agent-panel-mascot/agent-panel.ico`; rewritten in place; then deletes `OLD_SHORTCUTS` (`Agent Panel.lnk`). `remove_shortcut()` deletes either name, each only when it holds `agent-panel.pyw` in UTF-16.
 
-## Agent Panel: links come to the front
+## Field Agents: links come to the front
 - `follow_links()`: a hidden top-level window (class `ClaudePlusFAAgentPanelLinks`, `WS_POPUP`, `WS_EX_TOOLWINDOW`, never shown) on `RegisterShellHookWindow`; on `HSHELL_FLASH` (0x8006) `on_flash()` asks `link_raise()` and, on yes, calls `bring_front()`.
 - `link_raise()` says yes only when: the foreground is a session window; the flashing window is visible, not cloaked, a root window, of another process than the terminal's and not a session window; the last primary-button Ctrl+click landed on that session window at most `LINK_WAIT` 3 s before the flash (0.5 s after allowed); that click was not answered before.
 - `watch_clicks()`: while a session window is in front, `GetAsyncKeyState` of the primary button (`SM_SWAPBUTTON`) and Ctrl every `CLICK_EVERY` 20 ms; otherwise every 0.25 s. No keyboard or mouse hook.
@@ -179,7 +180,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 ## Mascot
 - The FA hero on the panel: header 36 px (32 on top), every card 38 px on the left (28 px in a top tab). Working: running; open, asking, closed and set aside: sitting; a closed card's hero greyed by CSS (`.av.gone`: `grayscale(1)`, opacity 0.5), every other full colour. The header runs when the most pressing state in the list (ask > busy > idle) is working, else sits. Dot, tint and ring carry the state; a top tab still hides its dot while a hero shows.
 - Strips (96 px square frames, WebP, 42 KB in all): `hero-run` 8 frames, `hero-sit` 4 (rest, half breath, full breath, blink). Cut by `python -I tools/hero-export.py` from `tools/mascot-source/hero/` (`run-0..7.png`, `sit-0..3.png`: 512 px on one cell, feet on row 463, one head scale) with one square box round all twelve drawings: fit by height, run and sit keep size and place.
-- Play order in the page (`RUN`, `SIT`: `[frame, ms]` steps): run 90 ms a frame; sit rest 1.4 s, half 0.25, full 1.1, half 0.25, twice, then a 160 ms blink. A step is timed from its due time (mean 90.1 ms measured on a 60 Hz loop); reduced motion frame 0; each card starts at a random moment. Rules: `mindmap/mascot.md`.
+- Play order in the page (`RUN`, `SIT`: `[frame, ms]` steps): run 90 ms a frame; sit rest 1.4 s, half 0.25, full 1.1, half 0.25, twice, then a 160 ms blink. A step is timed from its due time; reduced motion frame 0; each card starts at a random moment. Rules: `mindmap/mascot.md`.
 - `agent-panel.pyw` inlines only `hero-run` and `hero-sit` as `window.MASCOT` data URLs (`mascot_js(only)`); without them the page keeps its old blue logo and no mascot. Both installers delete the folder with `remove_tree` before copying.
 - Still the octopus, until the maintainer decides: tray fallback `tray.png`, desktop `agent-panel.ico`, README `logo.png`, the alert's `asking` strip (56 px), the way-out dialog's `asking-purple`. `python -I tools/mascot-export.py` cuts only these from `tools/mascot-source/purple-octopus.png` (1536 x 1024 sheet; `asking` recoloured red and kept purple; logo 256 px, tray 64 px head crop, ico 16 to 256 px).
 
@@ -207,7 +208,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - `copy_on_select.py`: `files()` = every Windows Terminal settings file that exists (Store stable/Preview/Canary under `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal*_8wekyb3d8bbwe\LocalState`, unpackaged `%LOCALAPPDATA%\Microsoft\Windows Terminal`, Scoop `apps\windows-terminal*\current\settings`), deduplicated by real path. Edited as text: only the root member's value replaced, or `"copyOnSelect": true,` inserted after the root `{` (BOM, indent, line ending kept; written in place). Once per file, recorded in `copy-on-select.json`; a file already `true` recorded unchanged; backup `settings.json.before-claude-plus` once; an unparsable file skipped, not recorded. `restore()`: only records with `changed`, only while still `true`.
 
 ## Tests
-- Unit tests (all pass as of 2026-11-21): `python -I tools/test-quote-reply.py` (54), `python -I tools/test-agent-panel-state.py` (14), `python -I tools/test-paste.py` (15), `python -I tools/test-link-front.py` (15), `python -I tools/test-codex-move.py` (12, the move to Codex), `python -I tools/test-codex-way-back.py` (15, the panel's GLM and Codex steps), `python tools/test-ocr.py` (rendered pictures; `--unit` for the 7 `ocr_rows()` checks).
+- Unit tests (all pass, 2026-11-22): `python -I tools/test-quote-reply.py` (54), `python -I tools/test-agent-panel-state.py` (14), `python -I tools/test-paste.py` (15), `python -I tools/test-link-front.py` (15), `python -I tools/test-codex-move.py` (12, the move to Codex), `python -I tools/test-codex-way-back.py` (15, the panel's GLM and Codex steps), `python tools/test-ocr.py` (rendered pictures; `--unit` for the 7 `ocr_rows()` checks).
 - Page checks: the repo's `agent-panel.html` with the mascot strips put in at `/*MASCOT*/`, served from 127.0.0.1 to Playwright with a stub `pywebview`, fed made-up sessions through `app.update()`.
 - Window checks: the repo's `agent-panel.pyw` run by a throwaway driver with its mutex and event names renamed (the live panel keeps running), on a temp profile (`USERPROFILE`/`HOME` on `%TEMP%`), the keeper built without `start()`; windows captured by their own handle (`PrintWindow`, `PW_RENDERFULLCONTENT`).
 - Functions are taken out of the `.pyw` by `ast` (importing it trips the one-instance mutex and raises the running panel).
@@ -240,7 +241,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 ## Limits
 - A short 429 that ends a turn also triggers the dialog. Every project can fall back, so sensitive code goes to z.ai or OpenAI if you click Continue.
 - The old window closes once GLM holds the session or Codex has answered, unless it still runs work (subagents, a `claude -p` it started, background commands): then it closes when that ends; work the panel cannot see (a background command whose process is gone, a Monitor) does not hold it. Text typed into it and not sent is lost with it. An old window kept open for its work does not see GLM's turns (another process wrote them): a prompt typed there goes on without them.
-- The way back needs the Agent Panel running (except a hand-typed resume or prompt after Codex, which only needs the `--carry` hooks); it is answered by mouse only. So do closing the old window and the return when the Codex window closes.
+- The way back needs the panel running (except a hand-typed resume or prompt after Codex, which only needs the `--carry` hooks); it is answered by mouse only. So do closing the old window and the return when the Codex window closes.
 - A hand-typed `claude --resume <id>` after GLM fails with a model error (Claude Code resumes on the last request's model, ahead of `settings.json`, before any hook); `/model default` inside a run does not fix later resumes; `ANTHROPIC_MODEL` would, but pins every session and is not used. Workaround: `claude --resume <id> --model default` (README).
 - A hand-started `glm --resume` holding a session with a record counts as Claude holding it: a GLM record is dropped; Codex's turns so far are carried into GLM, later ones at a prompt typed there once the Codex window is closed.
 - Codex's work reaches the Claude transcript only as the record, not as Claude turns, and only when the session comes back (or at a resume by hand; a prompt typed while the Codex window is open carries nothing). The list of files written since the move may include other people's changes.
@@ -262,7 +263,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Not tested: a real mouse double click on the desktop icon; a terminal with several session tabs for `shared()`; a light taskbar on the real tray.
 
 ## Open questions
-- The busy card's last action ("Edit memory.md", "Bash: npm test") from the transcript tail: measured 2026-11-19, not built; a 64 KB tail found it in 9 of 10 transcripts in a median 3.2 ms, 256 KB in 10 of 10 in 10.1 ms. Feasible within the 2 s pass if read incrementally only for working sessions whose transcript changed; the maintainer has not decided whether to show it.
-- Manrope and Inter for the Agent Panel: offered to bundle them (Google Fonts, OFL), not chosen; the panel uses Segoe UI.
+- The busy card's last action ("Edit memory.md", "Bash: npm test") from the transcript tail: feasible within the 2 s pass (measured, see `trials.md`), not built; the maintainer has not decided whether to show it.
+- Manrope and Inter for the panel: offered to bundle them (Google Fonts, OFL), not chosen; the panel uses Segoe UI.
 - The claude-plus-fa card on firatada.com is done locally (firatada.com commit e1c3850); its deploy, with the UI Terminology page, waits for the maintainer.
 - An option, not done: the `--carry` SessionStart hook could print a hint when a resumed session's last turn was not `claude-*`.

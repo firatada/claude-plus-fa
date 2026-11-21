@@ -420,7 +420,7 @@ class Attribution(unittest.TestCase):
 
     def test_strip_follows_the_session_in_front(self):
         self.assertEqual(self.tab(100, "\u2733 mindcopy", self.sessions, self.win)["id"], "A")
-        self.assertIsNone(self.tab(500, "Agent Panel", self.sessions, self.win))
+        self.assertIsNone(self.tab(500, "Field Agents", self.sessions, self.win))
 
 
 if __name__ == "__main__":

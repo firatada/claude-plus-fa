@@ -34,16 +34,16 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows, so a long session
 
 <img src="docs/img/limit-dialog-setup.png" alt="The same window with the Set up Codex steps open: one done, two with buttons" width="540">
 
-- When the limit resets, the Agent Panel waits for GLM or Codex to finish its turn, then offers to bring the session back to Claude. Coming back from Codex, Claude first gets a record of everything Codex did, so the Claude conversation stays one piece.
+- When the limit resets, Field Agents waits for GLM or Codex to finish its turn, then offers to bring the session back to Claude. Coming back from Codex, Claude first gets a record of everything Codex did, so the Claude conversation stays one piece.
 - Close the GLM or Codex window and the session comes back to Claude by itself (from Codex with that record). After Codex, before the limit resets, Claude Code waits and goes on when it does.
-- To go back any time, right-click the session in the Agent Panel and pick **Back to Claude**.
+- To go back any time, right-click the session in Field Agents and pick **Back to Claude**.
 - The `glm` command runs Claude Code on GLM by hand, with your usual sessions and settings: `glm`, or `glm --resume <session>`.
 
-### Agent Panel
+### Field Agents
 
-<img src="docs/img/agent-panel.png" alt="The Agent Panel: one session asking, one working, one with background work, one open, three closed, usage bars at the bottom" width="280">
+<img src="docs/img/agent-panel.png" alt="Field Agents: one session asking, one working, one with background work, one open, three closed, usage bars at the bottom" width="280">
 
-Every Claude Code session on your PC in one list on the right edge of the screen, newest first, with a search box. It takes no screen space: the window you work in covers it.
+Every Claude Code session on your PC in one list on the right edge of the screen, newest first, with a search box: each session is an agent at work in the field, hence the name (it was called Agent Panel before). It takes no screen space: the window you work in covers it.
 
 - **Red**: the session asks you something. It stays at the top; a permission prompt makes its card pulse.
 - **Green**: the session is working. Its dot turns and the clock shows how long the current turn has run.
@@ -56,13 +56,13 @@ Using it:
 - A link you Ctrl+click in a session's terminal opens in front, even when Windows would leave the browser or editor behind the terminal.
 - Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
 - Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
-- Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Agent Panel** icon on your desktop. It starts when you sign in to Windows.
+- Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Field Agents** icon on your desktop. It starts when you sign in to Windows.
 - The tray icon shows your 5-hour usage as a number.
 - **Status** opens [status.claude.com](https://status.claude.com/); its dot shows whether Claude has an outage.
 - If a Claude Code update breaks `claude`, the panel repairs it with `claude update`.
 - Drag the header to the top edge to make it a row of tabs (the tray menu does this too):
 
-<img src="docs/img/agent-panel-top.png" alt="The Agent Panel docked at the top as a row of session tabs" width="880">
+<img src="docs/img/agent-panel-top.png" alt="Field Agents docked at the top as a row of session tabs" width="880">
 
 When a session starts waiting for your answer, this alert drops in at the top of the screen with three knocks. Click the session to go to it. It never takes the keyboard from what you are typing.
 
@@ -86,7 +86,7 @@ Answer Claude's questions without retyping them.
 - Sending any prompt in that session empties its list. The x on a row drops that selection.
 - `:1` inside backticks or a code block is plain text.
 - A passage is cut at 4,000 characters, and Claude is told so.
-- The numbered list needs the Agent Panel running with its strip on. Without it, `: your answer` quotes whatever is on the clipboard.
+- The numbered list needs Field Agents running with its strip on. Without it, `: your answer` quotes whatever is on the clipboard.
 - The installer turns on Windows Terminal's **Automatically copy selection to clipboard** once. In another terminal, press `Ctrl+C` after selecting.
 
 ### Screenshots in one place
@@ -129,7 +129,7 @@ The installer:
 - sets the status line only if you have none;
 - creates the z.ai key file `~/.claudex/profiles/glm/.env`;
 - turns on Windows Terminal's copy on select once, after a backup;
-- installs `pywebview`, `pystray` and `pillow`, starts the Agent Panel, adds it to Windows sign-in and puts its icon on your desktop.
+- installs `pywebview`, `pystray` and `pillow`, starts Field Agents, adds it to Windows sign-in and puts its icon on your desktop.
 
 ## Get a free z.ai key
 
@@ -161,7 +161,7 @@ Put any of these in `~/.claude/claude-plus.local.json` (the installer never chan
 | `"rule": "<where your steps live>"` | The built-in 90 % steps: Claude follows yours instead, for example `"the global CLAUDE.md, section \"Saving work\""` |
 
 - The alert and its sound: the panel's tray menu, **Alerts** and **Alert Sound**.
-- The Agent Panel: **Quit** in its tray menu (it starts again at the next sign-in).
+- Field Agents: **Quit** in its tray menu (it starts again at the next sign-in).
 - Copy on select: Windows Terminal, **Settings** > **Interaction**. It stays off, even after a reinstall.
 
 ## Uninstall
@@ -169,7 +169,7 @@ Put any of these in `~/.claude/claude-plus.local.json` (the installer never chan
 In the claude-plus-fa folder, double-click `uninstall.cmd`.
 
 - It removes its hooks, and the status line if it is this one, after a backup (`settings.json.before-claude-plus-uninstall`).
-- It closes the Agent Panel, removes it from sign-in and the desktop, and deletes the installed scripts.
+- It closes Field Agents, removes it from sign-in and the desktop, and deletes the installed scripts.
 - It turns copy on select back to how it was, unless you changed it since.
 - Your own hooks and status line stay. So do your z.ai key file, `claude-plus.local.json` and your screenshots.
 - Restart any open Claude Code session.
@@ -178,8 +178,8 @@ In the claude-plus-fa folder, double-click `uninstall.cmd`.
 
 - Windows only.
 - Codex keeps its own conversation. What it did reaches Claude as a record when the session comes back to Claude, never twice.
-- After GLM, a session you resume by hand needs `claude --resume <session> --model default`. The Agent Panel adds this for you.
-- Going back to Claude needs the Agent Panel running, except a resume by hand after Codex.
+- After GLM, a session you resume by hand needs `claude --resume <session> --model default`. Field Agents adds this for you.
+- Going back to Claude needs Field Agents running, except a resume by hand after Codex.
 
 ## License
 

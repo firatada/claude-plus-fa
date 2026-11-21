@@ -174,7 +174,7 @@ def mascot_js(only=None):
     except OSError:
         pass  # no strips: the page keeps its plain logo
     return "window.MASCOT = %s;" % json.dumps(strips)
-TITLE = "Agent Panel"
+TITLE = "Field Agents"
 SHOT_NAME = re.compile(r"^(?:(?P<pre>.*)_)?(?P<d>\d{4}-\d{2}-\d{2})_(?P<t>\d{4})(?:_\d+)?$")
 MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
 
@@ -208,10 +208,10 @@ def shot_label(path, now=None):
     return title, when
 
 
-ALERT_TITLE = "Agent Panel Alert"
+ALERT_TITLE = "Field Agents Alert"
 ALERT_W = 420          # logical pixels; the height follows the rows, as agent-alert.html lays them out
 ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
-SHOTS_TITLE = "Agent Panel Screenshots"
+SHOTS_TITLE = "Field Agents Screenshots"
 SHOT_W, SHOT_H, SHOT_PAD = 150, 94, 6  # logical pixels: a strip card (text only, no picture) and the space around
                        # and between them, as agent-shots.html lays them out
 SHOT_N = 3             # unpinned screenshots in the strip (the pinned ones come on top of these)
@@ -223,7 +223,7 @@ QUOTE_CAP = 3          # the band grows to at most 1/QUOTE_CAP of the work area'
 QUOTE_LINE = 14        # logical pixels: one line of the band; its cap is whole lines, so none shows cut in half
 QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
          os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
-VIEW_TITLE = "Agent Panel Screenshot"
+VIEW_TITLE = "Field Agents Screenshot"
 VIEW_HEAD, VIEW_PAD = 36, 8  # logical pixels: the preview's head row and the space round its picture
 VIEW_MIN_W = 320       # logical pixels: the preview is never narrower (its head needs the room)
 VIEW_MARGIN = 24       # logical pixels the preview keeps from the screen's edges and from the strip
@@ -1308,7 +1308,7 @@ class Shade:
             wc = WNDCLASSW(lpfnWndProc=self.proc, hInstance=inst, lpszClassName=self.CLASS)
             user32.RegisterClassW(ctypes.byref(wc))
             # WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE; WS_POPUP
-            self.hwnd = CreateWindowEx(0x80000 | 0x20 | 0x80 | 0x8000000, self.CLASS, "Agent Panel Shadow",
+            self.hwnd = CreateWindowEx(0x80000 | 0x20 | 0x80 | 0x8000000, self.CLASS, "Field Agents Shadow",
                                        0x80000000, 0, 0, 1, 1, self.owner, None, inst, None)
         finally:
             up.set()
@@ -1533,8 +1533,8 @@ def tray_look(key):
     """(image, tooltip) for a tray_key(): the 5h figure, or the octopus while there is none."""
     n, pct, reset = key
     if pct is None:
-        return logo_image(n), "Agent Panel: 5h no figure yet"
-    return usage_image(pct, n), "Agent Panel: 5h %d %%, resets %s" % (pct, reset)
+        return logo_image(n), "Field Agents: 5h no figure yet"
+    return usage_image(pct, n), "Field Agents: 5h %d %%, resets %s" % (pct, reset)
 
 
 def load_opts():
@@ -2373,7 +2373,7 @@ class Panel:
         wc = WNDCLASSW(lpfnWndProc=self.links_proc, hInstance=inst, lpszClassName="ClaudePlusFAAgentPanelLinks")
         user32.RegisterClassW(ctypes.byref(wc))
         # never shown: WS_POPUP, WS_EX_TOOLWINDOW; top-level, as the shell hook wants (a message-only window is not)
-        hwnd = CreateWindowEx(0x80, "ClaudePlusFAAgentPanelLinks", "Agent Panel Links", 0x80000000, 0, 0, 0, 0,
+        hwnd = CreateWindowEx(0x80, "ClaudePlusFAAgentPanelLinks", "Field Agents Links", 0x80000000, 0, 0, 0, 0,
                               None, None, inst, None)
         if not hwnd or not user32.RegisterShellHookWindow(hwnd):
             return
@@ -2744,8 +2744,8 @@ class Panel:
             name = VIA.get(via, "GLM")
             later = ("Not Now stays on %s and asks once more in %d minutes." % (name, ASK_AGAIN // 60)
                      if rec.get("asked", 0) == 0 else
-                     "Not Now stays on %s and does not ask again; Back to Claude in its card's menu in the "
-                     "Agent Panel brings it back." % name)
+                     "Not Now stays on %s and does not ask again; Back to Claude in its card's menu in "
+                     "Field Agents brings it back." % name)
             p = subprocess.Popen([sys.executable, script, "--ask-return", answer_file, rec.get("folder") or "",
                                   title, later, name], creationflags=CREATE_NO_WINDOW, env=clean_env())
             rec["asker"], rec["asker_born"], rec["asked"] = p.pid, born(p.pid), rec.get("asked", 0) + 1
