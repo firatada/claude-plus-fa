@@ -1,4 +1,6 @@
-"""Builds the Agent Panel's mascot strips from the purple octopus sheet.
+"""Builds the octopus pieces still in use from the purple octopus sheet: the alert's and the way-out
+dialog's asking strip, the README logo, the tray icon and the desktop icon. The panel's cards and
+header show the hero instead (tools/hero-export.py).
 
 Usage: python -I tools/mascot-export.py
 
@@ -7,9 +9,8 @@ two columns of six numbered rows, five frames per row, a dark label pill at each
 Each row used here is cut into its frames (alpha bands between the drawings), every frame placed
 on one square canvas per row, standing on the drawing's baseline and centred on it, so the frames
 line up when played; then scaled to 96 px frames (shown at 36 to 38 px, sharp on scaled screens),
-and recoloured to its state's dot colour: only the octopus's purple changes hue (the blue eyes, the
-white and the props keep theirs), green for working, red for asking, grey for closed; open keeps
-the octopus's own purple; the header's moods also as <name>-purple.webp, in the octopus's own colour.
+and recoloured to the alert's red: only the octopus's purple changes hue (the blue eyes, the white
+and the props keep theirs); also as <name>-purple.webp, in the octopus's own colour.
 Output: mascot/<name>.webp next to this folder's parent, one horizontal strip per name, and
 mascot/logo.png, the package's logo (256 px), mascot/tray.png, the tray icon (64 px), and
 mascot/agent-panel.ico, the desktop shortcut's icon (16 to 256 px).
@@ -25,30 +26,22 @@ OUT = os.path.join(os.path.dirname(HERE), "mascot")
 OUT_PX = 96
 # name: (column 0 or 1, row band 0..5, frames to keep in play order, colour)
 STRIPS = {
-    "calm": (0, 0, [0, 1, 2, 3, 4], "purple"),    # 1 Calm: looks around, blinks
-    "reading": (1, 0, [0, 1, 2, 3, 4], "green"),  # 2 Watching / reading a tablet
-    "sleeping": (0, 1, [0, 1, 2], "grey"),        # 3 Asleep (cap and bubble frames left out)
     "asking": (1, 3, [1, 2, 4, 2], "red"),        # 8 Puzzled, question marks (the box frame left out)
 }
-# the panel's dot colours (--green #16a34a, --red #e11d48, --gone grey) as a target hue for the
-# octopus's purple (hue about 250, median saturation 0.71, brightness 0.80), with saturation and
-# brightness scaled; green is darker than the dot's own (0.87, 0.64): a lighter green read as pale,
-# and the dot's brightness still read as too light on the octopus
-HEADER = ("calm", "reading", "asking")  # the moods the header shows (never asleep)
-# "purple" (open) is not recoloured: open is the octopus in its own colour, alive but not green
-COLOURS = {"green": (142, 1.2, 0.65), "red": (350, 0.9, 0.95), "grey": (None, 0.1, 0.85)}
+LOGO = (0, 0)  # 1 Calm: its first pose is the logo
+# the panel's red (--red #e11d48) as a target hue for the octopus's purple (hue about 250, median
+# saturation 0.71, brightness 0.80), with saturation and brightness scaled
+PURPLE_TOO = ("asking",)  # also kept in its own purple: the way-out dialog shows it
+COLOURS = {"red": (350, 0.9, 0.95)}
 
 
 def recolour(img, colour):
-    if colour == "purple":
-        return img
     hue, sat, val = COLOURS[colour]
     rgba = np.array(img)
     hsv = np.array(Image.fromarray(rgba[:, :, :3]).convert("HSV")).astype(float)
     h = hsv[:, :, 0] * 360 / 255
     purple = (h >= 232) & (h <= 320) & (hsv[:, :, 1] > 30)  # the irises (hue about 215) stay blue
-    if hue is not None:
-        hsv[:, :, 0] = np.where(purple, (h + hue - 250) % 360, h) * 255 / 360
+    hsv[:, :, 0] = np.where(purple, (h + hue - 250) % 360, h) * 255 / 360
     hsv[:, :, 1] = np.where(purple, hsv[:, :, 1] * sat, hsv[:, :, 1])
     hsv[:, :, 2] = np.where(purple, hsv[:, :, 2] * val, hsv[:, :, 2])
     rgb = np.array(Image.fromarray(hsv.clip(0, 255).astype("uint8"), "HSV").convert("RGB"))
@@ -105,12 +98,12 @@ for name, (col, band, keep, colour) in STRIPS.items():
         strip.paste(canvas.resize((OUT_PX, OUT_PX), Image.LANCZOS), (i * OUT_PX, 0))
     recolour(strip, colour).save(os.path.join(OUT, name + ".webp"), "WEBP", quality=85, method=6)
     print("wrote %s (%d frames, %s)" % (name, len(keep), colour))
-    if name in HEADER:  # the header's octopus keeps its own purple
+    if name in PURPLE_TOO:
         strip.save(os.path.join(OUT, name + "-purple.webp"), "WEBP", quality=85, method=6)
         print("wrote %s-purple" % name)
 
 # the package's logo (README, tray icon): the calm octopus's first pose in its own purple, cut close
-f = frames_of(*STRIPS["calm"][:2])[0]
+f = frames_of(*LOGO)[0]
 side = max(f.width, f.height)
 logo = Image.new("RGBA", (side, side))
 logo.paste(f, ((side - f.width) // 2, side - f.height))

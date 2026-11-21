@@ -163,7 +163,8 @@ def load_quote():
 
 
 def mascot_js(only=None):
-    """The octopus strips as data URLs: the page is handed over as a string, so it cannot load files."""
+    """The mascot strips named in `only` (all without it) as data URLs: the page is handed over as a
+    string, so it cannot load files."""
     strips = {}
     try:
         for name in sorted(os.listdir(MASCOT)):
@@ -1916,7 +1917,7 @@ class Panel:
         self.bg_seen = {}  # session id -> first read that saw its background work (ms); see bg_start()
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         with open(HTML, encoding="utf-8") as f:
-            html = f.read().replace("/*MASCOT*/", mascot_js() + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
+            html = f.read().replace("/*MASCOT*/", mascot_js(("hero-run", "hero-sit")) + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         # min_size=(0, 0) on every window: a minimum set as the form is made activates it (see quiet_forms())
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
                                             min_size=(0, 0), frameless=True, easy_drag=False, background_color=BG)

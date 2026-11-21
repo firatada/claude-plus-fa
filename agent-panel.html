@@ -11,20 +11,20 @@
      slow green breathing that "is not enough"). An open session whose child runs or subagents are running
      (the background badge) sorts with the working cards, timing that work while it has no turn of its own
      (2026-11-20: an idle session waiting on its `claude -p` sat at the bottom while it was the only one at work),
-     but its dot, tint and octopus keep its own state: only the badge's arrow turns for that work (2026-11-20,
+     but its dot, tint and hero keep its own state: only the badge's arrow turns for that work (2026-11-20,
      the maintainer: a green arc on a session that is itself idle "is misleading"). The folder path shows only
      in the title's tooltip.
-     Mascot (2026-11-09): a purple octopus (the maintainer's sheet, cut by tools/mascot-export.py into
+     Mascot (2026-11-21, replacing the 2026-11-09 octopus): the FA hero (cut by tools/hero-export.py into
      mascot/ and inlined by agent-panel.pyw as window.MASCOT). It is the header's logo and sits on every
-     card: reading a tablet while the session works, puzzled with a question mark while it asks, calm and
-     blinking now and then while it is open, asleep and still when closed, and on a card takes its
-     state's colour (green working, red asking, its own purple open, light grey closed; the strips are recoloured at export); the header's stays purple. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
+     card: running while the session works, sitting at rest (breathing, a blink now and then) in every
+     other state, greyed on a closed card; the state itself stays with the dot, tint and ring. The header
+     runs when the most pressing state in the list is working, otherwise sits. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
-     one shape": the header's logo (36, the octopus), count pill (18, pill radius) and hide and screenshot-strip buttons (26) differ, the
+     one shape": the header's logo (36, the hero), count pill (18, pill radius) and hide and screenshot-strip buttons (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
      16 px edge; card text sits inside its card.
      Top dock (2026-11-10, the maintainer): the same page as a strip over the top edge (body.top): a grip,
-     the octopus and the count, the search, the cards as one row of tabs (the ones that do not fit are not shown), the
+     the hero and the count, the search, the cards as one row of tabs (the ones that do not fit are not shown), the
      set-aside link opening its section as a list under the strip (#drop), the Status button, the usage bars, the hide
      button. The window is taller than the strip; agent-panel.pyw clips it to the strip plus whatever is
      open under it (menus, tooltips, messages, #drop), which this page reports every frame (syncRegion).
@@ -34,7 +34,7 @@
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
   --faint: #687189;          /* quiet text, still 4.5:1 on --bg */
   --gone: #8a93a8;           /* the closed dot, 3:1 on white */
-  --violet: #5c3bcd;         /* the octopus's own purple (its median body colour): open, 7:1 on white */
+  --violet: #5c3bcd;         /* the old octopus's purple (its median body colour): open, 7:1 on white */
   --blue: #1b4df5; --green: #16a34a; --gold: #f5a623; --red: #e11d48; --on-accent: #ffffff;
   --red-deep: #be123c; --red-tint: #fde8ec; --green-tint: #e7f6ec; --amber-tint: #fff7e6; --amber-line: #f5d9a8; --hit: #dbe4ff; --thumb: #d5dcea; --thumb-hover: #b5bdd0;
   --ring: 0 0 0 3px rgba(27, 77, 245, .12);
@@ -69,6 +69,8 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .mascot[hidden] { display: none; }
 .logo.mascot { width: 36px; height: 36px; }
 .av { width: 38px; height: 38px; align-self: center; }
+/* a closed card's hero, sitting, in light grey */
+.av.gone { filter: grayscale(1); opacity: .5; }
 .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 h1 { font-size: 15px; font-weight: 600; }
 #count {
@@ -134,7 +136,7 @@ h1 { font-size: 15px; font-weight: 600; }
 .dot.busy { width: 10px; height: 10px; margin: 0 -1px; background: none; border: 2px solid var(--green);
             border-right-color: transparent; animation: spin 1s linear infinite; }
 .dot.ask { background: var(--red); }
-/* open and waiting for you: a still ring in the octopus's own purple, as its octopus is, so an open card
+/* open and waiting for you: a still ring in violet (the hero's cap is the same family), so an open card
    reads as alive: neither green (working) nor grey (closed, which alone looks asleep) */
 .dot.idle { background: none; box-shadow: inset 0 0 0 1.5px var(--violet); }
 /* the whole card shows the state: working holds a still green tint and ring for as long as Claude reports
@@ -328,7 +330,7 @@ body.top #list .body { flex-direction: row; align-items: center; gap: 8px; }
 body.top #list .t { flex: 1; min-width: 0; }
 body.top #list .name { font-size: 12px; }
 body.top #list .age, body.top #list .arrow, body.top #list .cx, body.top #list .flags { display: none; }
-/* the octopus already shows the state in its colour; the dot stands in only when there is no octopus */
+/* the tab's tint and the hero (running, sitting, grey when closed) show the state; the dot stands in only without a hero */
 body.top #list .av:not([hidden]) + .body .dot { display: none; }
 body.top #list .meta { flex: none; padding-left: 0; gap: 4px; }
 body.top #list .meta .bar { width: 20px; }
@@ -425,14 +427,17 @@ let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = fals
 // docked at the top (a strip of tabs) or on the right (the column); agent-panel.pyw sets it at load and on a drag
 const onTop = () => document.body.classList.contains("top");
 
-// ----- the mascot (mindmap mascot.md: frame 0 the rest, frame 0 only under reduced motion). The
-// octopus sheet's frames are poses, not in-betweens, so each one holds about half a second. -----
-const sprites = new Map();   // element -> {key, mode, n, ms, f, at}
-// strip, how it plays, its frame count (fixed by tools/mascot-export.py), ms per frame:
-// working reads, asking looks puzzled, open blinks now and then, closed sleeps without moving
-const MOOD = {busy: ["reading", "loop", 5, 650], ask: ["asking", "loop", 4, 550],
-              idle: ["calm", "idle", 5, 450], "": ["sleeping", "still", 3, 0]};
-function sprite(el, [key, mode, n, ms]) {
+// ----- the mascot (mindmap mascot.md: frame 0 the rest, frame 0 only under reduced motion) -----
+const sprites = new Map();   // element -> {key, n, seq, i, at}
+// strip, its frame count (fixed by tools/hero-export.py), and the play order as [frame, ms] steps:
+// the run was drawn at 11 fps; the sitting hero breathes slowly (rest, half, full, half breath) and
+// blinks once every second breath
+const RUN = ["hero-run", 8, [0, 1, 2, 3, 4, 5, 6, 7].map(f => [f, 90])];
+const SIT = ["hero-sit", 4, [[0, 1400], [1, 250], [2, 1100], [1, 250], [0, 1400], [1, 250], [2, 1100], [1, 250],
+                             [0, 700], [3, 160], [0, 500]]];
+const heroOf = st => st === "busy" ? RUN : SIT;
+const frameAt = (el, n, f) => { el.style.backgroundPosition = f * 100 / (n - 1) + "% 0"; };
+function sprite(el, [key, n, seq]) {
   const src = MASCOT[key];
   el.hidden = !src;
   if (!src) return false;
@@ -440,23 +445,25 @@ function sprite(el, [key, mode, n, ms]) {
   if (s && s.key === key) return true;
   el.style.backgroundImage = `url(${src})`;
   el.style.backgroundSize = n * 100 + "% 100%";
-  el.style.backgroundPosition = "0 0";
-  // each card starts at its own moment, so the octopuses do not move in step
-  sprites.set(el, {key, mode, n, ms, f: 0, at: performance.now() + Math.random() * 1200});
+  frameAt(el, n, 0);
+  // each card starts at its own moment, so the heroes do not move in step
+  sprites.set(el, {key, n, seq, i: 0, at: performance.now() + Math.random() * 1200});
   return true;
 }
 function tick(now) {
   for (const [el, s] of sprites) {
     if (!el.isConnected) { sprites.delete(el); continue; }
-    if (still.matches || s.mode === "still") {
-      if (s.f) { s.f = 0; el.style.backgroundPosition = "0 0"; }
+    if (still.matches) {
+      if (s.i) { s.i = 0; frameAt(el, s.n, 0); }
       continue;
     }
     if (now < s.at) continue;
-    s.f = (s.f + 1) % s.n;
-    // idle: one look around, then about 5 s at rest on frame 0
-    s.at = now + (s.f === 0 && s.mode === "idle" ? 5000 : s.ms);
-    el.style.backgroundPosition = s.f * 100 / (s.n - 1) + "% 0";
+    s.i = (s.i + 1) % s.seq.length;
+    const [f, ms] = s.seq[s.i];
+    // from the step's due time, not from this frame, so the 90 ms run keeps its pace on a 60 Hz loop;
+    // after a long stall (a hidden window) it restarts from now instead of racing to catch up
+    s.at = (now - s.at > 500 ? now : s.at) + ms;
+    frameAt(el, s.n, f);
   }
   if (onTop()) syncRegion();
   requestAnimationFrame(tick);
@@ -472,19 +479,17 @@ function syncRegion() {
   const k = JSON.stringify(rs);
   // pywebview puts an empty window.pywebview.api in place before it adds the methods: calling region()
   // in that gap threw inside the frame loop, which then stopped for good (no menu, list or tooltip
-  // could show again, and the octopuses froze), so the bridge is used only once pywebviewready has fired
+  // could show again, and the mascots froze), so the bridge is used only once pywebviewready has fired
   if (k === regionKey || !bridged) return;
   regionKey = k;
   api().region(rs);
 }
 requestAnimationFrame(tick);
-// the header's octopus shows the most pressing state in the list
+// the header's hero runs when the most pressing state in the list is working, otherwise sits (full colour)
 function headerMascot() {
   const st = state.sessions.map(stateOf);
   const top = st.includes("ask") ? "ask" : st.includes("busy") ? "busy" : "idle";
-  // in the octopus's own purple, the strips' "-purple" copies: the cards carry the state colours
-  const [key, ...rest] = MOOD[top];
-  $("mark").style.display = sprite($("me"), [key + "-purple", ...rest]) ? "none" : "";
+  $("mark").style.display = sprite($("me"), heroOf(top)) ? "none" : "";
 }
 
 // hidden by the user, its folder is gone, or a headless `claude -p` run another session started:
@@ -493,7 +498,7 @@ const aside = s => s.hidden || !s.here || s.headless;
 const STATUS = {ask: "A prompt in it waits for your answer", busy: "Working", idle: "Open, waiting for you", "": "Closed"};
 // an open session with child runs or subagents running: the badge on the right of its card
 const delegated = s => !!s.status && !!(s.bg || []).length;
-// the session's own state, the only thing its dot, tint and octopus show: green means it works itself
+// the session's own state, the only thing its dot, tint and hero show: green means it works itself
 const stateOf = s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
 // its group in the list: background work puts an open session with the working ones; asking beats it
 const groupOf = s => stateOf(s) === "idle" && delegated(s) ? "busy" : stateOf(s);
@@ -555,7 +560,9 @@ function fill(el, s, q) {
   const st = stateOf(s);
   el.className = "card" + (st === "busy" || st === "ask" ? " " + st : "") + (s.here ? " here" : "") +
                  (menuFor === s.id ? " target" : "");
-  sprite(el.querySelector(".av"), MOOD[st]);
+  const av = el.querySelector(".av");
+  sprite(av, heroOf(st));
+  av.classList.toggle("gone", st === "");
   const d = el.querySelector(".dot");
   d.className = "dot " + st;
   d.dataset.full = said(s, st);
