@@ -393,9 +393,17 @@ def keep_private(project):
 # Windows' own OCR (Windows.Media.Ocr), driven from Windows PowerShell 5.1, which reaches WinRT without a package.
 # Turkish first: measured, it reads Turkish right and English with small l/I slips; en-US garbles Turkish letters.
 # One PowerShell stays resident (Ocr): started with the panel, it loads WinRT and makes the engine once, then waits
-# on stdin for a path and answers with the lines and END. It reads a picture only when Copy asks for one; starting a
-# PowerShell per Copy cost 1.2 to 2.8 s, the resident one answers in about 0.1 to 0.3 s.
+# on stdin for "<path><TAB><times>" and answers with the factor it read at, every word with its box, and END. It
+# reads a picture only when Copy asks for one; starting a PowerShell per Copy cost 1.2 to 2.8 s. read() reads the
+# picture as it is, and when its words are in a fixed-pitch face (a terminal: fixed_pitch()) reads it again enlarged,
+# cubic, by the largest whole factor up to OCR_UP that keeps it within 10000 px a side (OcrEngine.MaxImageDimension)
+# and 25 megapixels (time). Measured on rendered pictures: at a terminal's text size Windows' OCR misreads digits,
+# case and punctuation ("10." as "18.", "2048" as "2848"); enlarged 3x it reads them best (2x less well, 4x worse
+# again), while Segoe UI text reads best as it is (3x lost the dots of "ö"). The text is rebuilt from the words'
+# boxes (ocr_rows()), not from the OCR's own lines, which split a list's number column from its text.
+TAB = chr(9)  # between the path and the factor (no Windows file name holds one)
 END = "\x1e"  # closes each answer; never in OCR text
+OCR_LANG, OCR_UP = "tr", 3
 OCR_PS = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -409,7 +417,8 @@ $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRunt
 $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
 $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
 $null = [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
-$e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('tr'))
+$I = [Windows.Graphics.Imaging.BitmapInterpolationMode]::Cubic
+$e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('@LANG@'))
 if (-not $e) { $e = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
 if (-not $e) { exit 3 }
 # warm the engine on a blank bitmap made here (no picture of the user's is read): the first real read is then fast
@@ -418,13 +427,26 @@ $null = Wait ($e.RecognizeAsync($w)) ([Windows.Media.Ocr.OcrResult]); $w.Dispose
 [Console]::Out.WriteLine('READY'); [Console]::Out.Flush()
 while ($null -ne ($p = [Console]::In.ReadLine())) {
   try {
+    $p, $Up = $p.Split("`t"); $Up = [int]$Up
     $f = Wait ([Windows.Storage.StorageFile]::GetFileFromPathAsync($p)) ([Windows.Storage.StorageFile])
     $s = Wait ($f.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
     $d = Wait ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($s)) ([Windows.Graphics.Imaging.BitmapDecoder])
-    $b = Wait ($d.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    $k = [Math]::Min($Up, [Math]::Floor(10000 / [Math]::Max($d.PixelWidth, $d.PixelHeight)))
+    $k = [Math]::Min($k, [Math]::Floor([Math]::Sqrt(25e6 / ([double]$d.PixelWidth * $d.PixelHeight))))
+    $t = [Windows.Graphics.Imaging.BitmapTransform]::new()
+    if ($k -gt 1) { $t.ScaledWidth = $d.PixelWidth * $k; $t.ScaledHeight = $d.PixelHeight * $k; $t.InterpolationMode = $I }
+    else { $k = 1 }
+    $b = Wait ($d.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
+      [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied, $t,
+      [Windows.Graphics.Imaging.ExifOrientationMode]::IgnoreExifOrientation,
+      [Windows.Graphics.Imaging.ColorManagementMode]::DoNotColorManage)) ([Windows.Graphics.Imaging.SoftwareBitmap])
     $r = Wait ($e.RecognizeAsync($b)) ([Windows.Media.Ocr.OcrResult])
     $b.Dispose(); $s.Dispose()
-    foreach ($l in $r.Lines) { [Console]::Out.WriteLine($l.Text) }
+    $o = [Text.StringBuilder]::new("$k`n")
+    foreach ($l in $r.Lines) { foreach ($x in $l.Words) { $q = $x.BoundingRect
+      $null = $o.Append([int]$q.X).Append("`t").Append([int]$q.Y).Append("`t").Append([int]$q.Width).Append("`t").
+        Append([int]$q.Height).Append("`t").Append($x.Text).Append("`n") } }
+    [Console]::Out.Write($o.ToString())
   } catch { }
   [Console]::Out.WriteLine([char]0x1e); [Console]::Out.Flush()
 }
@@ -451,7 +473,7 @@ class Ocr:
         if self.proc and self.proc.poll() is None:
             return True
         self.proc = None
-        enc = base64.b64encode(OCR_PS.encode("utf-16-le")).decode("ascii")
+        enc = base64.b64encode(OCR_PS.replace("@LANG@", OCR_LANG).encode("utf-16-le")).decode("ascii")
         try:
             p = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                                   "-EncodedCommand", enc], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -476,30 +498,65 @@ class Ocr:
         return out[0].decode("utf-8", "replace").rstrip("\r\n")
 
     def read(self, path):
-        """The picture's text, one string per line Windows' OCR found; [] when it finds none or cannot run (it
-        reads pictures up to OcrEngine.MaxImageDimension, 10000 px here)."""
+        """The picture's text as rows (ocr_rows()); [] when it finds none or cannot run (it reads pictures up to
+        OcrEngine.MaxImageDimension, 10000 px here)."""
+        w = self.words(path)
+        if OCR_UP > 1 and fixed_pitch(w):
+            w = self.words(path, OCR_UP) or w
+        return ocr_rows(w)
+
+    def words(self, path, times=1):
+        """Every word Windows' OCR found in the picture enlarged up to times: (x, y, w, h, text), the box in the
+        picture's own pixels."""
+        out, k = [], 1.0
+        for i, l in enumerate(self._answer(os.path.abspath(path) + TAB + str(int(times)))):
+            if i == 0:
+                try:
+                    k = float(l) or 1.0
+                except ValueError:
+                    return []
+                continue
+            f = l.split("\t", 4)
+            if len(f) == 5 and f[4].strip():
+                try:
+                    out.append((int(f[0]) / k, int(f[1]) / k, int(f[2]) / k, int(f[3]) / k, f[4].strip()))
+                except ValueError:
+                    pass
+        return out
+
+    def _answer(self, ask):
+        """The worker's raw answer lines for one request."""
         with self.lock:
             for _ in range(2):  # a dead worker is started again once
                 if not self._ensure():
                     return []
                 p = self.proc
                 try:
-                    p.stdin.write(os.path.abspath(path).encode("utf-8") + b"\n")
+                    p.stdin.write(ask.encode("utf-8") + b"\n")
                     p.stdin.flush()
                 except OSError:
                     self.proc = None
                     continue
-                lines = []
-                while True:
-                    l = self._line(p, 30)
-                    if l is None:  # died or hangs: replaced next time
-                        p.kill()
-                        self.proc = None
-                        return [x for x in lines if x]
-                    if l == END:
-                        return [x.strip() for x in lines if x.strip()]
-                    lines.append(l)
+                out = []  # one reader for the whole answer (a thread per line cost 0.3 s on 500 words)
+                t = threading.Thread(target=self._until_end, args=(p, out), daemon=True)
+                t.start()
+                t.join(30)
+                if not out:  # died or hangs: replaced next time
+                    p.kill()
+                    self.proc = None
+                    return []
+                return out[0]
             return []
+
+    @staticmethod
+    def _until_end(p, out):
+        lines = []
+        for l in iter(p.stdout.readline, b""):
+            l = l.decode("utf-8", "replace").rstrip("\r\n")
+            if l == END:
+                out.append(lines)
+                return
+            lines.append(l)
 
     def stop(self):
         if self.proc:
@@ -536,6 +593,92 @@ def set_clipboard_text(text):
         return True
     finally:
         user32.CloseClipboard()
+
+
+def fixed_pitch(words):
+    """Whether the words are set in a fixed-pitch face: the width per letter of words of five letters or more is
+    the same for all but a few (median spread under 3 %; measured 0.7 to 1.0 % on Consolas at 14 to 24 px, 7.8 % on
+    Segoe UI)."""
+    r = [w[2] / len(w[4]) for w in words if len(w[4]) >= 5 and w[4].isalpha()]
+    if len(r) < 8:
+        return False
+    m = sorted(r)[len(r) // 2]
+    return sorted(abs(v - m) / m for v in r)[len(r) // 2] < 0.03
+
+
+MARK = re.compile(r"^(\d{1,3}[.),]|[-*+>•●○■▪►✓✔])(\s|$)")  # a row that opens a list item
+NUMBERED = re.compile(r"^\d{1,3}\.\s")
+
+
+def ocr_rows(words):
+    """The text of OCR words (x, y, w, h, text) rebuilt from their boxes alone:
+    rows:   words grouped by vertical position across the whole width (a word whose middle lies within half a word
+            height of a row's middle is on it; small ones, like a lone comma, go to the row their middle falls in),
+            each row read left to right;
+    spaces: two neighbours touch (no space) when their gap is under half the picture's usual gap between words;
+    blanks: one empty line where the gap to the next row is over 1.6 times the usual row pitch;
+    wraps:  a row is joined to the one before it, with a space, when none of the rules above put a blank between
+            them, it does not open a list item (a number, a bullet), it starts where the row before starts (or
+            where its text starts, after its number), and its first word would not have fitted in the room left at
+            the end of the row before, up to the text's right edge: the terminal moved it down. Only on a picture
+            where at least two rows end that way, so that the right edge is the text's own and not just its
+            longest line;
+    fixes:  on a picture with a numbered list, a row's leading "14," or "14 ," is read as "14.".
+    Nothing else is corrected."""
+    if not words:
+        return []
+    med = lambda v: sorted(v)[len(v) // 2]
+    h = med([w[3] for w in words])
+    mid = lambda w: w[1] + w[3] / 2
+    rows = []  # [middle, top, bottom, words]
+    for w in sorted((w for w in words if w[3] >= 0.6 * h), key=mid):
+        if rows and mid(w) - rows[-1][0] <= 0.5 * h:
+            r = rows[-1]
+            r[3].append(w)
+            r[0] = sum(mid(x) for x in r[3]) / len(r[3])
+            r[1], r[2] = min(r[1], w[1]), max(r[2], w[1] + w[3])
+        else:
+            rows.append([mid(w), w[1], w[1] + w[3], [w]])
+    for w in (w for w in words if w[3] < 0.6 * h):
+        if not rows:
+            rows.append([mid(w), w[1], w[1] + w[3], []])
+        inside = [r for r in rows if r[1] <= mid(w) <= r[2]]
+        min(inside or rows, key=lambda r: abs(r[0] - mid(w)))[3].append(w)
+    for r in rows:
+        r[3].sort(key=lambda w: w[0])
+    gaps = [b[0] - (a[0] + a[2]) for r in rows for a, b in zip(r[3], r[3][1:])]
+    gaps = [g for g in gaps if 0 < g < 2 * h]
+    g = med(gaps) if gaps else 0.5 * h
+    pitch = [b[0] - a[0] for a, b in zip(rows, rows[1:])]
+    pitch = med(pitch) if pitch else h
+    ends = [r[3][-1][0] + r[3][-1][2] for r in rows]
+    right = max(ends)
+    # rows that end the way a wrapped row does; with only one the right edge may be just the longest line
+    fits = lambda i: right - ends[i - 1] < rows[i][3][0][2] + 1.5 * g  # row i's first word did not fit above
+    wraps = sum(fits(i) for i in range(1, len(rows))) >= 2
+    texts = []
+    for r in rows:
+        ws, text = r[3], r[3][0][4]
+        for a, b in zip(ws, ws[1:]):
+            text += ("" if b[0] - (a[0] + a[2]) < 0.5 * g else " ") + b[4]
+        texts.append(text)
+    if any(NUMBERED.match(t) for t in texts):
+        texts = [re.sub(r"^(\d{1,3}) ?,(?=\s|$)", r"\1.", t) for t in texts]
+    out, prev = [], None  # prev: (left, text start) of the row that began the last line put out
+    for i, (r, text) in enumerate(zip(rows, texts)):
+        ws = r[3]
+        blank = i > 0 and r[0] - rows[i - 1][0] > 1.6 * pitch
+        left = ws[0][0]
+        start = ws[1][0] if MARK.match(text) and len(ws) > 1 else left
+        if (wraps and prev and not blank and not MARK.match(text)
+                and min(abs(left - prev[0]), abs(left - prev[1])) <= g and fits(i)):
+            out[-1] += " " + text
+            continue
+        if blank and out:
+            out.append("")
+        out.append(text)
+        prev = (left, start)
+    return out
 
 
 def shot_text(path, lines):
