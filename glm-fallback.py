@@ -640,6 +640,7 @@ def import_once(source, cwd):
 
 # ---------- the session's name: the Codex window's title and its thread's name ----------
 NAME_MAX = 80  # characters of the name a window title carries
+GLYPH = "✳ "  # "✳ ", Claude Code's idle status glyph, before the name in GLM's pinned title
 
 
 def session_name(transcript):
@@ -863,7 +864,9 @@ def open_glm(sid, cwd, skip, name=None, work=None):
     cmd = "glm --resume " + sid
     if skip:
         cmd += " --dangerously-skip-permissions"
-    return open_window(cmd + ' "%s"' % kept_open(CONTINUE, work), cwd, window_name(name) or "GLM", sid)
+    # "<glyph> <name>", the way Claude Code titles its own tab, pinned: the paste key takes Ctrl+V and Alt+V only in a
+    # session terminal whose title has that shape, and the panel finds the session's name after the glyph
+    return open_window(cmd + ' "%s"' % kept_open(CONTINUE, work), cwd, GLYPH + (window_name(name) or "GLM"), sid)
 
 
 def kept_open(prompt, work):
@@ -975,6 +978,17 @@ def reset_time(now, limits=None):
         if t > now and (name == "five_hour" or used >= 100) and (best is None or t > best[0]):
             best = (t, name)
     return best or (now + FIVE_HOURS, "estimate")
+
+
+def claude_name(pid):
+    """The name Claude Code gave the session in its process's ~/.claude/sessions/<pid>.json: what its window title
+    shows after the status glyph and what the Agent Panel matches window titles against (the card's name for a
+    session the user named). "" when there is none."""
+    try:
+        with open(os.path.join(HOME, ".claude", "sessions", "%d.json" % int(pid)), encoding="utf-8") as f:
+            return " ".join(str(json.load(f).get("name") or "").split())
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
 
 
 def claude_pid(sid):
@@ -1699,7 +1713,7 @@ def main():
         if via == "codex":
             path = thread_file(thread)
             # the Codex window and its thread carry the session's name, as its Claude window and card do
-            name = session_name(transcript) or folder
+            name = claude_name(orig) or session_name(transcript) or folder
             named = name_thread(thread, name, cwd)
             work = busy_work(sid, orig, transcript) if orig else []
             extra = {"codex_thread": thread, "codex_file": path, "name": name, "named": named, "work": work,
@@ -1707,7 +1721,7 @@ def main():
             console = open_codex(thread, cwd, skip, whole=transcript if cut else None, name=name, work=work)
         else:
             # GLM's window carries the session's name too; GLM is Claude Code, so it loads CLAUDE.md itself
-            name = session_name(transcript) or folder
+            name = claude_name(orig) or session_name(transcript) or folder
             work = busy_work(sid, orig, transcript) if orig else []
             extra = {"name": name, "work": work}
             console = open_glm(sid, cwd, skip, name=name, work=work)

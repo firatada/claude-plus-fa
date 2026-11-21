@@ -320,6 +320,26 @@ class Glm(Base):
         self.assertEqual(self.w.launched, [])  # the way-back question's turn, as before
 
 
+class GlmTitle(unittest.TestCase):
+    """GLM's pinned title "✳ <name>" reads as a session terminal to the paste key and to the panel's title checks."""
+    def test_title_matches(self):
+        spec = importlib.util.spec_from_file_location("pp", os.path.join(ROOT, "agent-panel-paste.py"))
+        pp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pp)
+        title = FB.GLYPH + FB.window_name("demo project")
+        self.assertEqual(title, "✳ demo project")
+        self.assertTrue(pp.claude_title(title))
+        self.assertTrue(pp.wanted(5, {5}, title))
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        ns = {"re": __import__("re")}
+        keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("shown_name", "tab_session")]
+        exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+        s = {"status": "idle", "pid": 7, "name": "demo project"}
+        self.assertIs(ns["tab_session"](5, title, [s], lambda o: 5), s)  # the copy and the band find the session
+        self.assertIn(s["name"], title)  # in_front() and focus_session(): the name is in the title, no Ctrl+Tab
+
+
 if __name__ == "__main__":
     try:
         unittest.main(verbosity=1)
