@@ -972,6 +972,27 @@ def end_tree(root, par):
             kernel32.CloseHandle(h)
 
 
+def console_root(pid, par):
+    """The first process of the console pid is attached to (the shell of its terminal tab or window, or pid itself
+    when it was started straight in it): the processes attached to that console (GetConsoleProcessList), walked up
+    from pid. pid itself when the console cannot be read."""
+    with console_lock:
+        kernel32.FreeConsole()
+        if not kernel32.AttachConsole(int(pid)):
+            return pid
+        ids = (wt.DWORD * 256)()
+        n = kernel32.GetConsoleProcessList(ids, 256)
+        kernel32.FreeConsole()
+    members = {ids[i] for i in range(min(n, 256))} - {os.getpid()}
+    root = pid
+    for _ in range(16):
+        up = par.get(root)
+        if not up or up not in members or (born(up) or 0) > (born(root) or 0):
+            break
+        root = up
+    return root
+
+
 def session_procs(sid):
     """The live processes holding a session, from ~/.claude/sessions/<pid>.json: [{"pid", "status"}]."""
     folder, out = os.path.join(CLAUDE, "sessions"), []
@@ -2548,9 +2569,11 @@ class Panel:
         if now - self.claims_swept < 3600:
             return
         self.claims_swept = now
-        for p in glob.glob(os.path.join(RETURN_DIR, "*.carried")):
+        for p in glob.glob(os.path.join(RETURN_DIR, "*.carried")) + glob.glob(os.path.join(RETURN_DIR, "*.quiet")):
             try:
-                if now - os.path.getmtime(p) > CLAIM_KEEP:
+                # a carry file holds how far Codex's turns were carried: kept while its record lives
+                if now - os.path.getmtime(p) > CLAIM_KEEP and not os.path.exists(
+                        os.path.join(RETURN_DIR, os.path.basename(p).split(".")[0] + ".json")):
                     os.remove(p)
             except OSError:
                 pass
@@ -2569,7 +2592,7 @@ class Panel:
         def done():
             """The session is back on Claude (or gone): the record goes, and a question still open with it."""
             self.end_asker(rec)
-            for p in (path, answer_file):
+            for p in (path, answer_file, path[:-len(".json")] + ".watched"):
                 try:
                     os.remove(p)
                 except OSError:
@@ -2578,8 +2601,6 @@ class Panel:
 
         if transcript and not os.path.exists(transcript):
             return done()  # the conversation itself is gone (deleted)
-        if via == "codex" and fb and fb.carried(rec) and not rec.get("claude_cmd"):
-            return done()  # the --carry hook carried it into a Claude window the user resumed or typed into
         procs_ = session_procs(sid)
         console_up = console_alive(rec)
         if rec.get("claude_cmd"):
@@ -2588,13 +2609,20 @@ class Panel:
             if [p for p in procs_ if runs_under(p["pid"], rec["claude_cmd"], par)]:
                 if console_up:
                     end_tree(console, par)
+                if via == "codex" and fb and fb.pending(rec):
+                    # Codex wrote a turn after the carry, before its window closed: the --carry hook brings it in
+                    # at the next prompt (the Codex window is closed now), so the record stays for it
+                    for k in ("claude_cmd", "switch_at", "go", "carry"):
+                        rec.pop(k, None)
+                    save_record(path, rec)
+                    return
                 return done()
             if now - rec.get("switch_at", now) > START_WAIT or not alive(rec["claude_cmd"]):
-                # Claude did not start: the record stays, GLM or Codex as it is; the Codex record was not carried
+                # Claude did not start: the record stays, GLM or Codex as it is; Codex's turns were not carried
                 for k in ("claude_cmd", "switch_at", "go"):
                     rec.pop(k, None)
-                if via == "codex" and fb:
-                    fb.release(rec)
+                if via == "codex" and fb and rec.get("carry"):
+                    fb.give_back(rec, rec.pop("carry"))
                 save_record(path, rec)
             return
         if via == "codex":
@@ -2612,20 +2640,34 @@ class Panel:
             rec["agent_seen"], changed = True, True
         if orig and orig["status"] == "idle" and not rec.get("orig_idle"):
             rec["orig_idle"], changed = True, True  # the old window's turn has ended (the hook ran inside it)
+        if orig and rec.get("orig_idle") and orig["status"] in ("busy", "waiting") and not rec.get("orig_used"):
+            rec["orig_used"], changed = True, True  # typed into since: that window is the user's again, never closed
         # GLM or Codex still runs in its window (or is still starting there): a card click raises that window
         is_open = bool(console_up and (agent or not rec.get("agent_seen")))
         if rec.get("_open") != is_open:
             rec["_open"], changed = is_open, True
-        if back or (orig and rec.get("orig_idle") and orig["status"] in ("busy", "waiting")):
+        # GLM or Codex runs in its window and the hook in the old Claude window has ended: that window closes, so it
+        # can neither be typed into nor go on by itself at the reset beside them; never while it still runs work
+        if fb and orig and orig["status"] == "idle" and is_open and rec.get("agent_seen") \
+                and fb.watched(rec) and not rec.get("old_closed") and not rec.get("orig_used"):
+            before = rec.get("old_work")
+            if self.close_old(rec, orig, par, fb, transcript):
+                changed, orig = True, None
+            elif rec.get("old_work") != before:
+                changed = True
+        if back or (orig and (rec.get("orig_used") or rec.get("orig_idle") and orig["status"] in ("busy", "waiting"))):
             # a Claude window holds the session again (resumed by hand, or the old window typed into). GLM wrote
-            # into the transcript itself; Codex's record still has to come in, which the --carry hook does on that
-            # window's start or next prompt (it then removes the record), so the record waits for it
+            # into the transcript itself; Codex's turns come in through the --carry hook on that window's start or
+            # on a prompt typed once the Codex window has closed, so the record waits until Codex is closed and
+            # nothing it did is left uncarried
             if via != "codex":
                 return done()
             if self.asker_alive(rec):
                 self.end_asker(rec)
                 rec.pop("asker", None)
                 changed = True
+            if not is_open and fb and not fb.pending(rec):
+                return done()
             if changed:
                 save_record(path, rec)
             return
@@ -2637,6 +2679,24 @@ class Panel:
                 changed = True
             if rec.pop("go", None):
                 changed = True  # a Back to Claude waiting for it to be idle: the card's click resumes it now
+            if fb and rec.get("agent_seen") and not rec.get("auto_back") and (fb.watched(rec) or not orig):
+                # the GLM or Codex window was closed (or it ended there): the session comes back to Claude by itself,
+                # reset or not; from Codex with everything it did, GLM wrote into the transcript itself. The old
+                # window first; while it still runs work this waits, pass after pass (a prompt typed there makes it
+                # the session's Claude window: Codex's turns then come in through the --carry hook)
+                if orig and orig["status"] == "idle" and not rec.get("old_closed") and \
+                        self.close_old(rec, orig, par, fb, transcript):
+                    orig = None
+                if not orig and (not s or folder_exists(s)):
+                    rec["auto_back"], changed = now, True
+                    if via == "codex" and now < rec["resets_at"]:
+                        fb.set_quiet(sid, rec["resets_at"])  # its first prompt meets the limit: no way-out window
+                    title = short(s["title"], 60) if s else rec.get("folder") or sid
+                    try:
+                        self.launch_back(rec, title, fb, transcript)
+                    finally:
+                        save_record(path, rec)
+                    return
             if changed:
                 save_record(path, rec)
             return
@@ -2705,21 +2765,42 @@ class Panel:
         """Resume the session with Claude in a new window: on its last Claude model (else default), and from Codex
         with the record of what happened there as the first prompt, unless the --carry hook has taken it already."""
         model = fb.claude_model(transcript)
-        prompt = None
-        if rec.get("via") == "codex" and fb.claim(rec, "panel"):
-            try:
-                prompt, rec["record_file"] = fb.codex_back_prompt(rec)
-            except Exception:
-                fb.release(rec)
-                raise
+        prompt = span = None
+        if rec.get("via") == "codex":
+            span = fb.take_carry(rec, "panel")  # every Codex turn not carried yet; None: nothing new
+            if span:
+                try:
+                    prompt, rec["record_file"] = fb.codex_back_prompt(rec, span=span)
+                except Exception:
+                    fb.give_back(rec, span)
+                    raise
         try:
             p = resume_claude(rec, title, model, prompt)
         except Exception:
-            if prompt is not None:
-                fb.release(rec)
+            if span:
+                fb.give_back(rec, span)
             raise
         rec["claude_cmd"], rec["switch_at"] = p.pid, time.time()
+        if span:
+            rec["carry"] = span
         return p
+
+    def close_old(self, rec, orig, par, fb, transcript):
+        """Close the old Claude window of a session moved to GLM or Codex: its console's whole tree, the console's first
+        process last with exit code 0 (end_tree()), never WM_CLOSE. Not while it still runs work (fb.busy_work());
+        that is kept in the record (old_work) and the window is looked at again on the next pass. True when it
+        was closed."""
+        work = fb.busy_work(rec["session"], orig["pid"], transcript)
+        if work:
+            rec["old_work"] = work
+            return False
+        root = console_root(orig["pid"], par)
+        if runs_under(os.getpid(), root, par) or (rec.get("console") and runs_under(rec["console"], root, par)):
+            root = orig["pid"]  # never the panel's own or the Codex window's ancestors
+        end_tree(root, par)
+        rec["old_closed"] = time.time()
+        rec.pop("old_work", None)
+        return True
 
     def asker_alive(self, rec):
         return bool(rec.get("asker") and alive(rec["asker"]) and born(rec["asker"]) == rec.get("asker_born"))

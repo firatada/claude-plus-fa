@@ -28,13 +28,14 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows, so a long session
 <img src="docs/img/limit-dialog.png" alt="The Usage Limit Reached window with Cancel, Continue With GLM and Continue With Codex" width="540">
 
 - When your Claude limit runs out, this window offers to continue the session in a new window, from where it stopped.
-- **Continue With GLM**: free models from [z.ai](https://z.ai) (GLM-4.7-Flash, GLM-4.5-Flash). It keeps writing into the same conversation. Needs a free z.ai key (see below).
-- **Continue With Codex**: OpenAI's coding agent on your ChatGPT plan. The conversation moves to a Codex thread with its full history.
+- **Continue With GLM**: free models from [z.ai](https://z.ai) (GLM-4.7-Flash, GLM-4.5-Flash). It keeps writing into the same conversation, in a window of its own named like the session. Needs a free z.ai key (see below).
+- **Continue With Codex**: OpenAI's coding agent on your ChatGPT plan. The conversation moves to a Codex thread with its full history, in a window of its own named like the session. Codex is told to read your `CLAUDE.md` files and follow them. Once GLM or Codex runs, the old Claude window closes (not while it still runs background work).
 - Whatever is not ready yet shows **Set Up GLM** or **Set Up Codex**, with a button for each step. The window notices each finished step by itself.
 
 <img src="docs/img/limit-dialog-setup.png" alt="The same window with the Set up Codex steps open: one done, two with buttons" width="540">
 
 - When the limit resets, the Agent Panel waits for GLM or Codex to finish its turn, then offers to bring the session back to Claude. Coming back from Codex, Claude first gets a record of everything Codex did, so the Claude conversation stays one piece.
+- Close the GLM or Codex window and the session comes back to Claude by itself (from Codex with that record). After Codex, before the limit resets, Claude Code waits and goes on when it does.
 - To go back any time, right-click the session in the Agent Panel and pick **Back to Claude**.
 - The `glm` command runs Claude Code on GLM by hand, with your usual sessions and settings: `glm`, or `glm --resume <session>`.
 
@@ -176,7 +177,7 @@ In the claude-plus-fa folder, double-click `uninstall.cmd`.
 ## Limits
 
 - Windows only.
-- Codex keeps its own conversation. What it did reaches Claude once, when the session comes back to Claude.
+- Codex keeps its own conversation. What it did reaches Claude as a record when the session comes back to Claude, never twice.
 - After GLM, a session you resume by hand needs `claude --resume <session> --model default`. The Agent Panel adds this for you.
 - Going back to Claude needs the Agent Panel running, except a resume by hand after Codex.
 

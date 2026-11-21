@@ -9,14 +9,19 @@
 # On either way out it records the move in ~/.claude/state/glm-return/<session>.json, so the Agent Panel can
 # offer the way back to Claude once the limit has reset; the panel asks through this script's --ask-return
 # and, coming back from Codex, uses codex_back_prompt() to carry what happened in Codex into the transcript.
+# Codex opens in a window of its own titled with the session's name (its thread named the same); once Codex
+# runs there the panel closes the old Claude window, and when the Codex window closes it brings the session
+# back to Claude by itself. Codex's turns are carried in incrementally: each carry takes only the turns after
+# the last one carried, so an early carry never swallows later turns.
 # The record lives until a Claude process holds the session again. Run as `--carry` (SessionStart resume and
-# UserPromptSubmit hooks) it carries a Codex record into a session the user resumed or typed into by hand.
+# UserPromptSubmit hooks) it carries Codex's turns into a session the user resumed or typed into by hand.
 #
 # The question is asked inside the hook, so settings.json gives this hook a long
 # timeout; StopFailure output is ignored, so blocking costs nothing.
 #
 # Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
-import base64, ctypes, glob, hashlib, html, json, os, re, shutil, subprocess, sys, threading, time
+import base64, contextlib, ctypes, ctypes.wintypes as wt, datetime, glob, hashlib, html, json, os, queue, re, \
+    shutil, struct, subprocess, sys, threading, time
 
 MB_YESNO, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, IDYES = 0x4, 0x20, 0x10000, 0x40000, 6
 TITLE = "Claude Code: usage limit reached"
@@ -633,21 +638,258 @@ def import_once(source, cwd):
     return thread
 
 
-def open_codex(thread, cwd, skip, whole=None):
-    """Codex's window on the thread, with the continue prompt; whole: the transcript, when Codex was given
-    only its latest part, so Codex can look further back in it."""
-    cmd = "codex resume " + thread
+# ---------- the session's name: the Codex window's title and its thread's name ----------
+NAME_MAX = 80  # characters of the name a window title carries
+
+
+def session_name(transcript):
+    """The name the Agent Panel's card shows for the session (agent-panel.pyw parse(), kept the same): the last
+    custom-title, else the last ai-title, else the first real prompt. "" when none can be read."""
+    try:
+        size = os.path.getsize(transcript)
+        with open(transcript, "rb") as f:
+            head = f.read(262144)
+            f.seek(max(0, size - 1048576))
+            tail = f.read()
+    except (OSError, TypeError):
+        return ""
+    custom = ai = None
+    for line in reversed(tail.split(b"\n")):
+        try:
+            if custom is None and b'"custom-title"' in line:
+                custom = json.loads(line).get("customTitle")
+            elif ai is None and b'"ai-title"' in line:
+                ai = json.loads(line).get("aiTitle")
+        except ValueError:
+            pass
+        if custom:
+            break
+    name = custom or ai
+    if not name:
+        for line in head.split(b"\n"):
+            if b'"type":"user"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if o.get("type") == "user" and not o.get("isMeta") and not o.get("isSidechain"):
+                t = " ".join(text_of((o.get("message") or {}).get("content")).split())
+                if t and not t.startswith("<") and not t.startswith("This session is being continued"):
+                    name = t[:160]
+                    break
+    return " ".join(str(name or "").split())
+
+
+def window_name(name):
+    """A name cmd can carry in a title and a quoted argument: the characters it would act on removed (the
+    panel's clean() removes the same ones)."""
+    return re.sub(r'[&|<>^"%]', "", name or "").strip()[:NAME_MAX]
+
+
+def name_thread(thread, name, cwd, wait=30):
+    """Name the Codex thread the way Codex itself does it (its /rename): the app server's thread/name/set, which
+    writes ~/.codex/session_index.jsonl and the thread's title in its state database; Codex's footer and terminal
+    title then show it. True when Codex answered without an error."""
+    if not name:
+        return False
+    try:
+        p = subprocess.Popen("codex app-server", shell=True, cwd=cwd, env=clean_env(), stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW,
+                             text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    lines = queue.Queue()
+    threading.Thread(target=lambda: [lines.put(l) for l in p.stdout] and None, daemon=True).start()
+    end = time.time() + wait
+
+    def answer(i):
+        while time.time() < end:
+            try:
+                o = json.loads(lines.get(timeout=max(0.1, end - time.time())))
+            except queue.Empty:
+                return None
+            except ValueError:
+                continue
+            if o.get("id") == i:
+                return o
+        return None
+    ok = False
+    try:
+        for msg in ({"id": 1, "method": "initialize", "params": {"clientInfo": {
+                        "name": "claude-plus-fa", "title": "claude-plus-fa", "version": "1"},
+                        "capabilities": {"experimentalApi": False}}},
+                    {"method": "initialized", "params": {}},
+                    {"id": 2, "method": "thread/name/set", "params": {"threadId": thread, "name": name}}):
+            p.stdin.write(json.dumps(msg) + "\n")
+            p.stdin.flush()
+            if "id" in msg:
+                got = answer(msg["id"])
+                if not got or "error" in got:
+                    break
+                ok = msg["id"] == 2
+        p.stdin.close()
+        p.wait(10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    if p.poll() is None:  # cmd -> codex.cmd -> node -> codex.exe: the whole tree
+        subprocess.run("taskkill /T /F /PID %d" % p.pid, capture_output=True, creationflags=NO_WINDOW)
+    return ok
+
+
+# ---------- the processes of this PC (the old Claude window's work, the Codex window's console) ----------
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+FT_EPOCH = 116444736000000000  # 1970-01-01 as a FILETIME
+
+
+def procs():
+    """{pid: (parent pid, exe name)} for every running process, from one Toolhelp snapshot."""
+    k32 = ctypes.windll.kernel32
+    k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    out = {}
+    if not snap or snap == wt.HANDLE(-1).value:
+        return out
+    e = PROCESSENTRY32W(dwSize=ctypes.sizeof(PROCESSENTRY32W))
+    more = k32.Process32FirstW(wt.HANDLE(snap), ctypes.byref(e))
+    while more:
+        out[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile)
+        more = k32.Process32NextW(wt.HANDLE(snap), ctypes.byref(e))
+    k32.CloseHandle(wt.HANDLE(snap))
+    return out
+
+
+def cmdline(pid):
+    """A process's command line (NtQueryInformationProcess, ProcessCommandLineInformation); "" if unreadable."""
+    k32, nt = ctypes.windll.kernel32, ctypes.windll.ntdll
+    k32.OpenProcess.restype = wt.HANDLE
+    h = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    try:
+        need = wt.ULONG(0)
+        nt.NtQueryInformationProcess(wt.HANDLE(h), 60, None, 0, ctypes.byref(need))
+        if not need.value:
+            return ""
+        buf = ctypes.create_string_buffer(need.value)
+        if nt.NtQueryInformationProcess(wt.HANDLE(h), 60, buf, need, ctypes.byref(need)) != 0:
+            return ""
+        length = struct.unpack_from("H", buf.raw, 0)[0]
+        ptr = struct.unpack_from("P", buf.raw, ctypes.sizeof(ctypes.c_void_p))[0]  # UNICODE_STRING.Buffer
+        return ctypes.wstring_at(ptr, length // 2) if ptr else ""
+    finally:
+        k32.CloseHandle(wt.HANDLE(h))
+
+
+def under(pid, root, table, depth=16):
+    """pid is root or started under it."""
+    for _ in range(depth):
+        if not pid:
+            return False
+        if pid == root:
+            return True
+        pid = table.get(pid, (0, ""))[0]
+    return False
+
+
+def unix_born(pid):
+    b = born(pid)
+    return (b - FT_EPOCH) / 1e7 if b else None
+
+
+class Console:
+    """The console process of a window started through Windows Terminal (wt.exe hands it over and exits): a pid
+    with poll(), as Popen has. pid None: it was not found; poll() then cannot tell and says it still runs."""
+    def __init__(self, pid):
+        self.pid = pid
+        self.started = born(pid) if pid else None
+
+    def poll(self):
+        if self.pid is None:
+            return None
+        return None if alive(self.pid) and born(self.pid) == self.started else 0
+
+
+def open_window(cmd, cwd, title, mark, wait=15):
+    """cmd in a new window of its own titled `title`, kept open (cmd /k). With Windows Terminal: a new wt window
+    whose title stays put (--suppressApplicationTitle: Codex sets the terminal's title, which would replace ours);
+    its cmd is found by `mark` in its command line, since wt.exe itself exits at once. Without it: a new console
+    whose title cmd sets first."""
+    terminal = shutil.which("wt")
+    if terminal:
+        here = cwd.rstrip("\\/") or cwd
+        here += "\\." if here.endswith(":") else ""  # "C:\" would end the quoted argument with \"
+        start = ctypes.c_ulonglong()
+        ctypes.windll.kernel32.GetSystemTimeAsFileTime(ctypes.byref(start))
+        try:
+            subprocess.Popen('"%s" -w new new-tab --title "%s" --suppressApplicationTitle -d "%s" cmd /k %s'
+                             % (terminal, title, here, cmd.replace(";", "\\;")), cwd=cwd, env=clean_env(),
+                             stdin=subprocess.DEVNULL)
+        except OSError:
+            terminal = None
+        end = time.time() + wait
+        while terminal and time.time() < end:
+            for p, (pp, exe) in procs().items():
+                if exe.lower() == "cmd.exe" and (born(p) or 0) >= start.value and mark in cmdline(p):
+                    return Console(p)
+            time.sleep(0.25)
+        if terminal:
+            return Console(None)  # the window is there but its console was not found: never open a second
+    return new_console("title %s& %s" % (title or "Codex", cmd), cwd=cwd, env=clean_env())
+
+
+def open_codex(thread, cwd, skip, whole=None, name=None, work=None):
+    """Codex's window on the thread, with the continue prompt, titled with the session's name; whole: the
+    transcript, when Codex was given only its latest part, so Codex can look further back in it; work: what
+    the old Claude window still runs (it then stays open, and the prompt says so)."""
+    # Codex titles its terminal "<thread name> | <folder>" by default: the name alone, as the Claude window has it
+    # (only seen without Windows Terminal, which keeps the title it was given)
+    cmd = "codex resume %s -c tui.terminal_title=['thread-name']" % thread
     if skip:
         cmd += " --dangerously-bypass-approvals-and-sandbox"
-    return new_console(cmd + ' "%s"' % codex_prompt(whole), cwd=cwd, env=clean_env())
+    return open_window(cmd + ' "%s"' % codex_prompt(whole, cwd, work), cwd, window_name(name) or "Codex", thread)
 
 
-def codex_prompt(whole=None):
+def open_glm(sid, cwd, skip, name=None, work=None):
+    """GLM's window (`glm --resume <sid>`, Claude Code on z.ai, writing the same transcript) with the continue prompt,
+    titled with the session's name; work: what the old Claude window still runs (it then stays open, and the
+    prompt says so). GLM's own CLAUDE.md loading is Claude Code's: nothing to add for it."""
+    cmd = "glm --resume " + sid
+    if skip:
+        cmd += " --dangerously-skip-permissions"
+    return open_window(cmd + ' "%s"' % kept_open(CONTINUE, work), cwd, window_name(name) or "GLM", sid)
+
+
+def kept_open(prompt, work):
+    """The continue prompt, plus why the old Claude window stays open when it still runs work. One line, no double
+    quote or percent sign (it goes through cmd)."""
+    if work:
+        prompt += (" The old Claude Code window of this session stays open because it still runs %s; it closes "
+                   "when that has ended." % ", ".join(work))
+    return re.sub(r'["%\r\n]', "", prompt)
+
+
+def codex_prompt(whole=None, cwd=None, work=None):
+    """Codex's first prompt. Codex does not read CLAUDE.md, so it is told to read the global and the project's
+    and follow their rules, above all where things are written down, as Claude would have. One line, no double
+    quote or percent sign (it goes through cmd)."""
     prompt = CONTINUE
     if whole:
         prompt += (" Only the latest part of this conversation was brought over; the whole Claude transcript is "
-                   + whole.replace('"', "") + " if you need something earlier.")
-    return prompt
+                   + whole + " if you need something earlier.")
+    docs = [p for p in (os.path.join(HOME, ".claude", "CLAUDE.md"), cwd and os.path.join(cwd, "CLAUDE.md"),
+                        cwd and os.path.join(cwd, ".claude", "CLAUDE.md")) if p and os.path.isfile(p)]
+    if docs:
+        prompt += (" First read %s and follow them as Claude Code would, above all their documentation rules (which "
+                   "file holds the current state, what was tried and the decisions), so what is decided here is "
+                   "written down the same way." % " and ".join(docs))
+    return kept_open(prompt, work)
 
 
 WATCH = 180  # seconds the hook watches Codex's first turn in its new window
@@ -656,14 +898,20 @@ WATCH = 180  # seconds the hook watches Codex's first turn in its new window
 def first_turn_error(path, offset, console, wait=WATCH):
     """Codex's error when its first turn in the new window ended with one (2026-11-21, a history too big for
     its window: "Error running remote compact task: Codex ran out of room in the model's context window..."),
-    None when the turn ended well, is still running after wait seconds, or the window is gone."""
+    None when the turn ended well, the model has answered (the history fit: Codex runs, and the old Claude
+    window may close), it is still running after wait seconds, or the window is gone."""
     end = time.time() + wait
     while True:
         gone = console.poll() is not None or time.time() > end  # then one last read
         for o in read_from(path, offset):
             p = o.get("payload") or {}
+            if o.get("type") == "response_item" and (p.get("role") == "assistant" or p.get("type") in (
+                    "reasoning", "function_call", "custom_tool_call", "local_shell_call")):
+                return None
             if o.get("type") != "event_msg":
                 continue
+            if p.get("type") in ("agent_message", "agent_reasoning"):
+                return None
             if p.get("type") == "error":
                 return str(p.get("message") or "Codex reported an error.")
             if p.get("type") in ("task_complete", "turn_aborted"):
@@ -760,6 +1008,10 @@ def record_switch(sid, cwd, console, orig_pid, skip, limits=None, now=None, via=
            "skip": bool(skip), "at": now, "transcript": transcript, "resets_at": resets_at, "reset_from": source}
     rec.update(extra)
     os.makedirs(RETURN_DIR, exist_ok=True)
+    try:
+        os.remove(watched_path(sid))  # an earlier move's: this one's is written when the hook ends
+    except OSError:
+        pass
     path = os.path.join(RETURN_DIR, sid + ".json")
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(rec, f)
@@ -804,14 +1056,19 @@ def resume_model(transcript):
     return claude_model(transcript)
 
 
-# ---------- carrying a Codex record in exactly once ----------
-# Three things may carry the same record into the Claude transcript: the Agent Panel (the first prompt of the
+# ---------- carrying Codex's turns in, incrementally ----------
+# Three things may carry Codex's turns into the Claude transcript: the Agent Panel (the first prompt of the
 # resume it starts) and the --carry hook (SessionStart on a resume, UserPromptSubmit on a prompt typed into a
-# Claude window that holds the session). Whoever creates the claim file first carries it; the others see it and
-# do not. The claim is named after the record's Codex thread, so a later move to Codex (a new thread) has a
-# claim of its own; it is kept after the record goes, so a reader that loaded the record a moment earlier still
-# finds it taken. The Agent Panel deletes claims older than CLAIM_KEEP.
+# Claude window that holds the session). Each carry takes the thread file's lines after the last one carried, up
+# to its last complete line, and moves the mark there under a lock, so two never take the same turns and an early
+# carry never swallows the turns that come after it (2026-11-21: a prompt typed into the old window carried
+# Codex's first turn alone, and the eight turns after it never reached Claude). The mark lives in the carry file
+# <session>.<thread>.carried ({"to": byte offset, "from", "by", "at"}), apart from the record, which the panel
+# rewrites; a later move to Codex (a new thread) has a file of its own. A file without "to" (written before
+# 2026-11-21, when a record was carried exactly once) counts as everything carried. The Agent Panel deletes carry
+# files older than CLAIM_KEEP whose session has no record.
 CLAIM_KEEP = 7 * 24 * 3600
+SUBSTANCE = ("user_message", "agent_message", "turn_aborted", "patch_apply_end")  # an event worth carrying
 
 
 def claim_path(rec):
@@ -819,36 +1076,277 @@ def claim_path(rec):
     return os.path.join(RETURN_DIR, "%s.%s.carried" % (rec["session"], re.sub(r"[^\w-]", "", tag)))
 
 
-def claim(rec, who):
-    """Take the right to carry this record in; False when someone already has."""
+@contextlib.contextmanager
+def carry_lock(rec, wait=3.0, stale=10.0):
+    """One carrier at a time (the panel and hooks run in different processes). Yields False when it could not
+    be had within wait seconds; a lock older than stale seconds was left by a carrier that died."""
+    path = claim_path(rec) + ".lock"
+    end, got = time.time() + wait, False
     try:
-        fd = os.open(claim_path(rec), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False
+        os.makedirs(RETURN_DIR, exist_ok=True)
     except OSError:
-        return False
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"by": who, "at": time.time()}, f)
-    return True
-
-
-def carried(rec):
-    return os.path.exists(claim_path(rec))
-
-
-def release(rec):
-    """Give a claim back: the Claude window that was to carry the record never took the session."""
+        pass
+    while not got:
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            got = True
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(path) > stale:
+                    os.remove(path)
+                    continue
+            except OSError:
+                continue
+            if time.time() > end:
+                break
+            time.sleep(0.02)
+        except OSError:
+            break
     try:
-        os.remove(claim_path(rec))
+        yield got
+    finally:
+        if got:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def carry_state(rec):
+    """The carry file's content: {} when nothing was carried yet; None when it cannot be read."""
+    try:
+        with open(claim_path(rec), encoding="utf-8") as f:
+            o = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(o, dict):
+        return None
+    if "to" not in o:  # carried exactly once, the old way: all of it
+        try:
+            o["to"] = os.path.getsize(rec.get("codex_file") or "")
+        except OSError:
+            return None
+    return o
+
+
+def write_state(rec, state):
+    path = claim_path(rec)
+    os.makedirs(RETURN_DIR, exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(path + ".tmp", path)
+
+
+def read_span(path, start, stop=None):
+    """The JSON lines of a Codex thread file from byte start, up to stop or else its last complete line, and
+    the offset just after the last line read."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(start or 0)
+            data = f.read() if stop is None else f.read(max(0, stop - (start or 0)))
+    except (OSError, TypeError):
+        return [], start or 0
+    out, pos = [], 0
+    while True:
+        nl = data.find(b"\n", pos)
+        if nl < 0:
+            break
+        try:
+            out.append(json.loads(data[pos:nl]))
+        except ValueError:
+            pass
+        pos = nl + 1
+    return out, (start or 0) + pos
+
+
+def substance(objs):
+    return any(o.get("type") == "event_msg" and (o.get("payload") or {}).get("type") in SUBSTANCE or
+               o.get("type") == "response_item" and (o.get("payload") or {}).get("type") in (
+                   "function_call", "custom_tool_call", "local_shell_call") for o in objs)
+
+
+def carried_to(rec):
+    state = carry_state(rec)
+    if state is None:
+        return None
+    return state.get("to", rec.get("codex_from") or 0)
+
+
+def pending(rec):
+    """Codex has done something since the last carry (or since the move, when nothing was carried yet)."""
+    start = carried_to(rec)
+    return start is not None and substance(read_span(rec.get("codex_file"), start)[0])
+
+
+def take_carry(rec, who):
+    """Take every Codex line not carried yet: {"start", "end", "since"} (since: when the turns before it were
+    carried, else the move), or None when nothing new happened or the mark could not be had."""
+    with carry_lock(rec) as got:
+        if not got:
+            return None
+        state = carry_state(rec)
+        if state is None:
+            return None
+        start = state.get("to", rec.get("codex_from") or 0)
+        objs, end = read_span(rec.get("codex_file"), start)
+        if not substance(objs):
+            return None
+        span = {"start": start, "end": end, "since": state.get("at") or rec.get("at") or 0}
+        write_state(rec, {"to": end, "from": start, "by": who, "at": time.time(), "prev_at": state.get("at")})
+    return span
+
+
+def give_back(rec, span):
+    """Undo a carry whose Claude window never took the session: the mark goes back, unless a later carry has
+    moved it on since."""
+    with carry_lock(rec) as got:
+        state = carry_state(rec) if got else None
+        if state and state.get("to") == span["end"]:
+            write_state(rec, {"to": span["start"], "by": "given back", "at": state.get("prev_at")})
+
+
+def codex_open(rec):
+    """The Codex window of the record still runs (a console not found counts as running: it cannot be told)."""
+    if not rec.get("console"):
+        return True
+    return alive(rec["console"]) and (rec.get("console_born") is None or born(rec["console"]) == rec["console_born"])
+
+
+# ---------- markers beside the record ----------
+def watched_path(sid):
+    return os.path.join(RETURN_DIR, sid + ".watched")
+
+
+def mark_watched(sid, thread):
+    """The hook is ending (after its watch of Codex's first turn; at once after GLM): the old Claude window, in which
+    it runs, can close without cutting it off. thread: the record's Codex thread, None for GLM."""
+    try:
+        with open(watched_path(sid), "w", encoding="utf-8") as f:
+            json.dump({"thread": thread, "at": time.time()}, f)
     except OSError:
         pass
 
 
+def watched(rec):
+    try:
+        with open(watched_path(rec["session"]), encoding="utf-8") as f:
+            return json.load(f).get("thread") == rec.get("codex_thread")
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def quiet_path(sid):
+    return os.path.join(RETURN_DIR, sid + ".quiet")
+
+
+def set_quiet(sid, until):
+    """The panel reopened the session in Claude before the limit reset (the Codex window closed): its first prompt
+    meets the limit, and the way-out window must not come up for it; Claude Code waits and goes on by itself."""
+    os.makedirs(RETURN_DIR, exist_ok=True)
+    with open(quiet_path(sid), "w", encoding="utf-8") as f:
+        json.dump({"until": until}, f)
+
+
+def quiet(sid, now=None):
+    try:
+        with open(quiet_path(sid), encoding="utf-8") as f:
+            until = float(json.load(f).get("until") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    if (now or time.time()) < until:
+        return True
+    try:
+        os.remove(quiet_path(sid))
+    except OSError:
+        pass
+    return False
+
+
+# ---------- what the old Claude window still runs ----------
+BG_TAIL = 4 * 1048576  # bytes of transcript read for background commands started and ended
+LATE = 20              # seconds after the Claude process started: a child born later is a tool's, not an MCP server
+
+
+def busy_work(sid, pid, transcript):
+    """What the Claude process pid (the old window of session sid) still runs, as short phrases: subagents
+    without "finished", Claude Code runs started under it that hold a session of their own (a claude -p), and
+    background commands (started in the transcript since the process started, with no notification or TaskStop
+    since, and a process under it to show for it). [] when nothing runs: the window may close."""
+    out, started = [], unix_born(pid) or 0
+    table = procs()
+    if transcript:
+        for root, dirs, files in os.walk(os.path.join(os.path.splitext(transcript)[0], "subagents")):
+            for n in files:
+                p = os.path.join(root, n)
+                try:
+                    if not n.endswith(".meta.json") or os.path.getmtime(p) < started - 1:
+                        continue
+                    with open(p, encoding="utf-8") as f:
+                        m = json.load(f)
+                except (OSError, ValueError):
+                    continue
+                if isinstance(m, dict) and not m.get("finished") and not m.get("stoppedByUser"):
+                    out.append("a subagent (%s)" % (m.get("description") or m.get("agentType") or "agent"))
+    holders = {}
+    for n in os.listdir(os.path.join(HOME, ".claude", "sessions")) if os.path.isdir(
+            os.path.join(HOME, ".claude", "sessions")) else []:
+        try:
+            with open(os.path.join(HOME, ".claude", "sessions", n), encoding="utf-8") as f:
+                o = json.load(f)
+            holders[int(o["pid"])] = o
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    for p, (pp, exe) in table.items():
+        o = holders.get(p)
+        if p != pid and o and o.get("sessionId") != sid and under(p, pid, table) and \
+                (unix_born(p) or 0) >= started:
+            out.append("a Claude Code run in %s" % os.path.basename(str(o.get("cwd") or "").rstrip("\\/")))
+    ids = background_ids(transcript, started)
+    if ids:
+        me = os.getpid()
+        late = [p for p, (pp, exe) in table.items() if pp == pid and not under(me, p, table)
+                and (unix_born(p) or 0) > started + LATE]
+        if late:
+            out.append("%d background command%s" % (len(ids), "" if len(ids) == 1 else "s"))
+    return out
+
+
+def background_ids(transcript, started):
+    """Background commands of this process still waiting for their end: "running in background with ID: X"
+    after started, without a later <task-id>X</task-id> notification or a TaskStop of X."""
+    try:
+        size = os.path.getsize(transcript)
+        with open(transcript, "rb") as f:
+            f.seek(max(0, size - BG_TAIL))
+            tail = f.read().decode("utf-8", "replace")
+    except (OSError, TypeError):
+        return []
+    ids = []
+    for line in tail.split("\n"):
+        m = re.search(r'"timestamp":"([^"]+)"', line)
+        try:
+            t = datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp() if m else 0
+        except ValueError:
+            t = 0
+        for x in re.findall(r"running in background with ID: (\w+)", line):
+            if t >= started and x not in ids:
+                ids.append(x)
+        for x in re.findall(r"<task-id>(\w+)</task-id>", line) + (
+                re.findall(r'"task_id":"(\w+)"', line) if '"name":"TaskStop"' in line else []):
+            if x in ids:
+                ids.remove(x)
+    return ids
+
+
 def carry_hook():
     """--carry, run as a SessionStart hook (matcher resume) and a UserPromptSubmit hook. When the session holds a
-    live Codex record nobody has carried in yet, its text (codex_back_prompt(), the long-record file rule
-    included) goes into this session as additional context, which Claude Code writes into the same transcript;
-    the record is then removed. Silent and quick otherwise: most sessions have no record."""
+    Codex record with turns not carried in yet, their text (codex_back_prompt(), the long-record file rule
+    included) goes into this session as additional context, which Claude Code writes into the same transcript.
+    A prompt typed while the Codex window still runs carries nothing (Codex is still at work; its turns come in
+    once it closes); a resume by hand carries what exists so far. The record itself stays for the panel. Silent
+    and quick otherwise: most sessions have no record."""
     try:
         data = json.load(sys.stdin)
     except ValueError:
@@ -864,19 +1362,19 @@ def carry_hook():
             rec = json.load(f)
     except (OSError, ValueError):
         return
-    if rec.get("via") != "codex" or rec.get("session") != sid or not claim(rec, "hook:" + event):
+    if rec.get("via") != "codex" or rec.get("session") != sid or not rec.get("codex_file"):
+        return
+    if event != "SessionStart" and codex_open(rec):
+        return
+    span = take_carry(rec, "hook:" + event)
+    if not span:
         return
     try:
-        prompt, _ = codex_back_prompt(rec)
-    except Exception as e:  # the record is claimed: say so rather than lose it silently
-        release(rec)
+        prompt, _ = codex_back_prompt(rec, span=span)
+    except Exception as e:  # the turns are taken: give them back and say so rather than lose them silently
+        give_back(rec, span)
         print(json.dumps({"systemMessage": "claude-plus-fa could not read what happened in Codex (%s)." % e}))
         return
-    for p in (path, path[:-len(".json")] + ".answer"):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
     print(json.dumps({"systemMessage": "claude-plus-fa: what happened in Codex was added to this session.",
                       "hookSpecificOutput": {"hookEventName": event, "additionalContext": prompt}}))
 
@@ -968,11 +1466,13 @@ def changed_since(cwd, since, skip_file=None, limit=100, visit=20000):
     return sorted(out)
 
 
-def codex_record(rec):
-    """Everything that happened in Codex after the import, in order, read from its thread file: each user
-    message, each Codex reply, each command it ran with its exit code, and the files it changed."""
+def codex_record(rec, span=None):
+    """What happened in Codex, in order, read from its thread file: each user message, each Codex reply, each
+    command it ran with its exit code, and the files it changed. span: the part of the file one carry holds
+    (take_carry()); without it, everything after the import."""
+    span = span or {"start": rec.get("codex_from") or 0, "end": None, "since": rec.get("at") or 0}
     lines, calls, files = [], {}, []
-    for o in read_from(rec.get("codex_file"), rec.get("codex_from")):
+    for o in read_span(rec.get("codex_file"), span["start"], span["end"])[0]:
         p, kind = o.get("payload") or {}, o.get("type")
         t = p.get("type")
         if kind == "event_msg" and t == "user_message" and p.get("message"):
@@ -1010,20 +1510,24 @@ def codex_record(rec):
     if changed:
         lines.append("Files Codex changed: " + ", ".join(changed))
     if rec.get("cwd") and os.path.isdir(rec["cwd"]):
-        written = changed_since(rec["cwd"], rec.get("at") or 0)
+        written = changed_since(rec["cwd"], span["since"])
         if written:
-            lines.append("Files in %s written since the move to Codex (by Codex or anyone else): %s"
-                         % (rec.get("folder") or rec["cwd"], ", ".join(written)))
+            lines.append("Files in %s written since %s (by Codex or anyone else): %s"
+                         % (rec.get("folder") or rec["cwd"], "the move to Codex" if span["since"] == rec.get("at")
+                            else "the last record", ", ".join(written)))
     return "\n\n".join(lines) if lines else "Codex did nothing in this session."
 
 
-def codex_back_prompt(rec, now=None):
-    """The first prompt of the resumed Claude session: the record of what happened in Codex, so it lands in the
-    same Claude transcript. A record longer than PROMPT_MAX is written whole to a file in the session's folder
-    and the prompt carries its path and its last TAIL characters. Returns (prompt, file or None)."""
-    head = "While Claude's limit was out, this session continued in Codex. This is what happened there:"
+def codex_back_prompt(rec, now=None, span=None):
+    """The first prompt of the resumed Claude session: the record of what happened in Codex (span: one carry's
+    part, take_carry()), so it lands in the same Claude transcript. A record longer than PROMPT_MAX is written
+    whole to a file in the session's folder and the prompt carries its path and its last TAIL characters.
+    Returns (prompt, file or None)."""
+    later = bool(span and span["start"] > (rec.get("codex_from") or 0))
+    head = ("This session went on in Codex after the last record of it. This is what happened there since:" if later
+            else "While Claude's limit was out, this session continued in Codex. This is what happened there:")
     end = "Continue from where Codex stopped."
-    body = codex_record(rec)
+    body = codex_record(rec, span)
     if len(body) <= PROMPT_MAX:
         return "%s\n\n%s\n\n%s" % (head, body, end), None
     stamp = time.strftime("%Y-%m-%d_%H%M", time.localtime(now or time.time()))
@@ -1173,6 +1677,10 @@ def main():
     sid = data.get("session_id")
     if not sid:
         return
+    # the panel reopened this session in Claude because its Codex window closed, before the limit reset: its
+    # first prompt (Codex's record) meets the limit, and Claude Code goes on by itself at the reset
+    if quiet(sid):
+        return
     cwd = data.get("cwd") or os.getcwd()
     transcript = data.get("transcript_path")
     folder = os.path.basename(cwd.rstrip("\\/")) or cwd
@@ -1190,14 +1698,19 @@ def main():
         extra = {}
         if via == "codex":
             path = thread_file(thread)
-            extra = {"codex_thread": thread, "codex_file": path,
+            # the Codex window and its thread carry the session's name, as its Claude window and card do
+            name = session_name(transcript) or folder
+            named = name_thread(thread, name, cwd)
+            work = busy_work(sid, orig, transcript) if orig else []
+            extra = {"codex_thread": thread, "codex_file": path, "name": name, "named": named, "work": work,
                      "codex_from": os.path.getsize(path) if path else 0}
-            console = open_codex(thread, cwd, skip, whole=transcript if cut else None)
+            console = open_codex(thread, cwd, skip, whole=transcript if cut else None, name=name, work=work)
         else:
-            cmd = "glm --resume " + sid
-            if skip:
-                cmd += " --dangerously-skip-permissions"
-            console = new_console(cmd + ' "%s"' % CONTINUE, cwd=cwd)
+            # GLM's window carries the session's name too; GLM is Claude Code, so it loads CLAUDE.md itself
+            name = session_name(transcript) or folder
+            work = busy_work(sid, orig, transcript) if orig else []
+            extra = {"name": name, "work": work}
+            console = open_glm(sid, cwd, skip, name=name, work=work)
         try:
             record_switch(sid, cwd, console.pid, orig, skip, via=via, transcript=transcript, **extra)
         except OSError:
@@ -1207,6 +1720,8 @@ def main():
         error = first_turn_error(extra["codex_file"], extra["codex_from"], console) \
             if via == "codex" and extra["codex_file"] else None
         if not error:
+            # the hook is ending: the panel may now close this (the old) Claude window
+            mark_watched(sid, thread if via == "codex" else None)
             return
 
 
