@@ -282,18 +282,26 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   background: var(--tip-bg); color: var(--on-accent); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere;
   pointer-events: none; box-shadow: var(--shadow-tip); animation: fade .12s ease-out;
 }
-/* the card's popover (peek): the tooltip's look, wider and in sections; its text is clamped, never scrolled */
-.tip.peek { width: 264px; padding: 8px 10px 9px; white-space: normal; line-height: 14px; }
-body.top .tip.peek { width: 340px; }
-.peek .ph { font-size: 12px; line-height: 16px; font-weight: 600; }
-.peek .pw, .peek .ps { opacity: .78; }
-.peek h4 { margin: 7px 0 1px; font-size: 11px; font-weight: 600; opacity: .78; }
-.peek .pr { margin-top: 4px; }
-.peek .pr b { font-weight: 600; }
-.peek .pf { opacity: .78; }
-.peek .clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
-.peek .pr .clamp { -webkit-line-clamp: 2; opacity: .9; }
-.peek .more { margin-top: 4px; opacity: .78; }
+/* the opened card (peek): the card itself grows downward with what its session works on, pushing the cards
+   below it down; a tab in the top strip, which has no list to push, drops the same content in a box under it.
+   Every prompt is cut at three lines; what does not fit ends in "and n more", which opens the column of them all */
+#list { overflow-anchor: none; }
+.card:has(> .xp) { height: auto; flex-wrap: wrap; }
+.card:has(.xmore:active) { transform: none; }
+.xp { flex: 0 0 100%; overflow: hidden; }
+.xp > .xi { margin-top: 8px; border-top: 1px solid var(--line); padding: 0 0 0 4px; }
+.xi { font-size: 11px; line-height: 14px; color: var(--text); overflow-wrap: anywhere; }
+.xq { margin-top: 6px; }
+.xl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xl b { font-weight: 600; color: var(--text); }
+.x3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.xmore { margin-top: 6px; color: var(--blue); font-weight: 600; cursor: pointer; }
+.xmore:hover, .xmore.on { text-decoration: underline; }
+.xbox {
+  position: fixed; z-index: 20; width: 340px; padding: 2px 12px 10px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r-card); box-shadow: var(--shadow-pop); animation: fade .12s ease-out;
+}
+.xbox.col { width: 300px; overflow-y: auto; overscroll-behavior: contain; }
 @keyframes fade { from { opacity: 0; } }
 /* a figure that changed fades in rather than snapping */
 .chg { animation: chg .2s ease-out; }
@@ -517,7 +525,7 @@ function tick(now) {
 // reported, at its laid-out place and corner radius, whenever it changes
 let regionKey = "", bridged = false;
 function syncRegion() {
-  const rs = [...document.querySelectorAll(".pop, .tip, .say, #note:not(:empty), #drop.open")].map(e => {
+  const rs = [...document.querySelectorAll(".pop, .tip, .xbox, .say, #note:not(:empty), #drop.open")].map(e => {
     const r = parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0;
     return [e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight, r].map(Math.round);
   });
@@ -627,7 +635,7 @@ function fill(el, s, q) {
     a.dataset.k = "age:" + s.id;
   }
   const flags = flagsOf(s);
-  // what the session runs in the background: a count on the title row, each one listed in the card's popover
+  // what the session runs in the background: a count on the title row, each one listed in the opened card
   const bg = s.bg || [], w = el.querySelector(".bgw");
   w.hidden = !bg.length;
   if (bg.length) w.lastChild.textContent = bg.length;
@@ -666,7 +674,7 @@ function ticking() {
     if (!s) continue;
     const st = stateOf(s), t = runSince(s), d = el.querySelector(".dot");
     if (a && t) a.textContent = clock(Date.now() - t);
-    if (el === peekCard) peekTick(s, st);
+    if (el === peekCard) peekTick();
     d.dataset.full = said(s, st);
     d.setAttribute("aria-label", d.dataset.full);
     if (el !== document.activeElement) el.setAttribute("aria-label", cardLabel(s, st));
@@ -735,7 +743,8 @@ function glide(els, was) {
 
 function holdOrder(els, list) {
   const now = rowsOf(list);
-  const held = hovering || menu || (document.hasFocus() && list.contains(document.activeElement));
+  // an opened card holds it too: on top its box hangs outside the list, the column on the right is another window
+  const held = hovering || menu || xp || (document.hasFocus() && list.contains(document.activeElement));
   if (!held || els.length !== now.length || !els.every(e => now.includes(e))) return els;
   return now;
 }
@@ -994,102 +1003,179 @@ addEventListener("pointermove", e => {
 });
 document.documentElement.addEventListener("mouseleave", tipHide);
 
-// ----- the card's popover (peek): what the session is working on -----
-// Opens like a tooltip (tooltip.md: a real mouse movement over the card, ~400 ms), stays while the pointer is on
-// the card and closes by itself when it leaves; any click, key, scroll, menu or focus change closes it too. It
-// takes no pointer, focus or keys, so a click through it lands on whatever it covers. It is the card's only
-// floating hint: the card's title, dot, time, ctx and badge have no tooltip of their own (their words are in it).
-// Placed above the card on the right (the card's menu and messages open below it), under the tab on top.
-// agent-panel.pyw reads the prompts for this one card only (Api.peek); nothing is kept by the page.
-const PEEK_ROWS = 8;
-let peek = null, peekCard = null, peekJob = null, peekData = null;
+// ----- the opened card (peek): what the session is working on -----
+// A real mouse movement resting PEEK_WAIT on a card opens it: the card itself grows downward (the cards below
+// move down, the card stays where it is) with the session's last prompt, then one row per piece of work still
+// running with what it works on now. A tab in the top strip has no list to push: the same content drops in a box
+// under it. Moving across the list does not make cards flap: only a card the pointer rests on opens. It closes by
+// itself when the pointer leaves the card (and its box, and the column), and on a key, a right-click, a scroll, a
+// drag or the window losing focus. It takes no focus or keys; a click on the card still does what it does.
+// Too much for PEEK_MAX: rows are dropped from the end for a last row "and n more", whose click opens the column
+// of them all: left of the panel on the right (a window of its own, agent-column.html, as the panel's window ends
+// at the card's edge), left of the box on top (right of it when the screen has no room there), its top at the
+// card's or box's top. agent-panel.pyw reads the prompts for this one card only (Api.peek); nothing is kept here.
+const PEEK_WAIT = 500, PEEK_MAX = 280, PEEK_MIN = 96, PEEK_GRACE = 250, COL_W = 300;
+let peekCard = null, peekJob = null, peekData = null, peekKey = "", xp = null, xcol = null, colOpen = false;
+let colIn = false, leaveJob = null;
 const sinceWords = ms => ms ? clock(Date.now() - ms) : "";
+// a tab in the top strip gets a box under it; every other card (the right column, the set-aside list) grows
+const grows = c => !(onTop() && list.contains(c));
 function peekArm(card) {
   if (card === peekCard) return;
   peekHide();
   peekCard = card;
-  peekJob = setTimeout(() => { peekJob = null; peekAsk(); }, 400);
+  peekJob = setTimeout(() => { peekJob = null; peekAsk(); }, PEEK_WAIT);
 }
 function peekAsk() {
   const card = peekCard;
-  if (!card || !bridged || !document.body.contains(card)) return;
+  if (!card || peekJob || !bridged || !document.body.contains(card)) return;
   api().peek(card.dataset.id).then(d => {
     if (card !== peekCard || !d || menu || document.body.classList.contains("dragging")) return;
     peekData = d;
     peekDraw();
   });
 }
+const OPEN = {duration: 160, easing: "cubic-bezier(0.23, 1, 0.32, 1)"};
 function peekHide() {
-  clearTimeout(peekJob);
-  peekJob = null; peekCard = null; peekData = null;
-  if (peek) { peek.remove(); peek = null; }
+  clearTimeout(peekJob); clearTimeout(leaveJob);
+  peekJob = leaveJob = null;
+  colClose();
+  const el = xp, had = !!xp;
+  peekCard = null; peekData = null; xp = null; peekKey = "";
+  if (el && el.classList.contains("xp") && !still.matches && el.isConnected) {
+    // the card folds back as it opened; the cards below follow it up
+    el.classList.add("gone");
+    el.animate([{height: el.offsetHeight + "px"}, {height: "0px"}], OPEN).onfinish = () => el.remove();
+  } else if (el) el.remove();
+  if (had) letGo();  // the order the list kept while it was open comes in now
 }
+const row = (head, text) => `<div class="xq"><div class="xl">${head}</div>` +
+                            (text ? `<div class="x3">${esc(text)}</div>` : "") + "</div>";
+const agentRow = b => row(`<b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
+                          (b.since ? ` · <span data-since="${b.since}">${sinceWords(b.since)}</span>` : ""), b.text);
 function peekDraw() {
-  const s = find(peekCard.dataset.id), d = peekData;
-  if (!s || !document.body.contains(peekCard)) { peekHide(); return; }
-  const st = stateOf(s), flags = flagsOf(s), bg = d.bg || [];
-  const known = bg.map(b => b.since).filter(Boolean);
-  let h = `<div class="ph">${esc(s.title)}</div><div class="pw">${esc(s.path)}</div>` +
-          `<div class="ps" data-said>${esc([said(s, st), flags].filter(Boolean).join(" · "))}</div>`;
-  if (d.prompt) h += `<h4>Last Prompt</h4><div class="clamp">${esc(d.prompt)}</div>`;
-  if (bg.length) {
-    h += `<h4 data-since="${known.length ? Math.min(...known) : ""}">${esc(bgHead(Math.min(...known)))}</h4>`;
-    for (const b of bg.slice(0, PEEK_ROWS)) {
-      h += `<div class="pr"><div><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
-           (b.since ? ` · <span class="pf" data-since="${b.since}">${sinceWords(b.since)}</span>` : "") + "</div>" +
-           (b.text ? `<div class="clamp">${esc(b.text)}</div>` : "") + "</div>";
+  const card = peekCard, d = peekData, s = card && find(card.dataset.id);
+  if (!s || !document.body.contains(card)) { peekHide(); return; }
+  const bg = d.bg || [];
+  if (!d.prompt && !bg.length) return;  // nothing to show: the card stays as it is
+  const key = JSON.stringify([d.prompt, bg]), fresh = !xp;
+  if (fresh) {
+    xp = document.createElement("div");
+    xp.setAttribute("aria-hidden", "true");  // a mouse-only view of the prompts; the card's label stays its own
+    if (grows(card)) { xp.className = "xp"; card.append(xp); }
+    else { xp.className = "xbox"; document.body.append(xp); }
+  }
+  if (key !== peekKey) {
+    peekKey = key;
+    xp.innerHTML = '<div class="xi">' + (d.prompt ? row("Last Prompt", d.prompt) : "") + bg.map(agentRow).join("") + "</div>";
+    if (!grows(card)) peekPlace();
+    peekFit(bg.length);
+  }
+  if (!grows(card)) peekPlace();
+  else if (fresh && !still.matches) xp.animate([{height: "0px"}, {height: xp.offsetHeight + "px"}], OPEN);
+  if (colOpen) colFill();
+}
+// rows are dropped from the end until it fits PEEK_MAX (and, in a list, the room left under the card in view),
+// and the last row says how many are left out
+function peekFit(total) {
+  const inner = xp.firstChild, top = xp.getBoundingClientRect().top;
+  const room = grows(peekCard) ? peekCard.closest("#list, #drop").getBoundingClientRect().bottom - top - 12
+                               : innerHeight - top - 8;
+  const cap = Math.min(PEEK_MAX, Math.max(PEEK_MIN, room));
+  const rows = [...inner.querySelectorAll(".xq")].slice(peekData.prompt ? 1 : 0);
+  let shown = rows.length;
+  while (shown > 0 && xp.offsetHeight > cap) {
+    rows[--shown].remove();
+    let m = inner.querySelector(".xmore");
+    if (!m) {
+      m = inner.appendChild(document.createElement("div"));
+      m.className = "xmore" + (colOpen ? " on" : "");
+      m.dataset.more = "";
     }
+    m.textContent = `and ${total - shown} more`;
   }
-  if (!peek) {
-    peek = document.createElement("div");
-    peek.className = "tip peek";
-    peek.setAttribute("aria-hidden", "true");  // a mouse-only view of words the card's label already has
-    document.body.append(peek);
+  if (colOpen && !inner.querySelector(".xmore")) colClose();  // they all fit now
+}
+// on top: under the tab, centred on it, inside the window
+function peekPlace() {
+  const r = peekCard.getBoundingClientRect(), w = xp.offsetWidth;
+  xp.style.left = Math.max(8, Math.min((r.left + r.right) / 2 - w / 2, innerWidth - w - 8)) + "px";
+  xp.style.top = r.bottom + 6 + "px";
+}
+// each second every time in it moves on, nothing else is redrawn
+function peekTick() {
+  for (const box of [xp, xcol]) if (box) for (const e of box.querySelectorAll("[data-since]")) e.textContent = sinceWords(+e.dataset.since);
+}
+// the column of every piece of work, opened and closed by "and n more"
+function colFill() {
+  const bg = (peekData && peekData.bg) || [];
+  if (!onTop()) {  // left of the panel: a window of its own, its top at the card's
+    api().column(peekCard.dataset.id, peekCard.getBoundingClientRect().top);
+    return;
   }
-  peek.innerHTML = h;
-  peekPlace(bg.length);
+  if (!xcol) {
+    xcol = document.createElement("div");
+    xcol.className = "xbox col";
+    xcol.setAttribute("aria-hidden", "true");
+    document.body.append(xcol);
+  }
+  xcol.innerHTML = '<div class="xi">' + bg.map(agentRow).join("") + "</div>";
+  const a = (grows(peekCard) ? peekCard : xp).getBoundingClientRect();
+  const x = a.left - 6 - COL_W >= 8 ? a.left - 6 - COL_W : Math.min(a.right + 6, innerWidth - COL_W - 8);
+  xcol.style.left = x + "px";
+  xcol.style.top = a.top + "px";
+  xcol.style.maxHeight = innerHeight - a.top - 8 + "px";
 }
-// no count here: the badge counts subagents and claude -p runs, these rows also the commands
-const bgHead = since => "In the Background" + (isFinite(since) && since ? " · " + clock(Date.now() - since) : "");
-// above the card when it fits, else below, else on the side with more room, with rows dropped (and counted)
-// until it fits there: it grows to its content and never scrolls (design.md, popover content)
-function peekPlace(total) {
-  const r = peekCard.getBoundingClientRect(), top = onTop();
-  const above = r.top - 6 - 8, below = innerHeight - r.bottom - 6 - 8;
-  const room = top ? below : Math.max(above, below);
-  let rows = [...peek.querySelectorAll(".pr")];
-  while (peek.offsetHeight > room && rows.length > 1) rows.pop().remove();
-  const left = total - rows.length;
-  if (left > 0) peek.insertAdjacentHTML("beforeend", `<div class="more">and ${left} more</div>`);
-  const w = peek.offsetWidth, h = peek.offsetHeight;
-  const up = !top && (h <= above || (h > below && above > below));
-  const y = up ? r.top - 6 - h : r.bottom + 6;
-  const x = (r.left + r.right) / 2 - w / 2;
-  peek.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + "px";
-  peek.style.top = Math.max(8, Math.min(y, innerHeight - h - 8)) + "px";
+function colToggle() {
+  if (colOpen) { colClose(); return; }
+  colOpen = true;
+  const m = xp && xp.querySelector(".xmore");
+  if (m) m.classList.add("on");
+  colFill();
 }
-// each second: the state line and every time in it move on, nothing else is redrawn
-function peekTick(s, st) {
-  if (!peek) return;
-  const p = peek.querySelector("[data-said]");
-  if (p) p.textContent = [said(s, st), flagsOf(s)].filter(Boolean).join(" · ");
-  for (const e of peek.querySelectorAll(".pf[data-since]")) e.textContent = sinceWords(+e.dataset.since);
-  const hd = peek.querySelector("h4[data-since]");
-  if (hd) hd.textContent = bgHead(+hd.dataset.since);
+function colClose() {
+  if (!colOpen) return;
+  colOpen = colIn = false;
+  if (xcol) { xcol.remove(); xcol = null; }
+  if (!onTop() && bridged) api().column_off();
+  const m = xp && xp.querySelector(".xmore");
+  if (m) m.classList.remove("on");
 }
-// a card whose popover the reader dismissed (a click, a key) opens it again only after the pointer left it
+// the column on the right is another window: agent-panel.pyw says when the pointer enters and leaves it
+function colHover(on) {
+  colIn = !!on && colOpen;
+  if (colIn) { clearTimeout(leaveJob); leaveJob = null; } else if (peekCard) peekLeave(PEEK_GRACE);
+}
+// out of the card, its box and the column: closed, after a moment when the pointer may be on its way between them
+function peekLeave(ms) {
+  if (!ms) { peekHide(); return; }
+  if (!leaveJob) leaveJob = setTimeout(() => { leaveJob = null; if (!colIn) peekHide(); }, ms);
+}
+const inZone = t => !!t && ((peekCard && peekCard.contains(t)) || (xp && xp.contains(t)) || (xcol && xcol.contains(t)));
+// a card whose opening the reader dismissed (a key, a right-click) opens again only after the pointer left it
 let peekDone = null, px = -1, py = -1;
 addEventListener("pointermove", e => {
   if (e.pointerType !== "mouse" || (e.clientX === px && e.clientY === py)) return;
   px = e.clientX; py = e.clientY;
+  if (peekCard && inZone(e.target)) { clearTimeout(leaveJob); leaveJob = null; return; }
   const c = !menu && !document.body.classList.contains("dragging") && e.target.closest(".card[data-id]");
   if (c !== peekDone) peekDone = null;
-  if (c && c !== peekDone) peekArm(c);
-  else if (peekCard) peekHide();
+  if (c && c !== peekDone) peekArm(c);  // another card: that one, at once
+  else if (peekCard) peekLeave(xp && (colOpen || !grows(peekCard)) ? PEEK_GRACE : 0);
 });
+// "and n more" opens the column; the click goes no further (the card under it would raise its window)
+for (const ev of ["click", "dblclick"]) addEventListener(ev, e => {
+  const m = e.target.closest && e.target.closest("[data-more]");
+  if (!m) return;
+  e.stopPropagation();
+  if (ev === "click") colToggle();
+}, true);
 const peekShut = () => { if (peekCard) peekDone = peekCard; peekHide(); };
-document.documentElement.addEventListener("mouseleave", () => { peekDone = null; peekHide(); });
-for (const ev of ["pointerdown", "contextmenu", "wheel", "keydown", "focusin"]) addEventListener(ev, peekShut, true);
+document.documentElement.addEventListener("mouseleave", () => {
+  if (colOpen && !onTop()) { peekLeave(PEEK_GRACE * 2); return; }  // perhaps on its way into the column
+  peekDone = null; peekHide();
+});
+for (const ev of ["contextmenu", "keydown"]) addEventListener(ev, peekShut, true);
 addEventListener("blur", peekShut);
 // anything the reader does with the keyboard dismisses it
 addEventListener("keydown", e => { if (e.key !== "Escape") tipHide(); }, true);
@@ -1365,7 +1451,7 @@ function placeHide() {
   $("hide").before($("shots"));
 }
 
-window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); if (peek) peekAsk(); }, dock: setDock };
+window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); if (xp) peekAsk(); }, dock: setDock, col: colHover };
 document.body.classList.toggle("top", window.DOCK === "top");
 placeHide();
 render();

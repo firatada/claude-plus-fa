@@ -21,6 +21,7 @@ FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "agent-panel.html"),
     os.path.join(CLAUDE_DIR, "agent-alert.html"),
     os.path.join(CLAUDE_DIR, "agent-shots.html"),
+    os.path.join(CLAUDE_DIR, "agent-column.html"),
     os.path.join(CLAUDE_DIR, "agent-panel-shots.py"),
     os.path.join(CLAUDE_DIR, "agent-panel-paste.py"),
     os.path.join(CLAUDE_DIR, "session-panel.pyw"),

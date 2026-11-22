@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Field Agents Column</title>
+<!-- The column of an opened card on the right dock (agent-panel.html, "the opened card"): an opened card with more
+     work than fits ends in "and n more", whose click opens this column left of the panel, its top at the card's
+     top, listing every piece of work still running in that session with what it works on now. agent-panel.pyw
+     fills it (col.fill), sizes the window to what this page measures (up to the screen's bottom, then it scrolls
+     inside) and shows it without the keyboard ever coming here; it closes once the pointer has left both the card
+     and this column, which this page reports (hover). Rows look as in the opened card; Spark tokens as there. -->
+<style>
+:root { --panel: #ffffff; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672; --thumb: #d5dcea; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--panel); color: var(--text); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
+  user-select: none; cursor: default; overflow-y: auto; overscroll-behavior: contain;
+}
+body::-webkit-scrollbar { width: 8px; }
+body::-webkit-scrollbar-thumb { background: var(--thumb); border-radius: 4px; border: 2px solid var(--panel); }
+/* the window is the box: its border drawn inside, the window region rounds the corners */
+#box { border: 1px solid var(--line); border-radius: 14px; padding: 2px 12px 10px; overflow-wrap: anywhere; }
+.xq { margin-top: 6px; }
+.xl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xl b { font-weight: 600; color: var(--text); }
+.x3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="box" aria-hidden="true"></div>
+<script>
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
+function clock(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60;
+  const two = n => String(n).padStart(2, "0");
+  return h ? `${h}:${two(m)}:${two(t % 60)}` : `${m}:${two(t % 60)}`;
+}
+const since = ms => ms ? clock(Date.now() - ms) : "";
+const row = b => `<div class="xq"><div class="xl"><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
+                 (b.since ? ` · <span data-since="${b.since}">${since(b.since)}</span>` : "") + "</div>" +
+                 (b.text ? `<div class="x3">${esc(b.text)}</div>` : "") + "</div>";
+let shown = "";
+window.col = {
+  // the rows, oldest first; returns the height they need, in css px, for the window to take
+  fill(rows) {
+    const h = rows.map(row).join("");
+    if (h !== shown) { shown = h; document.getElementById("box").innerHTML = h; scrollTo(0, 0); }
+    return Math.ceil(document.getElementById("box").getBoundingClientRect().height);
+  },
+  // hidden: the pointer is no longer in it, whatever the last event said
+  reset() { inside = false; },
+};
+setInterval(() => { for (const e of document.querySelectorAll("[data-since]")) e.textContent = since(+e.dataset.since); }, 1000);
+let bridged = false, inside = false;
+const tell = on => { if (bridged && on !== inside) { inside = on; window.pywebview.api.hover(on); } };
+document.documentElement.addEventListener("mouseenter", () => tell(true));
+document.documentElement.addEventListener("mouseleave", () => tell(false));
+addEventListener("pointermove", () => tell(true));
+addEventListener("pywebviewready", () => { bridged = true; window.pywebview.api.ready(); });
+</script>
+</body>
+</html>

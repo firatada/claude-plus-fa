@@ -10,6 +10,7 @@
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
 #   agent-alert.html -> ~/.claude           (the alert shown when a session waits for an answer)
 #   agent-shots.html -> ~/.claude           (the strip of the last three screenshots and their large preview, over every window)
+#   agent-column.html -> ~/.claude          (the column of a session's running work, opened from its card's "and n more")
 #   agent-panel-shots.py -> ~/.claude       (the panel keeps your screenshots: Desktop\screenshots, then the pasted-into project)
 #   agent-panel-paste.py -> ~/.claude       (Ctrl+V / Alt+V paste a picture fast in a session's terminal; started by the panel)
 #   Field Agents.lnk -> the user's Desktop  (starts the panel, or brings the running one up; replaces Agent Panel.lnk)
@@ -166,12 +167,13 @@ def install_panel():
     shutil.copy2(os.path.join(HERE, "agent-panel.html"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-alert.html"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-shots.html"), CLAUDE_DIR)
+    shutil.copy2(os.path.join(HERE, "agent-column.html"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-panel-shots.py"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-panel-paste.py"), CLAUDE_DIR)
     # replaced whole, so strips of an earlier mascot do not linger
     remove_tree(os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
     shutil.copytree(os.path.join(HERE, "mascot"), os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
-    print("copied  agent-panel.pyw, agent-panel.html, agent-alert.html, agent-shots.html, agent-panel-shots.py, agent-panel-paste.py and agent-panel-mascot -> %s" % CLAUDE_DIR)
+    print("copied  agent-panel.pyw, agent-panel.html, agent-alert.html, agent-shots.html, agent-column.html, agent-panel-shots.py, agent-panel-paste.py and agent-panel-mascot -> %s" % CLAUDE_DIR)
     r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywebview", "pystray", "pillow"],
                        capture_output=True, text=True)
     if r.returncode != 0:

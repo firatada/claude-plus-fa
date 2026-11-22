@@ -31,6 +31,7 @@ ALERT_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-ale
 KNOCK = os.path.join(MASCOT, "knock.wav")
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-shots.py")
 SHOTS_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-shots.html")
+COL_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-column.html")
 PASTE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-paste.py")
 PASTE_WINDOWS = os.path.join(STATE_DIR, "paste-windows.json")  # the session windows, for agent-panel-paste.py
 PASTE_CLASS = "claude-plus-fa paste"  # its message-only window
@@ -227,6 +228,10 @@ QUOTE_LINE = 14        # logical pixels: one line of the band; its cap is whole 
 QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
          os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
 VIEW_TITLE = "Field Agents Screenshot"
+COL_TITLE = "Field Agents Column"
+COL_W = 300            # logical pixels: the column an opened card's "and n more" opens left of the panel
+COL_MIN = 120          # logical pixels: the least height it has room for; a card lower down moves it up so far
+COL_BELOW = 8          # logical pixels it keeps from the work area's bottom; taller than that, it scrolls inside
 VIEW_HEAD, VIEW_PAD = 36, 8  # logical pixels: the preview's head row and the space round its picture
 VIEW_MIN_W = 480       # logical pixels: the preview is never narrower (its head: four buttons and room for the name)
 VIEW_MARGIN = 24       # logical pixels the preview keeps from the screen's edges and from the strip
@@ -1180,26 +1185,94 @@ def last_prompt(path, cache):
     return found
 
 
+HARNESS = "[Workflow harness"   # a Workflow tool agent's task: this frame line, then the script's text indented
+FORK_END = "</fork-boilerplate>"  # a fork's task: the inherited history, the fork's rules, then "Your directive:"
+TOLD = re.compile(r"\AThe coordinator sent a message[^\n]*:\n")  # SendMessage reaching an agent at work
+
+
+def unframe(t):
+    """The task itself out of the frame Claude Code puts round some agents' first prompt. A Workflow agent's
+    starts with a "[Workflow harness — computed task]" line saying the computed text follows, every line of it
+    indented by two spaces (so a column-zero line inside it would be forged): the indented lines are the task. A
+    fork's carries its rules in <fork-boilerplate>...</fork-boilerplate>, then "Your directive: <task>"."""
+    t = (t or "").replace("\r\n", "\n")
+    if t.lstrip().startswith(HARNESS):
+        body = [line[2:] for line in t.split("\n") if line.startswith("  ")]
+        if body:
+            return "\n".join(body)
+    if FORK_END in t:
+        t = t.split(FORK_END, 1)[1].strip()
+        return t[len("Your directive:"):] if t.startswith("Your directive:") else t
+    return t
+
+
 def first_prompt(path, cache):
-    """The prompt a subagent or a headless run was given: the first user line of its own transcript, which
-    never changes once written (kept in cache for good; a file without it yet is read again next time)."""
+    """The prompt a subagent or a headless run was given: the first user line of its own transcript, its frame
+    taken off (unframe()); for a fork the line holding its directive, which comes after the history it inherited.
+    It never changes once written (kept in cache for good; a file without it yet is read again next time)."""
     if path in cache:
         return cache[path]
     with open(path, "rb") as f:
         head = f.read(PEEK_HEAD)
+    mark = b"/fork-boilerplate"  # as the file holds it, where "<" may stand as <
+    first, fork = None, mark in head
     for line in head.split(b"\n"):
-        if b'"type":"user"' not in line:
+        if b'"type":"user"' not in line or (first and mark not in line):
             continue
         try:
             o = json.loads(line)
         except ValueError:
             continue
         if o.get("type") == "user" and not o.get("isMeta") and o.get("toolUseResult") is None:
-            t = flat(text_of(o.get("message")))
-            if t:
-                cache[path] = t
-                return t
+            raw = text_of(o.get("message"))
+            first = flat(unframe(raw)) or first
+            if first and (not fork or FORK_END in raw):  # only a fork's head holds history before its task
+                break
+    if first:
+        cache[path] = first
+    return first
+
+
+def told(o):
+    """What a line of an agent's transcript says the session sent it later with SendMessage, else None: a meta
+    user line "The coordinator sent a message while you were working:\\n<message>", or a queued_command
+    attachment holding the message; both carry the origin {"kind": "coordinator"}."""
+    a = o.get("attachment") if isinstance(o.get("attachment"), dict) else {}
+    if o.get("type") == "attachment" and a.get("type") == "queued_command" and \
+            (a.get("origin") or o.get("origin") or {}).get("kind") == "coordinator":
+        return flat(a.get("prompt") if isinstance(a.get("prompt"), str) else "")
+    if o.get("type") == "user" and (o.get("origin") or {}).get("kind") == "coordinator":
+        return flat(TOLD.sub("", text_of(o.get("message")).replace("\r\n", "\n"), count=1))
     return None
+
+
+def follow_up(path, cache):
+    """The latest message the session sent an agent with SendMessage, read on from where the last call stopped
+    (the first call reads its last PEEK_MORE bytes): cache[path] = (bytes read, latest message or None)."""
+    size = os.stat(path).st_size
+    upto, found = cache.get(path, (None, None))
+    if upto is None or size < upto:
+        upto, found = max(0, size - PEEK_MORE), None
+    if size > upto:
+        with open(path, "rb") as f:
+            f.seek(upto)
+            chunk = f.read(size - upto)
+        end = chunk.rfind(b"\n") + 1  # a line still being written is read whole next time
+        for line in chunk[:end].split(b"\n"):
+            if b'"coordinator"' not in line:
+                continue
+            try:
+                found = told(json.loads(line)) or found
+            except ValueError:
+                continue
+        upto += end
+    cache[path] = (upto, found)
+    return found
+
+
+def agent_prompt(path, cache):
+    """What a subagent works on now: the latest SendMessage it got, else the task it was started with."""
+    return follow_up(path, cache.setdefault("told", {})) or first_prompt(path, cache.setdefault("first", {}))
 
 
 ntdll = ctypes.WinDLL("ntdll")
@@ -1919,6 +1992,15 @@ class Api:
         except Exception:
             return None
 
+    def column(self, sid, top):
+        try:
+            self._p.column(sid, float(top))
+        except Exception:
+            self._p.column_off()
+
+    def column_off(self):
+        self._p.column_off()
+
     def strip(self):
         self._p.events.put("strip")
 
@@ -1974,6 +2056,23 @@ class StripApi:
     def drop(self, sid, n):
         # a selection's x in the band: out of that session's ":" reply list
         self._p.events.put("qdrop:" + json.dumps([str(sid), int(n)]))
+
+
+class ColumnApi:
+    """What the column of an opened card (agent-column.html) may call."""
+
+    def __init__(self, panel):
+        self._p = panel
+
+    def ready(self):
+        self._p.col_up()
+
+    def hover(self, on):
+        # the panel's page keeps its card open while the pointer is in here (app.col), closes it once it left both
+        try:
+            self._p.window.evaluate_js("app.col(%s)" % ("true" if on else "false"))
+        except Exception:
+            pass
 
 
 class ViewApi:
@@ -2163,6 +2262,14 @@ class Panel:
                                           js_api=ViewApi(self), width=640, height=400, min_size=(0, 0),
                                           frameless=True, easy_drag=False, on_top=True, hidden=True, focus=False,
                                           shadow=False, background_color="#FFFFFF")
+        # the column an opened card's "and n more" opens left of the panel on the right dock: its own window, as the
+        # panel's ends at the card's edge; topmost while it shows, as a tooltip is, and never focused
+        self.col_hwnd, self.col_ready, self.col_shown, self.col_lock = None, False, False, threading.Lock()
+        with open(COL_HTML, encoding="utf-8") as f:
+            chtml = f.read()
+        self.col = webview.create_window(COL_TITLE, html=chtml, js_api=ColumnApi(self), width=COL_W, height=200,
+                                         min_size=(0, 0), frameless=True, easy_drag=False, on_top=True, hidden=True,
+                                         focus=False, shadow=False, background_color="#FFFFFF")
 
     def run(self):
         quiet_forms()
@@ -2401,6 +2508,7 @@ class Panel:
         if not self.visible:
             user32.ShowWindow(self.hwnd, 0)  # SW_HIDE
             self.shade(None)
+            self.column_off()
         else:
             self.place()
             user32.ShowWindow(self.hwnd, 5)
@@ -3647,9 +3755,10 @@ class Panel:
         return t["start"]
 
     def peek(self, sid):
-        """What the card's popover shows for one session, read now for the card under the pointer only: its last
-        prompt, and each piece of background work still running with the prompt or command it was given
-        ({"kind", "what", "text", "since" ms}), oldest first. None for a session not in the list."""
+        """What the opened card shows for one session, read now for the card under the pointer only: its last
+        prompt, and each piece of background work still running with what it works on now: a subagent's latest
+        SendMessage or else its task, a run's prompt, a command ({"kind", "what", "text", "since" ms}), oldest
+        first. None for a session not in the list."""
         s = next((x for x in self.sessions if x["id"] == sid), None)
         if not s:
             return None
@@ -3678,7 +3787,7 @@ class Panel:
             text = w.get("text")
             try:
                 if w["kind"] == "subagent" and w.get("file"):
-                    text = first_prompt(w["file"], c.setdefault("first", {}))
+                    text = agent_prompt(w["file"], c)
                 elif w["kind"] == "run":
                     try:  # a run started with --no-session-persistence has no transcript: its command line then
                         text = first_prompt(os.path.join(CLAUDE, "projects", slug(w["cwd"]), w["sid"] + ".jsonl"),
@@ -3692,6 +3801,52 @@ class Panel:
                               "since": int(w["since"] * 1000) if w.get("since") else None})
         out["bg"].sort(key=lambda w: w["since"] or 0)
         return out
+
+    def col_up(self):
+        """The column's page has loaded (as strip_up): its window is looked up only now."""
+        self.col_hwnd = own_window(COL_TITLE, visible=False)
+        if self.col_hwnd:
+            self.float_style(self.col_hwnd)
+            self.col_ready = True
+
+    def column(self, sid, top):
+        """The column of every piece of work running in one session, opened by its card's "and n more" on the right
+        dock: left of the panel, its top at the card's (top: css px in the panel's page), as tall as its rows up to
+        COL_BELOW above the work area's bottom (then it scrolls inside). Shown topmost and never activated."""
+        if not self.col_ready or not self.hwnd or self.opts["dock"] == "top" or not self.visible:
+            return
+        d = self.peek(sid)
+        rows = (d or {}).get("bg") or []
+        if not rows:
+            return self.column_off()
+        with self.col_lock:
+            need = self.col.evaluate_js("col.fill(%s)" % json.dumps(rows)) or 0
+            s = self.scale()
+            r, pt = wt.RECT(), wt.POINT(0, 0)
+            user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+            user32.ClientToScreen(self.hwnd, ctypes.byref(pt))
+            w = int(round(COL_W * s))
+            x, y = r.left - w, pt.y + int(round(top * s))
+            wa = self.work_area((x, y, w, 1))
+            y = max(wa.top, min(y, wa.bottom - int(round(COL_MIN * s))))  # a card near the bottom: room for a few rows
+            h = max(1, min(int(math.ceil(float(need) * s)), wa.bottom - int(round(COL_BELOW * s)) - y))
+            if not self.col_shown:
+                self.wake(self.col_hwnd, True)
+                self.col_shown = True
+            rr = int(round(28 * s))
+            user32.SetWindowRgn(self.col_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, rr, rr), True)
+            user32.SetWindowPos(self.col_hwnd, -1, x, y, w, h, 0x0010 | 0x0040)  # topmost, shown, not activated
+
+    def column_off(self):
+        if not self.col_hwnd:
+            return
+        with self.col_lock:
+            if user32.IsWindowVisible(self.col_hwnd):
+                user32.ShowWindow(self.col_hwnd, 0)  # SW_HIDE
+            try:
+                self.col.evaluate_js("col.reset()")
+            except Exception:
+                pass
 
     def bg_start(self, s, seen):
         """When an open session's background work began, in ms since the epoch, for the timer on a card that shows as
@@ -3888,6 +4043,7 @@ class Panel:
         self.alert.destroy()  # a hidden window left behind keeps the program running
         self.strip.destroy()
         self.view.destroy()
+        self.col.destroy()
         self.window.destroy()
 
 
