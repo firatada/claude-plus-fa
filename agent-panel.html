@@ -11,15 +11,15 @@
      slow green breathing that "is not enough"). An open session whose child runs or subagents are running
      (the background badge) sorts with the working cards, timing that work while it has no turn of its own
      (2026-11-20: an idle session waiting on its `claude -p` sat at the bottom while it was the only one at work),
-     but its dot, tint and hero keep its own state: only the badge's arrow turns for that work (2026-11-20,
+     but its dot and tint keep its own state (its hero conducts, 2026-11-22): only the badge's arrow turns for that work (2026-11-20,
      the maintainer: a green arc on a session that is itself idle "is misleading"). The folder path shows only
      in the title's tooltip.
-     Mascot (2026-11-22, the big-headed chibi FA hero, replacing the 2026-11-21 full-body hero): cut by
+     Mascot (2026-11-22, the big-headed chibi FA hero, five states approved by the maintainer the same day): cut by
      tools/hero-export.py into mascot/ (56 and 112 px frames) and inlined by agent-panel.pyw as
-     window.MASCOT. It is the header's logo and stands 56 px on every card: running while the session
-     works, asleep (a slow breath, a "z" rising) in every other state, greyed on a closed card; the state
-     itself stays with the dot, tint and ring. The header runs when the most pressing state in the list
-     is working, otherwise sleeps. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
+     window.MASCOT. It is the header's logo and stands 56 px on every card, each state its own silhouette: asking
+     waves with a red "!", background work running conducts, working runs, open stands, closed sleeps greyed; the
+     moving ones glance at the viewer now and then. The dot, tint and ring still carry the state. The header shows
+     the most pressing session's figure. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
      one shape": the header's logo (36, the hero), count pill (18, pill radius) and hide and screenshot-strip buttons (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
@@ -441,13 +441,25 @@ let state = {sessions: [], limits: {}}, showHidden = false, scrollToAside = fals
 const onTop = () => document.body.classList.contains("top");
 
 // ----- the mascot (mindmap mascot.md: frame 0 the rest, frame 0 only under reduced motion) -----
-const sprites = new Map();   // element -> {key, n, seq, i, at}
-// strip, its frame count (fixed by tools/hero-export.py), and the play order as [frame, ms] steps:
-// the run was drawn at 11 fps; asleep, the hero breathes slowly (rest, half, full, half breath, the "z"
-// rising one step a frame)
-const RUN = ["hero-run", 8, [0, 1, 2, 3, 4, 5, 6, 7].map(f => [f, 90])];
-const SLEEP = ["hero-sleep", 4, [[0, 900], [1, 700], [2, 900], [3, 700]]];
-const heroOf = st => st === "busy" ? RUN : SLEEP;
+const sprites = new Map();   // element -> {key, src, n, seq, glance, i, g, at, look}
+// One figure per state, each a strip cut by tools/hero-export.py: [strip, frame count, the loop as [frame, ms]
+// steps, the glance as [frame, ms] steps (or none)]. The glance turns the head to the viewer while the body keeps
+// its action; it plays once at a random moment every 6 to 10 s, in place of a step that shows frame 0, and that
+// step plays after it. Run: drawn at 11 fps; its glance is frames 0, 2, 4, 6 with the head turned, each held two
+// steps, so the legs keep their pace. Conduct: a beat of six poses, 1.44 s; its glance beats 0, 2, 4. Ask: the
+// wave, the "!" shaking. Idle: rest, breath, rest, blink, rest, look aside. Sleep: rest, half, full, half breath,
+// the "z" rising one step a frame.
+const RUN = ["hero-run", 12, [0, 1, 2, 3, 4, 5, 6, 7].map(f => [f, 90]), [[8, 180], [9, 180], [10, 180], [11, 180]]];
+const CONDUCT = ["hero-conduct", 9, [0, 1, 2, 3, 4, 5].map(f => [f, 240]), [[6, 340], [7, 340], [8, 340]]];
+const ASK = ["hero-ask", 4, [0, 1, 2, 3].map(f => [f, 180]), null];
+const IDLE = ["hero-idle", 6, [[0, 1400], [1, 900], [0, 1200], [2, 140], [0, 1000], [3, 1100]], [[4, 500], [5, 600]]];
+const SLEEP = ["hero-sleep", 4, [[0, 900], [1, 700], [2, 900], [3, 700]], null];
+// which figure a session shows, first match wins: asking waves, background work running conducts, working runs,
+// open stands, closed sleeps (greyed by .av.gone)
+const FIGURE = {ask: ASK, bg: CONDUCT, busy: RUN, idle: IDLE, "": SLEEP};
+const figureOf = s => !s.status ? "" : s.waiting ? "ask" : delegated(s) ? "bg" : s.status === "busy" ? "busy" : "idle";
+const GLANCE_EVERY = [6000, 10000];
+const nextLook = now => now + GLANCE_EVERY[0] + Math.random() * (GLANCE_EVERY[1] - GLANCE_EVERY[0]);
 // each strip comes in 56 px frames and in 112 px ("@2x"): the smaller one when it still covers the
 // element's device pixels (a 56 px card at 1x, the 36 px header and 28 px tab at 1x), else the larger
 const stripOf = (el, key) => {
@@ -455,7 +467,7 @@ const stripOf = (el, key) => {
   return need <= 56 && MASCOT[key] ? MASCOT[key] : MASCOT[key + "@2x"] || MASCOT[key];
 };
 const frameAt = (el, n, f) => { el.style.backgroundPosition = f * 100 / (n - 1) + "% 0"; };
-function sprite(el, [key, n, seq]) {
+function sprite(el, [key, n, seq, glance]) {
   el.hidden = !MASCOT[key] && !MASCOT[key + "@2x"];
   if (el.hidden) return false;
   const src = stripOf(el, key), s = sprites.get(el);
@@ -467,20 +479,32 @@ function sprite(el, [key, n, seq]) {
   el.style.backgroundImage = `url(${src})`;
   el.style.backgroundSize = n * 100 + "% 100%";
   frameAt(el, n, 0);
-  // each card starts at its own moment, so the heroes do not move in step
-  sprites.set(el, {key, src, n, seq, i: 0, at: performance.now() + Math.random() * 1200});
+  // each card starts at its own moment, so the heroes do not move in step, and glances on its own clock
+  const now = performance.now();
+  sprites.set(el, {key, src, n, seq, glance, i: 0, g: -1, at: now + Math.random() * 1200, look: nextLook(now)});
   return true;
+}
+// the next [frame, ms] of a playing strip: the next loop step, or a glance in place of a step that shows frame 0
+// once its time has come; after the glance, the step it stood in for
+function advance(s, now) {
+  if (s.g >= 0 && s.g + 1 < s.glance.length) return s.glance[++s.g];
+  if (s.g >= 0) s.g = -1; else s.i = (s.i + 1) % s.seq.length;
+  if (s.glance && now >= s.look && s.seq[s.i][0] === 0) {
+    s.g = 0;
+    s.look = nextLook(now);
+    return s.glance[0];
+  }
+  return s.seq[s.i];
 }
 function tick(now) {
   for (const [el, s] of sprites) {
     if (!el.isConnected) { sprites.delete(el); continue; }
     if (still.matches) {
-      if (s.i) { s.i = 0; frameAt(el, s.n, 0); }
+      if (s.i || s.g >= 0) { s.i = 0; s.g = -1; frameAt(el, s.n, 0); }
       continue;
     }
     if (now < s.at) continue;
-    s.i = (s.i + 1) % s.seq.length;
-    const [f, ms] = s.seq[s.i];
+    const [f, ms] = advance(s, now);
     // from the step's due time, not from this frame, so the 90 ms run keeps its pace on a 60 Hz loop;
     // after a long stall (a hidden window) it restarts from now instead of racing to catch up
     s.at = (now - s.at > 500 ? now : s.at) + ms;
@@ -506,11 +530,12 @@ function syncRegion() {
   api().region(rs);
 }
 requestAnimationFrame(tick);
-// the header's hero runs when the most pressing state in the list is working, otherwise sleeps (full colour)
+// the header's hero is the figure of the most pressing session in the list, by the cards' own rule (asking,
+// background work, working, open, closed); asleep in full colour when nothing is open
 function headerMascot() {
-  const st = state.sessions.map(stateOf);
-  const top = st.includes("ask") ? "ask" : st.includes("busy") ? "busy" : "idle";
-  $("mark").style.display = sprite($("me"), heroOf(top)) ? "none" : "";
+  const fs = state.sessions.map(figureOf);
+  const top = ["ask", "bg", "busy", "idle"].find(f => fs.includes(f)) || "";
+  $("mark").style.display = sprite($("me"), FIGURE[top]) ? "none" : "";
 }
 
 // hidden by the user, its folder is gone, or a headless `claude -p` run another session started:
@@ -579,7 +604,7 @@ function fill(el, s, q) {
   el.className = "card" + (st === "busy" || st === "ask" ? " " + st : "") + (s.here ? " here" : "") +
                  (menuFor === s.id ? " target" : "");
   const av = el.querySelector(".av");
-  sprite(av, heroOf(st));
+  sprite(av, FIGURE[figureOf(s)]);
   av.classList.toggle("gone", st === "");
   const d = el.querySelector(".dot");
   d.className = "dot " + st;

@@ -162,6 +162,9 @@ def load_quote():
         return None
 
 
+HEROES = ("hero-run", "hero-conduct", "hero-ask", "hero-idle", "hero-sleep")  # the panel's strips, one per state
+
+
 def mascot_js(only=None):
     """The mascot strips named in `only` (all without it) as data URLs: the page is handed over as a
     string, so it cannot load files."""
@@ -2116,7 +2119,7 @@ class Panel:
         self.live = {}  # the session files of the last live pass, for peek()
         self.peeks = {}  # what peek() read so far, by transcript: last prompts, first prompts, background commands
         with open(HTML, encoding="utf-8") as f:
-            html = f.read().replace("/*MASCOT*/", mascot_js(("hero-run", "hero-run@2x", "hero-sleep", "hero-sleep@2x")) + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
+            html = f.read().replace("/*MASCOT*/", mascot_js(tuple(k + x for k in HEROES for x in ("", "@2x"))) + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         # min_size=(0, 0) on every window: a minimum set as the form is made activates it (see quiet_forms())
         self.window = webview.create_window(TITLE, html=html, js_api=Api(self), width=WIDTH, height=600,
                                             min_size=(0, 0), frameless=True, easy_drag=False, background_color=BG)

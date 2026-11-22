@@ -41,7 +41,7 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows, so a long session
 
 ### Field Agents
 
-<img src="docs/img/agent-panel.png" alt="Field Agents: one session asking, one working (its hero runs), one with background work, one open, closed ones greyed (their heroes asleep), usage bars at the bottom" width="280">
+<img src="docs/img/agent-panel.png" alt="Field Agents: one session asking (its hero waves), one with background work (its hero conducts), one working (its hero runs), one open (its hero stands), closed ones greyed (their heroes asleep), usage bars at the bottom" width="280">
 
 Every Claude Code session on your PC in one list on the right edge of the screen, newest first, with a search box: each session is an agent at work in the field, hence the name (it was called Agent Panel before). It takes no screen space: the window you work in covers it.
 
@@ -49,7 +49,7 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 - **Green**: the session is working. Its dot turns and the clock shows how long the current turn has run.
 - **Turning badge**: work the session started in the background (a subagent or a `claude -p` run), with the number of runs.
 - **Purple**: open and waiting for you. **Grey**: closed.
-- The hero on each card runs while its session works and sleeps the rest of the time.
+- The hero on each card shows what its session is doing: it waves when the session asks you something, conducts while background work runs, runs while the session works, stands while it is open and sleeps when it is closed. Now and then it glances at you.
 - **Point at a card** to see what its session is working on: its last prompt and, for each subagent, `claude -p` run or background command still running, the prompt or command it was given and how long it has run.
 - Each card shows how full that session's context is. The bottom shows your 5-hour and weekly usage.
 
@@ -64,7 +64,7 @@ Using it:
 - If a Claude Code update breaks `claude`, the panel repairs it with `claude update`.
 - Drag the header to the top edge to make it a row of tabs (the tray menu does this too):
 
-<img src="docs/img/agent-panel-top.png" alt="Field Agents docked at the top as a row of session tabs" width="880">
+<img src="docs/img/agent-panel-top.png" alt="Field Agents docked at the top as a row of session tabs, each with its hero" width="880">
 
 When a session starts waiting for your answer, this alert drops in at the top of the screen with three knocks. Click the session to go to it. It never takes the keyboard from what you are typing.
 

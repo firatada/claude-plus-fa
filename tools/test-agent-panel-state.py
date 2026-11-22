@@ -4,7 +4,7 @@
 # The .pyw is never imported (that would trip its one-instance mutex and raise the running panel): the functions
 # under test are taken from it by ast and given a fake process table and fake creation times, so no process is
 # started or read. The page's state functions are cut out of agent-panel.html and run in node.
-import ast, json, os, subprocess, time, unittest
+import ast, json, os, re, subprocess, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -182,22 +182,38 @@ class Page(unittest.TestCase):
 
 
 class Mascot(unittest.TestCase):
-    """The chibi hero: runs only while its session works, sleeps in every other state; each element gets the
-    smallest shipped strip that still covers its device pixels; the page's frame counts match the strips."""
+    """The chibi hero: one figure per state, first match wins (asking waves, background work conducts, working runs,
+    open stands, closed sleeps); the moving figures glance at the viewer in place of a rest step, then that step
+    plays; each element gets the smallest shipped strip that still covers its device pixels; the page's frame
+    counts match the strips."""
 
     @classmethod
     def setUpClass(cls):
         with open(os.path.join(ROOT, "agent-panel.html"), encoding="utf-8") as f:
             html = f.read()
         code = html[html.index("const RUN = "):html.index("const frameAt = ")]
+        code += html[html.index("function advance(s, now)"):html.index("function tick(now)")]
         test = r"""
 const MASCOT = {"hero-run": "r1", "hero-run@2x": "r2", "hero-sleep": "s1", "hero-sleep@2x": "s2"};
 const window = {devicePixelRatio: 1};
+const delegated = s => !!s.status && !!(s.bg || []).length;
 const pick = (w, dpr, key) => { window.devicePixelRatio = dpr; return stripOf({clientWidth: w}, key); };
+const sessions = [{status: "busy", waiting: true, bg: [1]}, {status: "busy", bg: [1]}, {status: "idle", bg: [1]},
+                  {status: "busy"}, {status: "idle"}, {status: "waiting", waiting: true}, {status: "", bg: [1]}, {}];
+// play a figure for `ms` from a moment at which its glance is already due: the frames shown, in order
+function play([key, n, seq, glance], ms) {
+  const s = {seq, glance, i: 0, g: -1, look: 0}, shown = [];
+  for (let t = 0; t < ms;) { const [f, d] = advance(s, t); shown.push(f); t += d; }
+  return shown;
+}
 console.log(JSON.stringify({
-  heroes: ["busy", "ask", "idle", ""].map(st => heroOf(st)[0]),
-  frames: {run: RUN[1], sleep: SLEEP[1]},
-  sleepMs: SLEEP[2].map(s => s[1]), runMs: RUN[2].map(s => s[1]),
+  figures: sessions.map(s => FIGURE[figureOf(s)][0]),
+  frames: Object.fromEntries([RUN, CONDUCT, ASK, IDLE, SLEEP].map(f => [f[0], f[1]])),
+  used: Object.fromEntries([RUN, CONDUCT, ASK, IDLE, SLEEP].map(f =>
+    [f[0], [...new Set([...f[2], ...(f[3] || [])].map(x => x[0]))].sort((a, b) => a - b)])),
+  glanceMs: Object.fromEntries([RUN, CONDUCT, IDLE].map(f => [f[0], f[3].reduce((a, x) => a + x[1], 0)])),
+  runMs: RUN[2].map(s => s[1]), sleepMs: SLEEP[2].map(s => s[1]),
+  runPlay: play(RUN, 2000), idlePlay: play(IDLE, 3000), askPlay: play(ASK, 1000), every: GLANCE_EVERY,
   picks: [pick(56, 1, "hero-run"), pick(56, 2, "hero-run"), pick(36, 1, "hero-sleep"), pick(36, 2, "hero-sleep"),
           pick(28, 1, "hero-run"), pick(28, 2, "hero-run"), pick(28, 1.5, "hero-sleep"), pick(56, 1.25, "hero-sleep")],
 }));
@@ -205,12 +221,27 @@ console.log(JSON.stringify({
         out = subprocess.run(["node", "-e", code + test], capture_output=True, encoding="utf-8", check=True)
         cls.r = json.loads(out.stdout)
 
-    def test_runs_only_while_working(self):
-        self.assertEqual(self.r["heroes"], ["hero-run", "hero-sleep", "hero-sleep", "hero-sleep"])
+    def test_figure_per_state(self):
+        # asking beats background work, which beats working; closed sleeps even with background runs listed
+        self.assertEqual(self.r["figures"], ["hero-ask", "hero-conduct", "hero-conduct", "hero-run", "hero-idle",
+                                             "hero-ask", "hero-sleep", "hero-sleep"])
 
     def test_timing(self):
         self.assertTrue(all(ms == 90 for ms in self.r["runMs"]))
         self.assertTrue(all(600 <= ms <= 900 for ms in self.r["sleepMs"]))
+        for name, ms in self.r["glanceMs"].items():
+            self.assertTrue(700 <= ms <= 1300, (name, ms))  # about 1 s
+        self.assertEqual(self.r["every"], [6000, 10000])
+
+    def test_glance_stands_in_for_a_rest_step(self):
+        # the run: one loop step, then (step 0 coming round) the four glance frames, then step 0 and on
+        run = self.r["runPlay"]
+        self.assertEqual(run[:14], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2])
+        self.assertEqual(sum(f >= 8 for f in run), 4)  # once only, the next one 6 to 10 s later
+        idle = self.r["idlePlay"]
+        k = idle.index(4)
+        self.assertEqual(idle[k:k + 3], [4, 5, 0])
+        self.assertNotIn(4, self.r["askPlay"])  # asking already faces the viewer: no glance
 
     def test_strip_size_for_the_screen(self):
         # card 56 px at 1x: the 56 px frames; at 2x or 1.25x the 112 px ones; header and tab at 1x the 56 px
@@ -218,18 +249,20 @@ console.log(JSON.stringify({
 
     def test_shipped_strips_match_the_page(self):
         from PIL import Image
-        for name, n in (("hero-run", self.r["frames"]["run"]), ("hero-sleep", self.r["frames"]["sleep"])):
+        for name, n in self.r["frames"].items():
+            self.assertEqual(self.r["used"][name], list(range(n)), name)  # every frame played, none past the strip
             for suffix, px in (("", 56), ("@2x", 112)):
                 with Image.open(os.path.join(ROOT, "mascot", name + suffix + ".webp")) as im:
                     self.assertEqual(im.size, (px * n, px), name + suffix)
 
-    def test_panel_inlines_all_four(self):
-        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
-            src = f.read()
+    def test_panel_inlines_every_figure(self):
         ns = pyw_functions("mascot_js")
         ns.update(MASCOT=os.path.join(ROOT, "mascot"), base64=__import__("base64"))
-        keys = ("hero-run", "hero-run@2x", "hero-sleep", "hero-sleep@2x")
-        self.assertIn("mascot_js((%s))" % ", ".join('"%s"' % k for k in keys), src)
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            src = f.read()
+        heroes = re.search(r"^HEROES = (\(.*?\))", src, re.M).group(1)
+        self.assertEqual(sorted(eval(heroes)), sorted(self.r["frames"]))
+        keys = tuple(k + x for k in eval(heroes) for x in ("", "@2x"))
         js = ns["mascot_js"](keys)
         self.assertEqual(sorted(json.loads(js[len("window.MASCOT = "):-1])), sorted(keys))
 
