@@ -6,11 +6,11 @@
 # gets screenshots/ in its .gitignore (and .assetsignore, when it has one). Pasted into a second session
 # in another folder, it is copied there. Nothing is deleted; nothing is added to Claude's input; the
 # keeper only reads the clipboard. The panel's strip (latest(): the pinned ones and the last three) writes TEXT to it on Copy
-# (copy_text(): the file's path and its OCR lines, read by a resident OCR worker), never an image, so the keeper
-# never takes it for a screenshot.
+# (copy_text(): the file's path and its OCR lines, read by a resident OCR worker); the preview's Copy as Image
+# (copy_image()) writes the picture with the paste mark, so the keeper never takes either for a screenshot.
 # Off: "screenshots": false in ~/.claude/claude-plus.local.json.
-import base64, collections, ctypes, ctypes.wintypes as wt, datetime, io, json, os, queue, re, shutil, threading, \
-    time, unicodedata
+import base64, collections, ctypes, ctypes.wintypes as wt, datetime, io, json, os, queue, re, shutil, struct, \
+    threading, time, unicodedata
 from PIL import Image, ImageChops, ImageGrab
 
 HOME = os.path.expanduser("~")
@@ -573,9 +573,9 @@ user32.SetClipboardData.argtypes = [wt.UINT, ctypes.c_void_p]
 user32.SetClipboardData.restype = ctypes.c_void_p
 
 
-def set_clipboard_text(text):
-    """Text alone on the clipboard (CF_UNICODETEXT): no image format, so is_screenshot() refuses it."""
-    data = text.encode("utf-16-le") + b"\0\0"
+def set_clipboard(items):
+    """The clipboard emptied and set to items [(format, bytes)], in that order; False when it stays busy or a
+    format is refused."""
     for _ in range(10):  # another program may hold the clipboard open for a moment
         if user32.OpenClipboard(None):
             break
@@ -584,15 +584,52 @@ def set_clipboard_text(text):
         return False
     try:
         user32.EmptyClipboard()
-        h = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
-        ctypes.memmove(kernel32.GlobalLock(h), data, len(data))
-        kernel32.GlobalUnlock(h)
-        if not user32.SetClipboardData(13, h):  # CF_UNICODETEXT; once set, the clipboard owns the memory
-            kernel32.GlobalFree(h)
-            return False
+        for fmt, data in items:
+            if isinstance(fmt, str):
+                fmt = user32.RegisterClipboardFormatW(fmt)
+            h = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+            if not h:
+                return False
+            ctypes.memmove(kernel32.GlobalLock(h), data, len(data))
+            kernel32.GlobalUnlock(h)
+            if not user32.SetClipboardData(fmt, h):  # once set, the clipboard owns the memory
+                kernel32.GlobalFree(h)
+                return False
         return True
     finally:
         user32.CloseClipboard()
+
+
+def set_clipboard_text(text):
+    """Text alone on the clipboard (CF_UNICODETEXT): no image format, so is_screenshot() refuses it."""
+    return set_clipboard([(13, text.encode("utf-16-le") + b"\0\0")])
+
+
+def image_formats(path):
+    """Copy as Image: the picture in the forms Windows programs read, in the order they are offered. PNG (the
+    file's own bytes when it is one: browsers, Word, chat apps), CF_DIBV5 (32 bit, straight alpha, sRGB), CF_DIB
+    (24 bit, alpha laid on white: Paint and older programs; Windows makes CF_BITMAP from it), each bottom-up at
+    the picture's own size; and the paste mark, so the keeper never takes it for a new screenshot."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    with Image.open(io.BytesIO(raw)) as im:
+        im.load()
+        rgba = im.convert("RGBA")
+    if raw[:8] != b"\x89PNG\r\n\x1a\n":
+        buf = io.BytesIO()
+        rgba.save(buf, "PNG", compress_level=1)
+        raw = buf.getvalue()
+    w, h = rgba.size
+    bgra = rgba.tobytes("raw", "BGRA", 0, -1)  # bottom-up, 4 bytes a pixel: rows need no padding
+    v5 = struct.pack("<IiiHHIIiiIIIIII", 124, w, h, 1, 32, 3, len(bgra), 2835, 2835, 0, 0,  # BI_BITFIELDS
+                     0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000) + struct.pack("<I", 0x73524742)  # 'sRGB'
+    v5 += bytes(36 + 12) + struct.pack("<IIII", 4, 0, 0, 0)  # endpoints, gamma; LCS_GM_IMAGES; no profile
+    rgb = Image.new("RGB", rgba.size, (255, 255, 255))
+    rgb.paste(rgba, mask=rgba.getchannel("A"))
+    stride = (w * 3 + 3) & ~3
+    bgr = rgb.tobytes("raw", "BGR", stride, -1)
+    dib = struct.pack("<IiiHHIIiiII", 40, w, h, 1, 24, 0, len(bgr), 2835, 2835, 0, 0)  # BI_RGB
+    return [("PNG", raw), (CF_DIBV5, v5 + bgra), (CF_DIB, dib + bgr), (PASTE_MARK, b"\1\0\0\0")]
 
 
 def fixed_pitch(words):
@@ -806,6 +843,18 @@ class Shots:
             return False
         ok = set_clipboard_text(shot_text(p, self.ocr.read(p)))
         self.log("copied text" if ok else "copy failed", p)
+        return ok
+
+    def copy_image(self, at):
+        """Copy as Image on the preview: the picture itself on the clipboard (image_formats())."""
+        p = self.path(at)
+        if not p:
+            return False
+        try:
+            ok = set_clipboard(image_formats(p))
+        except Exception:  # unreadable, or gone meanwhile
+            ok = False
+        self.log("copied image" if ok else "copy image failed", p)
         return ok
 
     # ----- threads -----

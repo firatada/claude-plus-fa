@@ -14,7 +14,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Every push needs the maintainer's approval. Before one, scan what goes out for keys, and run `git log main -p --format='%an %ae %cn %ce%n%B' | grep -icEf .git/info/private-names.txt`, which must print 0.
 - `.git/info/private-names.txt` holds the private names (client projects, private paths and addresses, one extended regex per line); it lives in `.git/info/` because a tracked file would publish them. A hit is removed from history with `git filter-repo --refs main --replace-text`, never only by a new commit.
 - `.gitignore`: `.env`, `__pycache__/`, `handoff.md`. `archive/` is excluded locally in `.git/info/exclude`.
-- The claude-plus-fa card on firatada.com is live since 2026-11-21 (Cloudflare version be65aad8).
+- The claude-plus-fa card on firatada.com is live.
 - `docs/img/*.png` are the README's pictures, taken at 2x from the real pages fed made-up sessions (never real session names).
 
 ## Install, uninstall, run
@@ -186,7 +186,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Still the octopus, until the maintainer decides: tray fallback `tray.png`, desktop `agent-panel.ico`, README `logo.png`, the alert's `asking` strip (56 px), the way-out dialog's `asking-purple`. `python -I tools/mascot-export.py` cuts only these from `tools/mascot-source/purple-octopus.png` (1536 x 1024 sheet; `asking` recoloured red and kept purple; logo 256 px, tray 64 px head crop, ico 16 to 256 px).
 
 ## Screenshots and the paste key
-- The screenshot keeper, the strip and its preview, Copy's OCR, and the paste key: [`memory/screenshots.md`](./memory/screenshots.md).
+- The screenshot keeper, the strip and its preview, Copy as Text's OCR, Copy as Image, and the paste key: [`memory/screenshots.md`](./memory/screenshots.md).
 
 ## Reply to a passage
 - Flow: select in Windows Terminal (`copyOnSelect` fills the clipboard), type `: my answer` or `:1 yes :3 no`, Enter; `quote-reply.py` adds the passages to the turn. The prompt itself is never changed.
@@ -209,7 +209,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - `copy_on_select.py`: `files()` = every Windows Terminal settings file that exists (Store stable/Preview/Canary under `%LOCALAPPDATA%\Packages\Microsoft.WindowsTerminal*_8wekyb3d8bbwe\LocalState`, unpackaged `%LOCALAPPDATA%\Microsoft\Windows Terminal`, Scoop `apps\windows-terminal*\current\settings`), deduplicated by real path. Edited as text: only the root member's value replaced, or `"copyOnSelect": true,` inserted after the root `{` (BOM, indent, line ending kept; written in place). Once per file, recorded in `copy-on-select.json`; a file already `true` recorded unchanged; backup `settings.json.before-claude-plus` once; an unparsable file skipped, not recorded. `restore()`: only records with `changed`, only while still `true`.
 
 ## Tests
-- Unit tests (all pass, 2026-11-22): `python -I tools/test-quote-reply.py` (54), `python -I tools/test-agent-panel-state.py` (19, 5 of them the mascot's), `python -I tools/test-paste.py` (15), `python -I tools/test-link-front.py` (15), `python -I tools/test-codex-move.py` (12, the move to Codex), `python -I tools/test-way-out.py` (16, the way-out window's gate and Codex's start), `python -I tools/test-codex-way-back.py` (15, the panel's GLM and Codex steps), `python tools/test-ocr.py` (rendered pictures; `--unit` for the 7 `ocr_rows()` checks).
+- Unit tests (all pass, 2026-11-22): `python -I tools/test-quote-reply.py` (54), `python -I tools/test-agent-panel-state.py` (19, 5 of them the mascot's), `python -I tools/test-paste.py` (19; `--clipboard` adds Copy as Image's real clipboard round trip), `python -I tools/test-link-front.py` (15), `python -I tools/test-codex-move.py` (12, the move to Codex), `python -I tools/test-way-out.py` (16, the way-out window's gate and Codex's start), `python -I tools/test-codex-way-back.py` (15, the panel's GLM and Codex steps), `python tools/test-ocr.py` (rendered pictures; `--unit` for the 7 `ocr_rows()` checks).
 - Page checks: the repo's `agent-panel.html` with the mascot strips put in at `/*MASCOT*/`, served from 127.0.0.1 to Playwright with a stub `pywebview`, fed made-up sessions through `app.update()`.
 - Window checks: the repo's `agent-panel.pyw` run by a throwaway driver with its mutex and event names renamed (the live panel keeps running), on a temp profile (`USERPROFILE`/`HOME` on `%TEMP%`), the keeper built without `start()`; windows captured by their own handle (`PrintWindow`, `PW_RENDERFULLCONTENT`).
 - Functions are taken out of the `.pyw` by `ast` (importing it trips the one-instance mutex and raises the running panel).
@@ -218,7 +218,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 ## Gotchas
 - A pywebview window shown only by `SetWindowPos(SWP_SHOWWINDOW)` stays blank white (no `WM_SHOWWINDOW` reaches WinForms); show it once with `ShowWindow`.
 - pywebview 6.2 activates every window it makes (WinForms applies `MinimumSize` and `TopMost` with `SetWindowPos` without `SWP_NOACTIVATE`, `Show()` is `SW_SHOW`, Shown calls `webview.Focus()`, `show()` calls `Activate()`); `focus=False` only adds `WS_EX_NOACTIVATE`. Hence `quiet_forms()`.
-- pywebview sets an empty `window.pywebview.api` before adding the methods; a call in that gap throws (it once stopped the top dock's frame loop for good). Wait for `pywebviewready`.
+- pywebview sets an empty `window.pywebview.api` before adding the methods; a call in that gap throws. Wait for `pywebviewready`.
 - DWM draws the frame's shadow and border round the whole window rectangle and ignores the window region.
 - WebView2 draws no see-through pixels and does not take a layered parent; translucent effects need a separate layered window.
 - An owned window stays above its owner but does not hide with it.
@@ -235,7 +235,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - The panel is not topmost, so a drag on a covered panel lands on the window above it; raise it first (Ctrl+Alt+C).
 - A hook's detached child was killed when the hook ended; that is why the dialog waits inside the hook.
 - Testing `/compact` from Git Bash needs `MSYS_NO_PATHCONV=1`.
-- In tests, find a stand-in window by the handle of the window the test created, never by title (a real session window with the same title was once moved and closed). Check `WindowFromPoint`'s root before a real click by position. Bringing a test window forward while the user types sends their keys into it: keep such tests to one short batch.
+- In tests, find a stand-in window by the handle of the window the test created, never by title. Check `WindowFromPoint`'s root before a real click by position. Bringing a test window forward while the user types sends their keys into it: keep such tests to one short batch.
 - The Recycle Bin retries a file held open for about 1 s before refusing (0x20).
 - Top-dock heights were measured against a maximised Chrome at 100 % (toolbar y = 40, address box y = 46); a Chrome update or another scale can move them: measure again rather than guess.
 
@@ -256,8 +256,8 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Update repair acts only on a failure Claude Code recorded, and needs the panel running.
 - Screenshots need the panel running: one taken while it is off is not saved, a paste made while it is off is not followed. An image copied from Snip & Sketch's editor counts; on Windows 11 anything the broker delivers while the Snipping Tool runs may count. Not seen: a real PrintScreen or Win+PrintScreen press.
 - Pinned screenshots all stay in the strip: past about 100 cards on a 1920 x 1040 work area the bottom rows are cut off (no scrolling). The preview holds every strip picture at full size in memory. A pinned file on a missing drive loses its pin.
-- Copy takes about 0.1 to 0.3 s on ordinary text and 0.6 to 1.2 s on terminal text; rows of code of nearly the same length at one indent can be joined when the picture also holds wrapped rows; Consolas quotes can come out as `ll` or `I`, `=` as `:`; the first Copy after the worker died takes about 1 s more; text in pictures over 10000 px is not read.
-- A large new screenshot takes a moment to reach the preview (about 0.7 s for 6 MB); a click then waits. The strip never spans two monitors. While the preview shows, Esc goes to it alone. Delete on a file held open answers *Failed* after about 1 s.
+- Copy as Text takes about 0.1 to 0.3 s on ordinary text and 0.6 to 1.2 s on terminal text; rows of code of nearly the same length at one indent can be joined when the picture also holds wrapped rows; Consolas quotes can come out as `ll` or `I`, `=` as `:`; the first Copy after the worker died takes about 1 s more; text in pictures over 10000 px is not read.
+- A large new screenshot takes a moment to reach the preview (about 0.7 s for 6 MB); a click then waits. Copy as Image of a 3840 x 2160 picture: about 0.35 s, 76 MB on the clipboard. The strip never spans two monitors. While the preview shows, Esc goes to it alone. Delete on a file held open answers *Failed* after about 1 s.
 - Reply to a passage: numbered lists and the band need the panel running and shown with strip and keeper on (otherwise bare `:` quotes the clipboard and `:N` matches nothing). Only a selection tied to exactly one session is listed: none from outside a session's terminal or from a tab whose title does not show its name; none from a Linux `claude` inside WSL. A chance ` :2 ` outside code quotes entry 2 if listed. Hiding the panel or switching the strip off empties every list. Without `copyOnSelect` (or Ctrl+C) a `:` quotes whatever was copied before. Console (conhost) windows were not tested.
 - Paste key: needs the panel running; never in a Codex window (use Codex's own Alt+V there); only in a session's own terminal window whose title shows Claude Code's glyph (a Linux `claude` in WSL only in a window that also holds a Windows session). The model sees each picture's path. A screenshot pasted within the keeper's 3 s `HOLD` goes as a temp file. Restoring loses OLE-only and handle formats; a clipboard manager that ignores the quiet formats sees the picture put back as a new copy. Ctrl+V in Windows Terminal's own search box or command palette with a Claude tab in front pastes the path there. A key another program registered is left to it (logged).
 - Links come to the front only after a primary-button Ctrl+click on the session's own window while the panel runs, and only for a window Windows flashes within 3 s; a link opened another way, or a program refused without a flash, stays behind; a Ctrl+click on plain text followed within 3 s by another program's own flash would bring that program forward. Not yet seen live: a refused window brought forward.

@@ -17,8 +17,9 @@
      two groups count apart: the recent ones 1, 2, 3 from the newest back (a new screenshot becomes 1), the pinned ones
      1, 2, ... in the order they were pinned (an unpin closes the gap), their badge led by a pin glyph so a pinned 1
      never reads as the recent 1. agent-panel.pyw sends the numbers; the preview's head shows the same badge.
-     Preview: the picture at up to its own size, its name, a Copy button (2026-11-20: the strip's Copy, the same call
-     and feedback; the preview stays open), a Delete button (the file to the Recycle Bin, wherever it
+     Preview: the picture at up to its own size, its name, a Copy as Text button (2026-11-20: the strip's Copy, the
+     same call and feedback; the preview stays open), a Copy as Image button (2026-11-22: the picture itself on the
+     clipboard, for Paint, Word, a browser or a chat app; the strip's cards keep their one Copy, as text), a Delete button (the file to the Recycle Bin, wherever it
      is now, no question asked: the Recycle Bin is the undo; the strip then fills up with the next older one) and an
      Open button (the default viewer). A click on it, a click outside it, or Esc closes it. Spark tokens as in agent-panel.html. Sizes: agent-panel.pyw SHOT_W, SHOT_H,
      SHOT_PAD, VIEW_HEAD, VIEW_PAD.
@@ -133,24 +134,25 @@ body.moving, body.moving * { cursor: grabbing !important; }
   animation: fade .12s ease-out;
 }
 @keyframes fade { from { opacity: 0; } }
-/* the preview: a 36 px head (name, Delete, Open) over the picture, 8 px round it */
+/* the preview: a 36 px head (name, Delete, Copy as Text, Copy as Image, Open) over the picture, 8 px round it */
 #view { display: none; height: 100%; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; }
 body.view #strip { display: none; }
 body.view #view { display: flex; }
 #head { flex: none; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 12px; }
 #name { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; }
-#open, #del, #copy {
+#open, #del, #copy, #copyimg {
   flex: none; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-small);
   background: var(--panel); color: var(--muted);
 }
-/* Copy sits between Delete and Open, wide enough for "Reading…" so its label never moves Delete; Delete keeps
-   16 px from it, away from the corner where a hurried press lands */
-#copy { min-width: 76px; }
+/* the two copies sit between Delete and Open, each as wide as its own label, so "Reading…", "Copied" or "Failed"
+   never move a button; Delete keeps 16 px from them, away from the corner where a hurried press lands */
+#copy { min-width: 86px; }
+#copyimg { min-width: 96px; }
 #del { margin-right: 8px; }
-#open:hover, #copy:hover { color: var(--blue); border-color: var(--blue); }
-#copy.done { color: var(--green); border-color: var(--green); }
-#copy.fail { color: var(--red-deep); }
+#open:hover, #copy:hover, #copyimg:hover { color: var(--blue); border-color: var(--blue); }
+#copy.done, #copyimg.done { color: var(--green); border-color: var(--green); }
+#copy.fail, #copyimg.fail { color: var(--red-deep); }
 #del:hover, #del.fail { color: var(--red-deep); border-color: var(--red-deep); }
 #big { flex: 1; min-height: 0; padding: 0 8px 8px; }
 #big img { display: none; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; }
@@ -160,7 +162,7 @@ body.view #view { display: flex; }
 </head>
 <body>
 <div id="strip"></div>
-<div id="view"><div id="head"><span id="badge" class="num" aria-hidden="true"></span><span id="name"></span><button type="button" id="del" aria-label="Delete: move it to the Recycle Bin">Delete</button><button type="button" id="copy">Copy</button><button type="button" id="open">Open</button></div><div id="big"></div></div>
+<div id="view"><div id="head"><span id="badge" class="num" aria-hidden="true"></span><span id="name"></span><button type="button" id="del" aria-label="Delete: move it to the Recycle Bin">Delete</button><button type="button" id="copy">Copy as Text</button><button type="button" id="copyimg">Copy as Image</button><button type="button" id="open">Open</button></div><div id="big"></div></div>
 <script>
 /*MODE*/
 const api = () => window.pywebview.api;
@@ -176,13 +178,16 @@ function band() {  // the band stays the strip's last row, whatever update() dre
   strip.classList.toggle("solo", !quoteEl.hidden && strip.querySelectorAll(".shot").length === 1);
 }
 
-function copy(btn, at) {  // the strip's Copy and the preview's: one call, one feedback
-  btn.textContent = "Reading…";
+// the strip's Copy and the preview's Copy as Text (how "copy": path and OCR text), the preview's Copy as Image
+// (how "copy_image": the picture itself): one feedback, then the button's own label back
+function copy(btn, at, how = "copy") {
+  const label = btn.dataset.label || (btn.dataset.label = btn.textContent);
+  btn.textContent = how === "copy" ? "Reading…" : "Copying…";
   btn.classList.remove("done", "fail");
-  api().copy(at).then(ok => {
+  api()[how](at).then(ok => {
     btn.textContent = ok ? "Copied" : "Failed";
     btn.classList.add(ok ? "done" : "fail");
-    setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done", "fail"); }, 1600);
+    setTimeout(() => { btn.textContent = label; btn.classList.remove("done", "fail"); }, 1600);
   });
 }
 
@@ -334,13 +339,15 @@ window.shotView = {
 };
 function head(v) {
   document.getElementById("name").textContent = v ? v.name : "";
-  vcopy.setAttribute("aria-label", v ? "Copy the path and text of " + v.name : "Copy");
+  vcopy.setAttribute("aria-label", v ? "Copy the path and text of " + v.name : "Copy as Text");
+  vimg.setAttribute("aria-label", v ? "Copy the picture of " + v.name : "Copy as Image");
   document.getElementById("badge").innerHTML = v ? badge(v) : "";
 }
-const del = document.getElementById("del"), vcopy = document.getElementById("copy");
+const del = document.getElementById("del"), vcopy = document.getElementById("copy"), vimg = document.getElementById("copyimg");
 document.getElementById("view").addEventListener("click", e => {
   if (e.target.closest("#open")) api().open(current);
   else if (e.target.closest("#copy")) copy(vcopy, current);  // as the strip's Copy; the preview stays
+  else if (e.target.closest("#copyimg")) copy(vimg, current, "copy_image");
   else if (e.target.closest("#del")) {
     // agent-panel.pyw closes the preview once the file is in the Recycle Bin; a refusal shows here for a moment
     api().delete(current).then(ok => {

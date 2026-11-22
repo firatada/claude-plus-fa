@@ -94,7 +94,7 @@ Answer Claude's questions without retyping them.
 
 - Every screenshot you take (`Win+Shift+S`, Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named after the window and the time.
 - Paste one into a Claude Code session and it moves into a `screenshots` folder in that project. The panel adds that folder to the project's `.gitignore`, so it never reaches git.
-- The strip at the top (picture above) shows your last three screenshots and the ones you **Pin**. Click a card to see it large. **Copy** puts the file's path and the text read from the picture on the clipboard, which costs Claude far fewer tokens than the picture.
+- The strip at the top (picture above) shows your last three screenshots and the ones you **Pin**. Click a card to see it large. **Copy** on a card, or **Copy as Text** in the large view, puts the file's path and the text read from the picture on the clipboard, which costs Claude far fewer tokens than the picture. **Copy as Image** in the large view puts the picture itself on the clipboard, to paste into Paint, Word, a browser or a chat app.
 - While the panel runs, `Ctrl+V` or `Alt+V` in a Claude Code session pastes a copied picture at once, where the cursor is:
 
 <img src="docs/img/paste-image.png" alt="A prompt with [Image #1] and [Image #2] between words" width="825">

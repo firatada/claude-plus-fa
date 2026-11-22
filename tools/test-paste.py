@@ -1,10 +1,13 @@
 # Unit tests for agent-panel-paste.py (the paste key) and its hooks in the keeper: when Ctrl+V and Alt+V are taken
 # (foreground changes, a tab switched, a paste under way, a key on its way through), the keys sent, what counts as a
 # picture alone, the terminal-only render of the path, the temp folder's cleanup, the keeper's lookup of its own file
-# and its skipping of the paste key's clipboards. Run: python tools/test-paste.py
+# and its skipping of the paste key's clipboards, and the preview's Copy as Image formats.
+# Run: python tools/test-paste.py
 # Registers no hotkey, sends no key, never touches the clipboard, any window, or the real ~/.claude: stand-ins
-# throughout, files in a temporary folder.
-import ast, importlib.util, json, os, shutil, sys, tempfile, time, unittest
+# throughout, files in a temporary folder. --clipboard adds a real round trip of Copy as Image through this
+# process's own clipboard (written, read back as PNG, CF_DIBV5, CF_DIB and the CF_BITMAP Windows makes, pixels
+# compared); the text on the clipboard before is put back after.
+import ast, ctypes, importlib.util, io, json, os, shutil, struct, sys, tempfile, time, unittest
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,6 +24,32 @@ def load(name, file):
 pp = load("agent_panel_paste", "agent-panel-paste.py")
 shots = load("agent_panel_shots", "agent-panel-shots.py")
 TERM, OTHER = 1001, 2002
+CLIPBOARD = "--clipboard" in sys.argv
+if CLIPBOARD:
+    sys.argv.remove("--clipboard")
+
+
+def picture(path, alpha=False):
+    """A test picture with detail all over (odd width: DIB rows need padding); alpha: a see-through part."""
+    a = (255,) if alpha else ()
+    img = Image.new("RGBA" if alpha else "RGB", (101, 37), (10, 120, 200) + a)
+    for x in range(101):
+        for y in range(37):
+            if (x * 7 + y * 3) % 11 == 0:
+                img.putpixel((x, y), (x * 2, y * 6, 255 - x) + a)
+    if alpha:
+        for x in range(60, 101):
+            img.putpixel((x, 0), (200, 0, 0, 0))  # fully clear: white in CF_DIB
+            img.putpixel((x, 1), (0, 0, 0, 128))  # half: grey in CF_DIB
+    img.save(path)
+    return img
+
+
+def dib_image(data):
+    """A CF_DIB or CF_DIBV5 block read by Pillow (a BMP file header put in front)."""
+    head = struct.unpack_from("<I", data)[0]
+    off = 14 + head
+    return Image.open(io.BytesIO(b"BM" + struct.pack("<IHHI", 14 + len(data), 0, 0, off) + data))
 
 
 class Rules(unittest.TestCase):
@@ -221,12 +250,122 @@ class Keeper(unittest.TestCase):
         self.assertEqual(k.pending, [])
         self.assertEqual([a[0] for a in logged], ["ignored own paste", "ignored own paste"])
 
+    def test_image_formats(self):
+        p = os.path.join(self.dir, "shot.png")
+        picture(p)
+        f = shots.image_formats(p)
+        self.assertEqual([n for n, _ in f], ["PNG", shots.CF_DIBV5, shots.CF_DIB, shots.PASTE_MARK])
+        d = dict(f)
+        with open(p, "rb") as fh:
+            self.assertEqual(d["PNG"], fh.read())  # the file's own PNG, not encoded again
+        v5 = d[shots.CF_DIBV5]
+        self.assertEqual(struct.unpack_from("<IiiHHI", v5), (124, 101, 37, 1, 32, 3))  # bottom-up, BI_BITFIELDS
+        self.assertEqual(struct.unpack_from("<IIIII", v5, 40), (0xFF0000, 0xFF00, 0xFF, 0xFF000000, 0x73524742))
+        self.assertEqual(len(v5), 124 + 101 * 37 * 4)
+        dib = d[shots.CF_DIB]
+        self.assertEqual(struct.unpack_from("<IiiHHI", dib), (40, 101, 37, 1, 24, 0))
+        self.assertEqual(len(dib), 40 + 304 * 37)  # rows of 303 bytes padded to 304
+        for block in (v5, dib):
+            self.assertTrue(shots.identical(p, dib_image(block)))
+
+    def test_image_formats_alpha_and_jpeg(self):
+        p = os.path.join(self.dir, "clear.png")
+        img = picture(p, alpha=True)
+        d = dict(shots.image_formats(p))
+        v5 = dib_image(d[shots.CF_DIBV5]).convert("RGBA")
+        self.assertEqual(v5.getpixel((70, 0))[3], 0)  # straight alpha kept
+        self.assertEqual(v5.getpixel((5, 5)), img.getpixel((5, 5)))
+        rgb = dib_image(d[shots.CF_DIB]).convert("RGB")
+        self.assertEqual(rgb.getpixel((70, 0)), (255, 255, 255))  # laid on white
+        self.assertTrue(all(120 <= c <= 135 for c in rgb.getpixel((70, 1))), rgb.getpixel((70, 1)))
+        j = os.path.join(self.dir, "shot.jpg")
+        Image.new("RGB", (20, 10), (1, 2, 3)).save(j)
+        self.assertTrue(dict(shots.image_formats(j))["PNG"].startswith(b"\x89PNG"))  # encoded as a PNG
+
+    def test_copy_image_is_never_a_screenshot(self):
+        logged = []
+        k = shots.Shots(state=self.state, desk=self.dir, shot_dirs=[], log=lambda *a: logged.append(a))
+        p = os.path.join(self.dir, "shot.png")
+        picture(p)
+        formats = [n for n, _ in shots.image_formats(p)] + [shots.CF_BITMAP]
+        k.clipboard({"at": time.time(), "seq": 1, "owner": False, "fg": 0, "exe": "", "running": set(),
+                     "formats": formats})
+        self.assertEqual(k.pending, [])
+        self.assertEqual(logged[0][0], "ignored own paste")
+        self.assertFalse(k.copy_image(12345))  # no such screenshot: nothing written
+
     def test_one_mark_everywhere(self):
         self.assertEqual(pp.MARK, shots.PASTE_MARK)
         with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
             src = f.read()
         self.assertIn('RegisterClipboardFormatW("%s")' % pp.MARK, src)
         self.assertIn('PASTE_CLASS = "%s"' % pp.CLASS, src)
+
+
+@unittest.skipUnless(CLIPBOARD, "real clipboard: run with --clipboard")
+class RoundTrip(unittest.TestCase):
+    """Copy as Image through the real clipboard, in this process: what Paint (CF_BITMAP, CF_DIB), browsers and
+    Word (PNG, CF_DIBV5) and the paste key (Pillow's grabclipboard, then saved_file()) read."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="cpfa-clip-test-")
+        self.before = clip_text()
+
+    def tearDown(self):
+        if self.before is not None:
+            shots.set_clipboard_text(self.before)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_round_trip(self):
+        u, k, g = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.windll.gdi32
+        u.GetClipboardData.restype = k.GlobalLock.restype = ctypes.c_void_p
+        k.GlobalLock.argtypes = k.GlobalUnlock.argtypes = k.GlobalSize.argtypes = [ctypes.c_void_p]
+        k.GlobalSize.restype = ctypes.c_size_t
+        g.GetObjectW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        png = u.RegisterClipboardFormatW("PNG")
+        for alpha in (False, True):
+            p = os.path.join(self.dir, "shot%d.png" % alpha)
+            img = picture(p, alpha)
+            self.assertTrue(shots.set_clipboard(shots.image_formats(p)))
+            self.assertTrue(pp.image_only(u.IsClipboardFormatAvailable))  # the paste key takes it
+            got = {}
+            self.assertTrue(u.OpenClipboard(None))
+            try:
+                for fmt in (png, shots.CF_DIBV5, shots.CF_DIB):
+                    h = u.GetClipboardData(fmt)
+                    self.assertTrue(h, fmt)
+                    got[fmt] = ctypes.string_at(k.GlobalLock(h), k.GlobalSize(h))
+                    k.GlobalUnlock(h)
+                bmp = u.GetClipboardData(shots.CF_BITMAP)  # made by Windows from the DIBs: what Paint pastes
+                info = (ctypes.c_long * 8)()  # BITMAP (32 bytes on 64 bit): type, width, height, ...
+                self.assertTrue(bmp and g.GetObjectW(bmp, ctypes.sizeof(info), info))
+                self.assertEqual((info[1], abs(info[2])), img.size)
+            finally:
+                u.CloseClipboard()
+            rgba = img.convert("RGBA").tobytes()
+            self.assertEqual(Image.open(io.BytesIO(got[png])).convert("RGBA").tobytes(), rgba)
+            self.assertEqual(dib_image(got[shots.CF_DIBV5]).convert("RGBA").tobytes(), rgba)
+            if not alpha:
+                self.assertTrue(shots.identical(p, dib_image(got[shots.CF_DIB])))
+                self.assertTrue(shots.identical(p, pp.grab()))  # the paste key finds the keeper's own file
+
+
+def clip_text():
+    """The clipboard's text, put back after the round trip (None: no text)."""
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    u.GetClipboardData.restype = k.GlobalLock.restype = ctypes.c_void_p
+    k.GlobalLock.argtypes = k.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    if not u.OpenClipboard(None):
+        return None
+    try:
+        h = u.GetClipboardData(13)
+        if not h:
+            return None
+        t = ctypes.wstring_at(k.GlobalLock(h))
+        k.GlobalUnlock(h)
+        return t
+    finally:
+        u.CloseClipboard()
 
 
 if __name__ == "__main__":

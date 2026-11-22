@@ -225,7 +225,7 @@ QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.p
          os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
 VIEW_TITLE = "Field Agents Screenshot"
 VIEW_HEAD, VIEW_PAD = 36, 8  # logical pixels: the preview's head row and the space round its picture
-VIEW_MIN_W = 320       # logical pixels: the preview is never narrower (its head needs the room)
+VIEW_MIN_W = 480       # logical pixels: the preview is never narrower (its head: four buttons and room for the name)
 VIEW_MARGIN = 24       # logical pixels the preview keeps from the screen's edges and from the strip
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
@@ -1795,7 +1795,11 @@ class ViewApi:
         if p and os.path.exists(p):
             os.startfile(p)  # the default viewer
 
-    copy = StripApi.copy  # the strip's Copy, the very same call: the same clipboard text for the same picture
+    copy = StripApi.copy  # Copy as Text: the strip's Copy, the very same call: the same clipboard text
+
+    def copy_image(self, at):  # Copy as Image: the picture itself
+        shots = getattr(self._p, "shots", None)
+        return bool(shots and shots.copy_image(at))
 
     def delete(self, at):
         return self._p.view_delete(at)
