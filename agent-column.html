@@ -23,7 +23,8 @@ body::-webkit-scrollbar-thumb { background: var(--thumb); border-radius: 4px; bo
 #box { border: 1px solid var(--line); border-radius: 14px; padding: 2px 12px 10px; overflow-wrap: anywhere; }
 .xh { margin-top: 6px; }
 .xq + .xh { margin-top: 10px; }
-.xq { margin-top: 3px; padding-left: 8px; }
+.xq, .xw { margin-top: 3px; padding-left: 8px; }
+.xq.in { padding-left: 16px; }
 .xl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .xl b { font-weight: 600; color: var(--text); }
 .x3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
@@ -33,14 +34,17 @@ body::-webkit-scrollbar-thumb { background: var(--thumb); border-radius: 4px; bo
 <div id="box" aria-hidden="true"></div>
 <script>
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
-function clock(ms) {
-  const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60;
-  const two = n => String(n).padStart(2, "0");
-  return h ? `${h}:${two(m)}:${two(t % 60)}` : `${m}:${two(t % 60)}`;
+// how long a piece has run, in words: 45 s, 14 min, 2 h 5 min
+function lasted(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000)), m = Math.floor(t / 60), h = Math.floor(m / 60);
+  return t < 60 ? t + " s" : m < 60 ? m + " min" : h + " h" + (m % 60 ? " " + (m % 60) + " min" : "");
 }
-const since = ms => ms ? clock(Date.now() - ms) : "";
-const row = b => `<div class="xq"><div class="xl"><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
-                 (b.since ? ` · <span data-since="${b.since}">${since(b.since)}</span>` : "") + "</div></div>";
+const since = ms => ms ? lasted(Date.now() - ms) : "";
+// a Workflow's agents under one line naming it, indented under it
+const row = (b, i, all) => (b.wf && (!i || all[i - 1].wf !== b.wf) ?
+                              `<div class="xw"><div class="xl"><b>Workflow</b>${b.flow ? " " + esc(b.flow) : ""}</div></div>` : "") +
+                           `<div class="xq${b.wf ? " in" : ""}"><div class="xl"><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
+                           (b.since ? ` · <span data-since="${b.since}">${since(b.since)}</span>` : "") + "</div></div>";
 const group = g => `<div class="xh"><div class="xl">${g.last ? "Last Prompt" : g.prompt ? "Earlier Prompt" : "Prompt not found"}</div>` +
                    (g.prompt ? `<div class="x3">${esc(g.prompt)}</div>` : "") + "</div>" + g.bg.map(row).join("");
 let shown = "";

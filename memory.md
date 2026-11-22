@@ -96,7 +96,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 
 ## Field Agents: look
 - Spark theme (`mindmap/design_themes/spark_theme`) as CSS in `agent-panel.html`; fonts Segoe UI; no dark theme. Gold only for rewards.
-- States: working = turning green arc (10 px in the dot's 8 px slot, 1 s a turn), still green tint and 1.5 px ring, and the turn timer in the age's place (`m:ss`, `h:mm:ss`, 600 weight); open and waiting = still hollow ring in `--violet` #5c3bcd; closed = grey dot; asking = red dot and a red pulse (1.2 s), the only thing that pulses. Green means working only.
+- States: working = turning green arc (10 px in the dot's 8 px slot, 1 s a turn), still green tint and 1.5 px ring, and the turn timer in the age's place (`m:ss`, `h:mm:ss`, 600 weight); open and waiting = still hollow ring in `--violet` #5c3bcd; closed = grey dot; asking = red dot and a red pulse (1.2 s), the only thing that pulses. An open session with background work running (`delegated()`, the conductor's test) takes the green tint and ring too, its dot staying its own; asking wins (card class from `groupOf()`).
 - Title, age, meta and ctx bar look the same on every card; nothing on an open card looks disabled.
 - Reduced motion: arc still, timer counting, asking card a still red tint and ring, mascots on frame 0, no glides.
 - Timer: `ticking()` each second patches the age text, the dot's `aria-label` ("Working, 0:42"), the card's `aria-label` (not while the card has the keyboard) and the opened card's times; the ticking text carries no `data-k`.
@@ -111,8 +111,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - Keyboard: cards are buttons (Enter or Space opens, ignoring key repeat; Shift+F10 or the menu key opens the menu, arrows walk it).
 
 ## Field Agents: order
-- Groups by state: asking, working, open, closed; newest transcript first within each. Done in the page (`byState()`, a stable sort on `RANK` over `groupOf()`), so both docks follow; the `.pyw` sends newest first; the set-aside section is not regrouped.
-- An open session with background work (`s.bg`) sorts in the working group; asking beats it; closed never counts.
+- Groups by state: asking, working (an open session with background work too), open, closed; newest transcript first within each. Done in the page (`byState()`, a stable sort on `RANK` over `groupOf()`), so both docks follow; the `.pyw` sends newest first; the set-aside section is not regrouped.
 - A card that changes place glides 200 ms (FLIP); a new card fades in from 4 px above.
 - The order holds while the pointer is over the list, a menu or confirm is open, or the keyboard is on a card while `document.hasFocus()`; it applies the moment that ends (`letGo()`). The window's `blur` clears the hover hold.
 
@@ -171,7 +170,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - `links.log`: one line per flash of a visible window while a session window is in front (`brought forward: <exe> <s> after the Ctrl+click`, `could not bring forward: ...`, `left flashing: <exe> (...)` once per window per 30 s). WSLg's invisible `msrdc.exe` RemoteApp window is never logged or raised.
 
 ## Background work and the opened card
-- The turning badge (child runs and subagents), the opened card (a rested-on card grows with the running work grouped under the typed prompt that set each piece off; *and n more* opens a column of them all) and their readers: [`memory/background-work.md`](./memory/background-work.md).
+- The turning badge (child runs and subagents), the opened card (a rested-on card grows with the running work grouped under the typed prompt that set each piece off; *and n more* opens a column of them all), their readers and their limits: [`memory/background-work.md`](./memory/background-work.md).
 
 ## Mascot
 - The big-headed chibi FA hero: every card 56 px on the left, header 36 px (32 on top), top tab 28 px (the whole figure). One figure per session, first match wins (`figureOf()`): asking (`waiting`) waves with a red "!"; background work running (`delegated()`) conducts with a baton; working runs; open stands; closed sleeps, greyed by CSS (`.av.gone`: `grayscale(1)`, opacity 0.5). Tabs alike; the header shows the most pressing session's figure (ask > background work > working > open), asleep when none is open. Dot, tint and ring still carry the state; a top tab hides its dot while a hero shows.
@@ -246,7 +245,6 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - The first-turn watch sees only up to Codex's first answer; a later failure is not reported. Codex's traps are worked around for Codex CLI 0.164.0 to 0.171.0 and plugin 1.0.6 (`memory/limit-fallback.md`, Codex's own traps); a later version may ask something new. The move marks the folder's git root trusted in Codex's own config when Codex had no answer for it.
 - Reopened in Claude before the reset (the Codex window closed), the session's way-out window stays shut until the reset; that Claude Code then continues by itself is not tested on a freshly resumed window (`trials.md`, 2026-11-22).
 - Without Windows Terminal the Codex window's title comes from Codex itself (`tui.terminal_title`), seen only in a Windows Terminal tab that did not pin its title, not in a plain console window.
-- Background badge: no runs inside WSL, nor runs whose parent chain passes a process the panel cannot open (elevated); subagents read right only on versions that write `finished` (2.1.323 does; older versions would count every agent of the process as running); workflow agents' `finished` never seen; an agent resumed with SendMessage after it finished may not show. Background commands are not counted by the badge, only listed in the opened card, and only while a late child of the session's process exists; one started more than 4 MB back in the transcript is missed. A piece of work whose prompt lies over 256 MB back, or a `claude -p` launched by a command not naming `claude`, shows under *Prompt not found*. The opened card was checked in the page (Playwright), not by a real hover on the live panel; the column window's place on screen not seen live.
 - Status dot: up to 3 minutes behind status.claude.com, and says only what Anthropic posts there.
 - Update repair acts only on a failure Claude Code recorded, and needs the panel running.
 - Screenshots need the panel running: one taken while it is off is not saved, a paste made while it is off is not followed. An image copied from Snip & Sketch's editor counts; on Windows 11 anything the broker delivers while the Snipping Tool runs may count. Not seen: a real PrintScreen or Win+PrintScreen press.

@@ -1134,7 +1134,60 @@ BG_TAIL = 4 * 1048576    # bytes read from a transcript's end for its background
 LATE = 20                # seconds after a session's process started: a child born later is a tool's
 BG_START = re.compile(rb"running in background with ID: (\w+)")
 BG_END = re.compile(rb"<task-id>(\w+)</task-id>")
-KIND = {"subagent": "Subagent", "run": "claude -p", "command": "Command", "wf": "Workflow"}  # a Workflow's agent: "wf"
+KIND = {"subagent": "Agent", "run": "claude -p", "command": "Command"}  # an agent's row also gets its number
+
+
+def flow_name(path, sid, run, labels, cache):
+    """The name a Workflow run shows under ("Workflow audit2") and how its agents' labels read under it: when every
+    label is "<name>:<rest>" with one name, that name, and each row keeps its rest; else the name of the run's
+    script file (<session>/workflows/scripts/<name>-<run>.js, kept in cache once found), and rows keep their whole
+    label; "" when neither is there. Returns (name, cut: whether the "<name>:" prefix is cut from each label)."""
+    pre = {l.split(":", 1)[0] for l in labels}
+    if len(pre) == 1 and all(":" in l for l in labels) and next(iter(pre)):
+        return next(iter(pre)), True
+    if run not in cache:
+        tail = "-%s.js" % run
+        try:
+            got = [n[:-len(tail)] for n in os.listdir(os.path.join(os.path.dirname(path), sid, "workflows", "scripts"))
+                   if n.endswith(tail)]
+        except OSError:
+            got = []
+        if not got:
+            return "", False
+        cache[run] = got[0]
+    return cache[run], False
+
+
+def arrange(rows, path, sid, cache):
+    """One prompt's rows as the opened card shows them, from its pieces oldest first ({kind, what, since, wf}): the
+    agents of one Workflow run kept together where its first one started, under the run's name ("flow", the same on
+    each; "wf": the run), numbered Agent 1, 2, ... in start order within the run; the other agents numbered so
+    among themselves; claude -p runs and commands keep their kind and name."""
+    blocks, runs = [], {}
+    for w in rows:
+        if w.get("wf"):
+            if w["wf"] not in runs:
+                runs[w["wf"]] = []
+                blocks.append(runs[w["wf"]])
+            runs[w["wf"]].append(w)
+        else:
+            blocks.append([w])
+    out, n = [], 0
+    for b in blocks:
+        run = b[0].get("wf")
+        if run:
+            name, cut = flow_name(path, sid, run, [w["what"] for w in b], cache)
+            for i, w in enumerate(b, 1):
+                out.append({"kind": "%s %d" % (KIND["subagent"], i), "since": w["since"], "wf": run, "flow": name,
+                            "what": w["what"].split(":", 1)[1].strip() if cut else w["what"]})
+            continue
+        w = b[0]
+        if w["kind"] == "subagent":
+            n += 1
+            out.append({"kind": "%s %d" % (KIND["subagent"], n), "what": w["what"], "since": w["since"]})
+        else:
+            out.append({"kind": KIND[w["kind"]], "what": w["what"], "since": w["since"]})
+    return out
 
 
 def flat(t):
@@ -3848,7 +3901,7 @@ class Panel:
         """What the opened card shows for one session, read now for the card under the pointer only: the running
         work grouped by the prompt the user typed that started it, newest prompt first, each group {"prompt": its
         text (None when it was not found), "last": whether it is the session's last prompt, "bg": [{"kind", "what",
-        "since" ms}] oldest first}. The last prompt comes first, with no work when it started none still running;
+        "since" ms, and for a Workflow's agent "wf" and "flow"}] oldest first, as arrange() numbers them}. The last prompt comes first, with no work when it started none still running;
         work whose prompt was not found comes last. None for a session not in the list."""
         s = next((x for x in self.sessions if x["id"] == sid), None)
         if not s:
@@ -3889,9 +3942,10 @@ class Panel:
                 p = None
             g = groups.setdefault(p and p["id"], {"prompt": p and p["text"], "last": False,
                                                   "at": p["at"] if p else float("-inf"), "bg": []})
-            g["bg"].append({"kind": KIND["wf" if w.get("wf") else w["kind"]], "what": w.get("what") or "",
+            g["bg"].append({"kind": w["kind"], "what": w.get("what") or "", "wf": w.get("wf"),
                             "since": int(w["since"] * 1000) if w.get("since") else None})
-        out["groups"] = [{k: g[k] for k in ("prompt", "last", "bg")}
+        flows = c.setdefault("flow", {})
+        out["groups"] = [{"prompt": g["prompt"], "last": g["last"], "bg": arrange(g["bg"], s["path"], sid, flows)}
                          for g in sorted(groups.values(), key=lambda g: -g["at"])]
         return out
 

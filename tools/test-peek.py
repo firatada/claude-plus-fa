@@ -13,7 +13,7 @@ CONSTS = ("PEEK_TAIL", "PEEK_MORE", "PEEK_CHARS", "BG_TAIL", "LATE", "BG_START",
           "CHAIN_STEP", "CHAIN_MAX", "RUN_WAIT", "UUID_OF", "STAMP")
 FUNCS = ("text_of", "flat", "typed_prompt", "last_prompt", "bg_commands", "late_child", "subagents", "stamp", "back",
          "chain_prompt", "blocks", "call_of", "workflow_of", "shell_of", "settled", "wf_run", "agent_meta",
-         "agent_trigger", "run_trigger")
+         "agent_trigger", "run_trigger", "flow_name", "arrange")
 
 
 def load():
@@ -254,11 +254,36 @@ class Peek(unittest.TestCase):
         self.assertEqual(len(got["groups"]), 1)
         g = got["groups"][0]
         self.assertEqual((g["prompt"], g["last"]), ("Audit the docs, in parallel", True))
-        self.assertEqual(sorted((w["kind"], w["what"]) for w in g["bg"]), [
-            ("Subagent", "Audit part 0"), ("Subagent", "Audit part 1"), ("Subagent", "Audit part 2"),
-            ("Workflow", "audit:A"), ("Workflow", "audit:B")])
-        self.assertTrue(all(set(w) == {"kind", "what", "since"} for w in g["bg"]))  # no task text
+        # the direct agents numbered among themselves, the Workflow's agents together under its name, numbered anew
+        self.assertEqual([(w["kind"], w["what"], w.get("flow")) for w in g["bg"]], [
+            ("Agent 1", "Audit part 0", None), ("Agent 2", "Audit part 1", None), ("Agent 3", "Audit part 2", None),
+            ("Agent 1", "A", "audit"), ("Agent 2", "B", "audit")])
+        self.assertEqual([w.get("wf") for w in g["bg"]], [None, None, None, "wf_abc", "wf_abc"])
+        self.assertTrue(all(set(w) <= {"kind", "what", "since", "wf", "flow"} for w in g["bg"]))  # no task text
         self.assertEqual(ns["last_prompt"](main, {})["id"], p_id)
+
+    def test_workflow_name_and_rows_without_a_shared_label_prefix(self):
+        ns, cache = self.ns, {}
+        rows = [{"kind": "subagent", "what": "Fix it", "since": 1, "wf": None},
+                {"kind": "subagent", "what": "review:bugs", "since": 2, "wf": "wf_1"},
+                {"kind": "run", "what": "tools", "since": 3, "wf": None},
+                {"kind": "subagent", "what": "verify:x", "since": 4, "wf": "wf_1"},
+                {"kind": "subagent", "what": "other:A", "since": 5, "wf": "wf_2"},
+                {"kind": "command", "what": "Dev server", "since": 6, "wf": None},
+                {"kind": "subagent", "what": "Second", "since": 7, "wf": None}]
+        main = os.path.join(self.tmp, "S.jsonl")
+        os.makedirs(os.path.join(self.tmp, "S", "workflows", "scripts"))
+        open(os.path.join(self.tmp, "S", "workflows", "scripts", "site-pass-wf_1.js"), "w").close()
+        got = ns["arrange"](rows, main, "S", cache)
+        self.assertEqual([(w["kind"], w["what"], w.get("flow"), w.get("wf")) for w in got], [
+            ("Agent 1", "Fix it", None, None),
+            ("Agent 1", "review:bugs", "site-pass", "wf_1"), ("Agent 2", "verify:x", "site-pass", "wf_1"),
+            ("claude -p", "tools", None, None),
+            ("Agent 1", "A", "other", "wf_2"),
+            ("Command", "Dev server", None, None),
+            ("Agent 2", "Second", None, None)])
+        self.assertEqual(cache, {"wf_1": "site-pass"})
+        self.assertEqual(ns["flow_name"](main, "S", "wf_9", ["a", "b:c"], cache), ("", False))  # no script, no name
 
     def test_a_later_prompt_started_a_claude_p_run_and_groups_come_newest_first(self):
         ns = self.ns
@@ -284,7 +309,7 @@ class Peek(unittest.TestCase):
         self.assertEqual(self.shape(got), [
             ("What is the weather like?", True, []),
             ("Now delegate the release notes", False, [("claude -p", "tools")]),
-            ("Audit the docs", False, [("Subagent", "Audit")])])
+            ("Audit the docs", False, [("Agent 1", "Audit")])])
         self.assertTrue(call)
 
     def item(self, d, aid, desc):
@@ -312,7 +337,7 @@ class Peek(unittest.TestCase):
         got = ns["peek"](self.panel(main, work), "S")
         self.assertEqual(self.shape(got), [
             ("Something else", True, []),
-            ("Have an agent delegate it", False, [("Subagent", "Delegator"), ("claude -p", "w")])])
+            ("Have an agent delegate it", False, [("Agent 1", "Delegator"), ("claude -p", "w")])])
 
     def test_a_nested_agent_takes_its_root_agents_prompt(self):
         ns = self.ns
@@ -329,7 +354,7 @@ class Peek(unittest.TestCase):
         got = ns["peek"](self.panel(main, work), "S")
         self.assertEqual(self.shape(got), [
             ("Meanwhile, fix the typo", True, []),
-            ("Research it deeply", False, [("Subagent", "Read the API docs"), ("Subagent", "One page")])])
+            ("Research it deeply", False, [("Agent 1", "Read the API docs"), ("Agent 2", "One page")])])
 
     def test_a_quote_reply_prompt_shows_what_was_typed_not_the_passages(self):
         ns = self.ns
@@ -365,7 +390,7 @@ class Peek(unittest.TestCase):
         main = self.transcript("S", log.lines)
         d = self.agent("a1", "Check the lint", toolUseId="toolu_a")
         got = ns["peek"](self.panel(main, [self.item(d, "a1", "Check the lint")]), "S")
-        self.assertEqual(self.shape(got), [("Run the checks one after another", True, [("Subagent", "Check the lint")])])
+        self.assertEqual(self.shape(got), [("Run the checks one after another", True, [("Agent 1", "Check the lint")])])
 
     def test_a_request_blob_repeating_the_call_is_not_its_start(self):
         log = Log(self.started + 100)
@@ -401,8 +426,8 @@ class Peek(unittest.TestCase):
         self.agent("a2", "Lost", toolUseId="toolu_never_written")
         panel = self.panel(main, [self.item(d, "a1", "Known"), self.item(d, "a2", "Lost")])
         got = ns["peek"](panel, "S")
-        self.assertEqual(self.shape(got), [("Start one agent", True, [("Subagent", "Known")]),
-                                           (None, False, [("Subagent", "Lost")])])
+        self.assertEqual(self.shape(got), [("Start one agent", True, [("Agent 1", "Known")]),
+                                           (None, False, [("Agent 1", "Lost")])])
         trig = panel.peeks["trig"]
         self.assertEqual(trig[("use", main, "toolu_a")][0], True)  # settled for good
         lost = trig[("use", main, "toolu_never_written")]
@@ -413,7 +438,7 @@ class Peek(unittest.TestCase):
         log.call("toolu_never_written", "Agent", {"description": "Lost", "prompt": "x"})  # written at last
         write(main, log.lines)
         got = ns["peek"](panel, "S")
-        self.assertEqual(self.shape(got), [("Start one agent", True, [("Subagent", "Known"), ("Subagent", "Lost")])])
+        self.assertEqual(self.shape(got), [("Start one agent", True, [("Agent 1", "Known"), ("Agent 2", "Lost")])])
         self.assertEqual([c[2] for c in calls], [lost[1]])  # only the lost one was read again, from where it stopped
 
     def test_a_prompt_older_than_the_steps_is_still_found(self):

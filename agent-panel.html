@@ -141,7 +141,7 @@ h1 { font-size: 15px; font-weight: 600; }
    reads as alive: neither green (working) nor grey (closed, which alone looks asleep) */
 .dot.idle { background: none; box-shadow: inset 0 0 0 1.5px var(--violet); }
 /* the whole card shows the state: working holds a still green tint and ring for as long as Claude reports
-   the session busy; a prompt in it waiting for an answer pulses red, the family's "this needs you", and
+   the session busy or background work it started (subagents, Workflow agents, claude -p runs) still runs; a prompt in it waiting for an answer pulses red, the family's "this needs you", and
    is the only thing that pulses. Background and ring only, so the hover's blue border still shows. */
 .card.busy { background: var(--green-tint); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--green); }
 .card.ask { animation: alarm 1.2s ease-in-out infinite; }
@@ -153,8 +153,8 @@ h1 { font-size: 15px; font-weight: 600; }
 /* on a working card: how long its turn has run, ticking each second */
 .age.run { color: var(--text); font-weight: 600; }
 /* background work of an open session (child runs, subagents): a quiet count with a calm turning arc, gone
-   when they end, and the card's only sign of that work (the dot and tint show the session's own state);
-   its count and how long it has run, then the list of them, are its tooltip */
+   when they end; the card's tint and ring turn green with it, the dot keeps the session's own state; the
+   pieces are listed in the opened card */
 .bgw {
   flex: none; margin-left: auto; height: 16px; padding: 0 5px; display: inline-flex; align-items: center; gap: 3px;
   border-radius: var(--r-small); background: var(--surface2); color: var(--muted); font-size: 11px; font-weight: 600;
@@ -294,7 +294,8 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 .xi { font-size: 11px; line-height: 14px; color: var(--text); overflow-wrap: anywhere; }
 .xh { margin-top: 6px; }
 .xq + .xh { margin-top: 10px; }
-.xq { margin-top: 3px; padding-left: 8px; }
+.xq, .xw { margin-top: 3px; padding-left: 8px; }
+.xq.in { padding-left: 16px; }
 .xl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .xl b { font-weight: 600; color: var(--text); }
 .x3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
@@ -555,9 +556,10 @@ const aside = s => s.hidden || !s.here || s.headless;
 const STATUS = {ask: "A prompt in it waits for your answer", busy: "Working", idle: "Open, waiting for you", "": "Closed"};
 // an open session with child runs or subagents running: the badge on the right of its card
 const delegated = s => !!s.status && !!(s.bg || []).length;
-// the session's own state, the only thing its dot, tint and hero show: green means it works itself
+// the session's own state, which its dot shows: the turning arc means it works itself
 const stateOf = s => !s.status ? "" : s.waiting ? "ask" : s.status === "busy" ? "busy" : "idle";
-// its group in the list: background work puts an open session with the working ones; asking beats it
+// its group in the list and its card's frame: background work puts an open session with the working ones, green
+// tint and ring included; asking beats it, closed never counts
 const groupOf = s => stateOf(s) === "idle" && delegated(s) ? "busy" : stateOf(s);
 // what the time's place shows in the working group: its own turn, or, while it has none, its background
 // work from the oldest still running
@@ -611,8 +613,8 @@ const flagsOf = s => (s.via ? ["on " + s.via] : []).concat(s.hidden ? ["hidden"]
 // Cards are kept and patched, never redrawn wholesale: open sessions change every 2 s, and a
 // redrawn card would drop the pointer's hover and the tooltip on its title.
 function fill(el, s, q) {
-  const st = stateOf(s);
-  el.className = "card" + (st === "busy" || st === "ask" ? " " + st : "") + (s.here ? " here" : "") +
+  const st = stateOf(s), fr = groupOf(s);
+  el.className = "card" + (fr === "busy" || fr === "ask" ? " " + fr : "") + (s.here ? " here" : "") +
                  (menuFor === s.id ? " target" : "");
   const av = el.querySelector(".av");
   sprite(av, FIGURE[figureOf(s)]);
@@ -1023,7 +1025,12 @@ document.documentElement.addEventListener("mouseleave", tipHide);
 const PEEK_WAIT = 500, PEEK_MAX = 280, PEEK_MIN = 96, PEEK_GRACE = 250, COL_W = 300;
 let peekCard = null, peekJob = null, peekData = null, peekKey = "", xp = null, xcol = null, colOpen = false;
 let colIn = false, leaveJob = null;
-const sinceWords = ms => ms ? clock(Date.now() - ms) : "";
+// how long a piece has run, in words: 45 s, 14 min, 2 h 5 min
+function lasted(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000)), m = Math.floor(t / 60), h = Math.floor(m / 60);
+  return t < 60 ? t + " s" : m < 60 ? m + " min" : h + " h" + (m % 60 ? " " + (m % 60) + " min" : "");
+}
+const sinceWords = ms => ms ? lasted(Date.now() - ms) : "";
 // a tab in the top strip gets a box under it; every other card (the right column, the set-aside list) grows
 const grows = c => !(onTop() && list.contains(c));
 function peekArm(card) {
@@ -1055,9 +1062,12 @@ function peekHide() {
   } else if (el) el.remove();
   if (had) letGo();  // the order the list kept while it was open comes in now
 }
-// a group: its prompt (or that it was not found), then its work, one row each
-const agentRow = b => `<div class="xq"><div class="xl"><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
-                      (b.since ? ` · <span data-since="${b.since}">${sinceWords(b.since)}</span>` : "") + "</div></div>";
+// a group: its prompt (or that it was not found), then its work, one row each ("Agent 1 · what · 14 min"); a
+// Workflow's agents under one line naming it (.xw), indented under it
+const agentRow = (b, i, all) => (b.wf && (!i || all[i - 1].wf !== b.wf) ?
+                                   `<div class="xw"><div class="xl"><b>Workflow</b>${b.flow ? " " + esc(b.flow) : ""}</div></div>` : "") +
+                                `<div class="xq${b.wf ? " in" : ""}"><div class="xl"><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
+                                (b.since ? ` · <span data-since="${b.since}">${sinceWords(b.since)}</span>` : "") + "</div></div>";
 const groupHtml = g => `<div class="xh"><div class="xl">${g.last ? "Last Prompt" : g.prompt ? "Earlier Prompt" : "Prompt not found"}</div>` +
                        (g.prompt ? `<div class="x3">${esc(g.prompt)}</div>` : "") + "</div>" + g.bg.map(agentRow).join("");
 const workOf = gs => gs.reduce((n, g) => n + g.bg.length, 0);
@@ -1084,7 +1094,7 @@ function peekDraw() {
   if (colOpen) colFill();
 }
 // rows are dropped from the end until it fits PEEK_MAX (and, in a list, the room left under the card in view), a
-// prompt left without rows with them (never the first), and the last row says how many pieces are left out
+// prompt or Workflow line left without rows with them (never the first), and the last row says how many pieces are left out
 function peekFit(total) {
   const inner = xp.firstChild, top = xp.getBoundingClientRect().top;
   const room = grows(peekCard) ? peekCard.closest("#list, #drop").getBoundingClientRect().bottom - top - 12
@@ -1097,7 +1107,8 @@ function peekFit(total) {
     if (cut === els[0]) break;
     cut.remove();
     if (cut.classList.contains("xq")) shown--;
-    for (let e = kept(); e.length > 1 && e[e.length - 1].classList.contains("xh"); e = kept()) e[e.length - 1].remove();
+    // a prompt or a Workflow line left without its rows goes with them
+    for (let e = kept(); e.length > 1 && e[e.length - 1].matches(".xh, .xw"); e = kept()) e[e.length - 1].remove();
     let m = inner.querySelector(".xmore");
     if (!m) {
       m = inner.appendChild(document.createElement("div"));
