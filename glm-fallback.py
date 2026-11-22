@@ -688,18 +688,18 @@ def window_name(name):
     return re.sub(r'[&|<>^"%]', "", name or "").strip()[:NAME_MAX]
 
 
-def name_thread(thread, name, cwd, wait=30):
-    """Name the Codex thread the way Codex itself does it (its /rename): the app server's thread/name/set, which
-    writes ~/.codex/session_index.jsonl and the thread's title in its state database; Codex's footer and terminal
-    title then show it. True when Codex answered without an error."""
-    if not name:
-        return False
+def codex_rpc(calls, cwd, wait=30):
+    """Codex's app server (`codex app-server`, stdio): initialize, then each (method, params) in turn. Their results
+    in order, None for one that failed or got no answer (the ones after it are not sent)."""
+    out = [None] * len(calls)
+    if not calls:
+        return out
     try:
         p = subprocess.Popen("codex app-server", shell=True, cwd=cwd, env=clean_env(), stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW,
                              text=True, encoding="utf-8", errors="replace")
     except OSError:
-        return False
+        return out
     lines = queue.Queue()
     threading.Thread(target=lambda: [lines.put(l) for l in p.stdout] and None, daemon=True).start()
     end = time.time() + wait
@@ -715,27 +715,87 @@ def name_thread(thread, name, cwd, wait=30):
             if o.get("id") == i:
                 return o
         return None
-    ok = False
+    msgs = [{"id": 0, "method": "initialize", "params": {"clientInfo": {
+                "name": "claude-plus-fa", "title": "claude-plus-fa", "version": "1"},
+                "capabilities": {"experimentalApi": False}}},
+            {"method": "initialized", "params": {}}]
+    msgs += [{"id": i + 1, "method": m, "params": params} for i, (m, params) in enumerate(calls)]
     try:
-        for msg in ({"id": 1, "method": "initialize", "params": {"clientInfo": {
-                        "name": "claude-plus-fa", "title": "claude-plus-fa", "version": "1"},
-                        "capabilities": {"experimentalApi": False}}},
-                    {"method": "initialized", "params": {}},
-                    {"id": 2, "method": "thread/name/set", "params": {"threadId": thread, "name": name}}):
+        for msg in msgs:
             p.stdin.write(json.dumps(msg) + "\n")
             p.stdin.flush()
             if "id" in msg:
                 got = answer(msg["id"])
                 if not got or "error" in got:
                     break
-                ok = msg["id"] == 2
+                if msg["id"]:
+                    out[msg["id"] - 1] = got.get("result") or {}
         p.stdin.close()
         p.wait(10)
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     if p.poll() is None:  # cmd -> codex.cmd -> node -> codex.exe: the whole tree
         subprocess.run("taskkill /T /F /PID %d" % p.pid, capture_output=True, creationflags=NO_WINDOW)
-    return ok
+    return out
+
+
+def name_call(thread, name):
+    """Name the Codex thread the way Codex itself does it (its /rename): thread/name/set writes
+    ~/.codex/session_index.jsonl and the thread's title in its state database; Codex's footer and terminal title
+    then show it, and Codex does not rename it on the first turn."""
+    return ("thread/name/set", {"threadId": thread, "name": name})
+
+
+def trust_root(cwd):
+    """The folder Codex asks to trust for cwd, in the form its config keys it: the git repository's root (the
+    nearest folder above or at cwd holding .git), else cwd; lower case with backslashes (os.path.normcase), as Codex
+    writes `[projects.'c:\\users\\...']` when the user answers "Trust and continue" (Codex CLI 0.171.0)."""
+    here = os.path.abspath(cwd)
+    while True:
+        if os.path.exists(os.path.join(here, ".git")):
+            return os.path.normcase(here)
+        up = os.path.dirname(here)
+        if up == here:
+            return os.path.normcase(os.path.abspath(cwd))
+        here = up
+
+
+def trust_known(root):
+    """Whether Codex's config already says how far it trusts root (trusted or untrusted: the user's own answer is
+    never replaced). True also when the config cannot be read, so a broken file is left to Codex."""
+    try:
+        import tomllib
+        with open(os.path.join(codex_home(), "config.toml"), "rb") as f:
+            projects = tomllib.load(f).get("projects") or {}
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return True
+    return any(os.path.normcase(k) == root and isinstance(v, dict) and "trust_level" in v
+               for k, v in projects.items())
+
+
+def trust_call(cwd):
+    """Codex stops a new window on "Trust this folder?" for a git repository it has no answer for, with the
+    continue prompt waiting behind it. The folder is the one the user was working in with Claude, so it is trusted
+    the way Codex's own "Trust and continue" does it (config/value/write of projects.<root>.trust_level); None when
+    Codex already has an answer for it."""
+    root = trust_root(cwd)
+    if trust_known(root):
+        return None
+    return ("config/value/write", {"keyPath": "projects.%s.trust_level" % json.dumps(root, ensure_ascii=False),
+                                   "value": "trusted", "mergeStrategy": "replace"})
+
+
+def prepare_codex(thread, name, cwd):
+    """Before Codex's window opens: its thread named like the session and its folder trusted, in one app-server
+    run. Returns (named, trusted): whether each was done; trusted is None when nothing needed writing."""
+    trust = trust_call(cwd)
+    calls = ([name_call(thread, name)] if name else []) + ([trust] if trust else [])
+    got = codex_rpc(calls, cwd)
+    named = bool(name) and got[0] is not None
+    trusted = None if not trust else got[-1] is not None
+    return named, trusted
 
 
 # ---------- the processes of this PC (the old Claude window's work, the Codex window's console) ----------
@@ -817,6 +877,13 @@ class Console:
         return None if alive(self.pid) and born(self.pid) == self.started else 0
 
 
+def quoted_dir(cwd):
+    """A folder as it goes between double quotes on a command line: no trailing separator, since "C:\\" would end
+    the quoted argument with \\" (a drive root becomes C:\\.)."""
+    here = cwd.rstrip("\\/") or cwd
+    return here + ("\\." if here.endswith(":") else "")
+
+
 def open_window(cmd, cwd, title, mark, wait=15):
     """cmd in a new window of its own titled `title`, kept open (cmd /k). With Windows Terminal: a new wt window
     whose title stays put (--suppressApplicationTitle: Codex sets the terminal's title, which would replace ours);
@@ -824,8 +891,7 @@ def open_window(cmd, cwd, title, mark, wait=15):
     whose title cmd sets first."""
     terminal = shutil.which("wt")
     if terminal:
-        here = cwd.rstrip("\\/") or cwd
-        here += "\\." if here.endswith(":") else ""  # "C:\" would end the quoted argument with \"
+        here = quoted_dir(cwd)
         start = ctypes.c_ulonglong()
         ctypes.windll.kernel32.GetSystemTimeAsFileTime(ctypes.byref(start))
         try:
@@ -849,9 +915,14 @@ def open_codex(thread, cwd, skip, whole=None, name=None, work=None):
     """Codex's window on the thread, with the continue prompt, titled with the session's name; whole: the
     transcript, when Codex was given only its latest part, so Codex can look further back in it; work: what
     the old Claude window still runs (it then stays open, and the prompt says so)."""
-    # Codex titles its terminal "<thread name> | <folder>" by default: the name alone, as the Claude window has it
-    # (only seen without Windows Terminal, which keeps the title it was given)
-    cmd = "codex resume %s -c tui.terminal_title=['thread-name']" % thread
+    # Nothing may stop the window on a question with the continue prompt waiting behind it (Codex CLI 0.171.0):
+    # -C names the folder, so Codex does not ask "Working directory · resume" when the folder the import recorded
+    # differs from it (a session that had moved into a subfolder); check_for_update_on_startup=false keeps away the
+    # "Update available" screen, whose default answer installs and closes the window. The trust question is
+    # answered before (prepare_codex()). Codex titles its terminal "<thread name> | <folder>" by default: the name
+    # alone, as the Claude window has it (only seen without Windows Terminal, which keeps the title it was given).
+    cmd = ('codex resume %s -C "%s" -c tui.terminal_title=[\'thread-name\'] -c check_for_update_on_startup=false'
+           % (thread, quoted_dir(cwd)))
     if skip:
         cmd += " --dangerously-bypass-approvals-and-sandbox"
     return open_window(cmd + ' "%s"' % codex_prompt(whole, cwd, work), cwd, window_name(name) or "Codex", thread)
@@ -1256,11 +1327,53 @@ def quiet_path(sid):
 
 
 def set_quiet(sid, until):
-    """The panel reopened the session in Claude before the limit reset (the Codex window closed): its first prompt
-    meets the limit, and the way-out window must not come up for it; Claude Code waits and goes on by itself."""
+    """No way-out window for this session until `until`. Written by the hook once the user has answered it (any
+    answer: the same limit asks once), and by the panel when it reopens the session in Claude before the limit
+    reset (the Codex window closed): its first prompt meets the limit, and Claude Code waits and goes on by itself."""
     os.makedirs(RETURN_DIR, exist_ok=True)
     with open(quiet_path(sid), "w", encoding="utf-8") as f:
         json.dump({"until": until}, f)
+
+
+def seen_by_user(pid, transcript):
+    """Whether the session is one a person works in: not a `claude -p` or SDK run (entrypoint sdk-cli, sdk-ts, ...),
+    the runs the Agent Panel files under Headless. From the Claude process's ~/.claude/sessions/<pid>.json, else
+    the transcript's last line that names an entrypoint; unknown counts as seen."""
+    entry = None
+    if pid:
+        try:
+            with open(os.path.join(HOME, ".claude", "sessions", "%d.json" % int(pid)), encoding="utf-8") as f:
+                entry = json.load(f).get("entrypoint")
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    if entry is None and transcript:
+        try:
+            size = os.path.getsize(transcript)
+            with open(transcript, "rb") as f:
+                f.seek(max(0, size - 262144))
+                tail = f.read()
+        except (OSError, TypeError):
+            tail = b""
+        for line in reversed(tail.split(b"\n")):
+            m = re.search(rb'"entrypoint":\s*"([^"]*)"', line)
+            if m:
+                entry = m.group(1).decode("utf-8", "replace")
+                break
+    return not str(entry or "").startswith("sdk")
+
+
+def hold_dialog(sid):
+    """The one way-out window of this session: a named mutex held for the hook's lifetime, so a second StopFailure
+    of the same session (its main thread again) finds it taken and shows nothing. The handle, None when another
+    hook holds it. Windows frees it when the hook ends, however it ends."""
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = wt.HANDLE
+    h = k32.CreateMutexW(None, True, "Local\\claude-plus-fa-way-out-" + re.sub(r"[^\w-]", "", sid))
+    if not h or ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        if h:
+            k32.CloseHandle(wt.HANDLE(h))
+        return None
+    return h
 
 
 def quiet(sid, now=None):
@@ -1555,7 +1668,7 @@ def codex_back_prompt(rec, now=None, span=None):
 
 
 # ---------- the questions ----------
-def ask_out(folder, forward=True, transcript=None, cwd=None, preview=None, error=None):
+def ask_out(name, forward=True, transcript=None, cwd=None, preview=None, error=None):
     """The way out. Returns ("glm", None), ("codex", thread id) or (None, None). The Codex transfer runs while
     the window shows its working line, so a failure is shown there and the user can pick again.
     preview: {"glm": bool or None, "codex": dict or None, "open": "glm"/"codex"/None}; nothing is transferred,
@@ -1599,7 +1712,7 @@ def ask_out(folder, forward=True, transcript=None, cwd=None, preview=None, error
             elif name in STEPS:
                 new_console(STEPS[name], cwd=HOME, env=clean_env())
 
-    page = page_head(OUT_PAGE, "Usage Limit Reached: %s" % html.escape(folder))
+    page = page_head(OUT_PAGE, "Usage Limit Reached: %s" % html.escape(name))  # the session's name
     if preview.get("open"):
         page = page.replace("<script>", '<script>window.OPEN = "%s";' % preview["open"], 1)
     if preview.get("press"):
@@ -1691,52 +1804,69 @@ def main():
     sid = data.get("session_id")
     if not sid:
         return
-    # the panel reopened this session in Claude because its Codex window closed, before the limit reset: its
-    # first prompt (Codex's record) meets the limit, and Claude Code goes on by itself at the reset
+    # StopFailure also fires inside subagents (Claude Code 2.1.330: the same session_id and cwd, plus agent_id):
+    # subagents stopped by the same limit opened windows of their own (2026-11-22). Only the main thread asks.
+    if data.get("agent_id"):
+        return
+    # quiet: the user already answered this limit's window, or the panel reopened the session in Claude before the
+    # reset (its Codex window closed) and Claude Code goes on by itself at the reset
     if quiet(sid):
         return
     cwd = data.get("cwd") or os.getcwd()
     transcript = data.get("transcript_path")
-    folder = os.path.basename(cwd.rstrip("\\/")) or cwd
-    skip = data.get("permission_mode", "bypassPermissions") == "bypassPermissions"
     orig = claude_pid(sid)
+    if not seen_by_user(orig, transcript):
+        return  # a `claude -p` or SDK run: nobody is there to answer
+    hold = hold_dialog(sid)
+    if not hold or quiet(sid):
+        return  # this session's window is open in another hook, or was answered while this one started
+    folder = os.path.basename(cwd.rstrip("\\/")) or cwd
+    # the window names the session as its Claude window and card do: a subfolder's name alone did not tell the
+    # user which session had stopped
+    name = claude_name(orig) or session_name(transcript) or folder
+    skip = data.get("permission_mode", "bypassPermissions") == "bypassPermissions"
     error = None
-    while True:
+    try:
+        while True:
+            try:
+                import webview  # noqa: F401
+                via, thread, cut = ask_out(window_name(name) or folder, transcript=transcript, cwd=cwd, error=error)
+            except ImportError:
+                via, thread, cut = ("glm" if has_key() and ask_native(folder) else None), None, False
+            if not via:
+                return
+            extra = {}
+            if via == "codex":
+                path = thread_file(thread)
+                # the Codex window and its thread carry the session's name; the folder is trusted for Codex
+                named, trusted = prepare_codex(thread, name, cwd)
+                work = busy_work(sid, orig, transcript) if orig else []
+                extra = {"codex_thread": thread, "codex_file": path, "name": name, "named": named, "work": work,
+                         "trusted": trusted, "codex_from": os.path.getsize(path) if path else 0}
+                console = open_codex(thread, cwd, skip, whole=transcript if cut else None, name=name, work=work)
+            else:
+                # GLM's window carries the session's name too; GLM is Claude Code, so it loads CLAUDE.md itself
+                work = busy_work(sid, orig, transcript) if orig else []
+                extra = {"name": name, "work": work}
+                console = open_glm(sid, cwd, skip, name=name, work=work)
+            try:
+                record_switch(sid, cwd, console.pid, orig, skip, via=via, transcript=transcript, **extra)
+            except OSError:
+                pass  # the way back is a convenience; the move has happened either way
+            # Codex's first turn: if it ends in an error (a history its model cannot hold), the user is not left
+            # in a dead window: the way-out window opens again and says what happened
+            error = first_turn_error(extra["codex_file"], extra["codex_from"], console) \
+                if via == "codex" and extra["codex_file"] else None
+            if not error:
+                # the hook is ending: the panel may now close this (the old) Claude window
+                mark_watched(sid, thread if via == "codex" else None)
+                return
+    finally:
+        # answered (Cancel included): the same limit does not ask again for this session; it may once it reset
         try:
-            import webview  # noqa: F401
-            via, thread, cut = ask_out(folder, transcript=transcript, cwd=cwd, error=error)
-        except ImportError:
-            via, thread, cut = ("glm" if has_key() and ask_native(folder) else None), None, False
-        if not via:
-            return
-        extra = {}
-        if via == "codex":
-            path = thread_file(thread)
-            # the Codex window and its thread carry the session's name, as its Claude window and card do
-            name = claude_name(orig) or session_name(transcript) or folder
-            named = name_thread(thread, name, cwd)
-            work = busy_work(sid, orig, transcript) if orig else []
-            extra = {"codex_thread": thread, "codex_file": path, "name": name, "named": named, "work": work,
-                     "codex_from": os.path.getsize(path) if path else 0}
-            console = open_codex(thread, cwd, skip, whole=transcript if cut else None, name=name, work=work)
-        else:
-            # GLM's window carries the session's name too; GLM is Claude Code, so it loads CLAUDE.md itself
-            name = claude_name(orig) or session_name(transcript) or folder
-            work = busy_work(sid, orig, transcript) if orig else []
-            extra = {"name": name, "work": work}
-            console = open_glm(sid, cwd, skip, name=name, work=work)
-        try:
-            record_switch(sid, cwd, console.pid, orig, skip, via=via, transcript=transcript, **extra)
+            set_quiet(sid, reset_time(time.time())[0])
         except OSError:
-            pass  # the way back is a convenience; the move has happened either way
-        # Codex's first turn: if it ends in an error (a history its model cannot hold), the user is not left
-        # in a dead window: the way-out window opens again and says what happened
-        error = first_turn_error(extra["codex_file"], extra["codex_from"], console) \
-            if via == "codex" and extra["codex_file"] else None
-        if not error:
-            # the hook is ending: the panel may now close this (the old) Claude window
-            mark_watched(sid, thread if via == "codex" else None)
-            return
+            pass
 
 
 if __name__ == "__main__":
