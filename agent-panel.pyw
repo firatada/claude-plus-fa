@@ -2325,11 +2325,11 @@ class Panel:
         self.strip_on, self.strip_seen, self.strip_shown = strip_wanted(), -1, False
         with open(SHOTS_HTML, encoding="utf-8") as f:
             shtml = f.read()
-        # min_size 0 x 0 also because pywebview's default 200 x 100 cut the strip's bottom edge: a window held
-        # taller than its region loses its bottom edge
+        # min_size 0 x 0 also because pywebview's default 200 x 100 would hold the strip taller than it is drawn.
+        # shadow=True, as the panel: DWM's frame (square corners, 1 px border, its shadow), so the two read as one
         self.strip = webview.create_window(SHOTS_TITLE, html=shtml, js_api=StripApi(self), width=360, height=82,
                                            min_size=(0, 0), frameless=True, easy_drag=False, on_top=False,
-                                           hidden=True, focus=False, shadow=False, background_color="#FFFFFF")
+                                           hidden=True, focus=False, shadow=True, background_color="#FFFFFF")
         self.strip_at, self.strip_drag, self.strip_now = strip_at(), None, None
         # the ":" reply's numbered lists, one per session (quote_poll): the clipboard's sequence number last read,
         # the lists ({session id: list}, kept in the hook's LIST file, read back at start so a restart keeps them)
@@ -3551,8 +3551,7 @@ class Panel:
             user32.ShowWindow(self.strip_hwnd, 0)  # SW_HIDE
             return
         x, y, w, h = rect
-        r = int(round(24 * self.scale()))
-        user32.SetWindowRgn(self.strip_hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r, r), True)
+        # no window region: DWM draws its frame round the whole rectangle and ignores a region (see frame())
         # SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW: the owner keeps it above the panel; the keyboard stays put
         user32.SetWindowPos(self.strip_hwnd, 0, x, y, w, h, 0x0004 | 0x0010 | 0x0040)
         if fresh:

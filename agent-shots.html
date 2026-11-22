@@ -57,9 +57,8 @@ body {
 }
 button { font: inherit; cursor: pointer; }
 #strip {
-  height: 100%; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 5px;
-  border: 1px solid var(--line); border-radius: 12px;
-}
+  height: 100%; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 6px;
+}  /* no edge of its own: the window's DWM frame draws it, square with its shadow, as the panel's */
 body.moving, body.moving * { cursor: grabbing !important; }
 /* a card: SHOT_W x SHOT_H (150 x 94; 150 so the top row holds a pinned 2-digit badge, Pin and "Reading…"). The
    whole card is the button that opens the preview; its text starts under the top row (6 + 20 + 4), the title up to

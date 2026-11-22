@@ -285,5 +285,42 @@ class FolderForm(unittest.TestCase):
         self.assertEqual(self.where(None, folder="my-app"), "my-app")
 
 
+class StripFrame(unittest.TestCase):
+    """The screenshot strip's window is edged as the panel's: DWM's frame (pywebview shadow=True), square corners
+    and the shadow along them, never a rounded window region nor an edge drawn by its own page."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            self.tree = ast.parse(f.read())
+        with open(os.path.join(ROOT, "agent-shots.html"), encoding="utf-8") as f:
+            self.page = f.read()
+
+    def window(self, title):
+        for n in ast.walk(self.tree):
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "create_window" and n.args \
+                    and getattr(n.args[0], "id", "") == title:
+                return {k.arg: k.value for k in n.keywords}
+        self.fail("no create_window for " + title)
+
+    def shadow(self, title):
+        kw = self.window(title)
+        return kw["shadow"].value if "shadow" in kw else True  # pywebview's default is True
+
+    def test_same_frame_as_the_panel(self):
+        self.assertTrue(self.shadow("TITLE"))
+        self.assertEqual(self.shadow("SHOTS_TITLE"), self.shadow("TITLE"))
+        self.assertIs(self.window("SHOTS_TITLE")["frameless"].value, True)
+
+    def test_no_region_on_the_strip(self):
+        for n in ast.walk(self.tree):
+            if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "SetWindowRgn":
+                self.assertNotEqual(getattr(n.args[0], "attr", ""), "strip_hwnd", "the strip must keep no region")
+
+    def test_page_draws_no_outer_edge(self):
+        rule = re.search(r"\n#strip \{([^}]*)\}", self.page).group(1)
+        self.assertNotIn("border", rule)
+        self.assertIn("padding: 6px", rule)  # SHOT_PAD: the cards keep their place
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
