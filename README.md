@@ -41,7 +41,7 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows, so a long session
 
 ### Field Agents
 
-<img src="docs/img/agent-panel.png" alt="Field Agents: one session asking, one working, one with background work, one open, three closed, usage bars at the bottom" width="280">
+<img src="docs/img/agent-panel.png" alt="Field Agents: one session asking, one working (its hero runs), one with background work, one open, closed ones greyed (their heroes asleep), usage bars at the bottom" width="280">
 
 Every Claude Code session on your PC in one list on the right edge of the screen, newest first, with a search box: each session is an agent at work in the field, hence the name (it was called Agent Panel before). It takes no screen space: the window you work in covers it.
 
@@ -49,6 +49,7 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 - **Green**: the session is working. Its dot turns and the clock shows how long the current turn has run.
 - **Turning badge**: work the session started in the background (a subagent or a `claude -p` run), with the number of runs. Point at it to see what they are.
 - **Purple**: open and waiting for you. **Grey**: closed.
+- The hero on each card runs while its session works and sleeps the rest of the time.
 - Each card shows how full that session's context is. The bottom shows your 5-hour and weekly usage.
 
 Using it:

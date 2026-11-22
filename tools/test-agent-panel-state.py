@@ -183,6 +183,59 @@ class Page(unittest.TestCase):
         self.assertEqual(self.r["order"], ["asking-with-child", "working", "old-delegating", "new-idle", "old-idle", "closed"])
 
 
+class Mascot(unittest.TestCase):
+    """The chibi hero: runs only while its session works, sleeps in every other state; each element gets the
+    smallest shipped strip that still covers its device pixels; the page's frame counts match the strips."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, "agent-panel.html"), encoding="utf-8") as f:
+            html = f.read()
+        code = html[html.index("const RUN = "):html.index("const frameAt = ")]
+        test = r"""
+const MASCOT = {"hero-run": "r1", "hero-run@2x": "r2", "hero-sleep": "s1", "hero-sleep@2x": "s2"};
+const window = {devicePixelRatio: 1};
+const pick = (w, dpr, key) => { window.devicePixelRatio = dpr; return stripOf({clientWidth: w}, key); };
+console.log(JSON.stringify({
+  heroes: ["busy", "ask", "idle", ""].map(st => heroOf(st)[0]),
+  frames: {run: RUN[1], sleep: SLEEP[1]},
+  sleepMs: SLEEP[2].map(s => s[1]), runMs: RUN[2].map(s => s[1]),
+  picks: [pick(56, 1, "hero-run"), pick(56, 2, "hero-run"), pick(36, 1, "hero-sleep"), pick(36, 2, "hero-sleep"),
+          pick(28, 1, "hero-run"), pick(28, 2, "hero-run"), pick(28, 1.5, "hero-sleep"), pick(56, 1.25, "hero-sleep")],
+}));
+"""
+        out = subprocess.run(["node", "-e", code + test], capture_output=True, encoding="utf-8", check=True)
+        cls.r = json.loads(out.stdout)
+
+    def test_runs_only_while_working(self):
+        self.assertEqual(self.r["heroes"], ["hero-run", "hero-sleep", "hero-sleep", "hero-sleep"])
+
+    def test_timing(self):
+        self.assertTrue(all(ms == 90 for ms in self.r["runMs"]))
+        self.assertTrue(all(600 <= ms <= 900 for ms in self.r["sleepMs"]))
+
+    def test_strip_size_for_the_screen(self):
+        # card 56 px at 1x: the 56 px frames; at 2x or 1.25x the 112 px ones; header and tab at 1x the 56 px
+        self.assertEqual(self.r["picks"], ["r1", "r2", "s1", "s2", "r1", "r1", "s1", "s2"])
+
+    def test_shipped_strips_match_the_page(self):
+        from PIL import Image
+        for name, n in (("hero-run", self.r["frames"]["run"]), ("hero-sleep", self.r["frames"]["sleep"])):
+            for suffix, px in (("", 56), ("@2x", 112)):
+                with Image.open(os.path.join(ROOT, "mascot", name + suffix + ".webp")) as im:
+                    self.assertEqual(im.size, (px * n, px), name + suffix)
+
+    def test_panel_inlines_all_four(self):
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            src = f.read()
+        ns = pyw_functions("mascot_js")
+        ns.update(MASCOT=os.path.join(ROOT, "mascot"), base64=__import__("base64"))
+        keys = ("hero-run", "hero-run@2x", "hero-sleep", "hero-sleep@2x")
+        self.assertIn("mascot_js((%s))" % ", ".join('"%s"' % k for k in keys), src)
+        js = ns["mascot_js"](keys)
+        self.assertEqual(sorted(json.loads(js[len("window.MASCOT = "):-1])), sorted(keys))
+
+
 class FolderForm(unittest.TestCase):
     """One form of a session's folder for the cards, the alert and the strip: Windows separators, no trailing one."""
 

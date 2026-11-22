@@ -14,11 +14,12 @@
      but its dot, tint and hero keep its own state: only the badge's arrow turns for that work (2026-11-20,
      the maintainer: a green arc on a session that is itself idle "is misleading"). The folder path shows only
      in the title's tooltip.
-     Mascot (2026-11-21, replacing the 2026-11-09 octopus): the FA hero (cut by tools/hero-export.py into
-     mascot/ and inlined by agent-panel.pyw as window.MASCOT). It is the header's logo and sits on every
-     card: running while the session works, sitting at rest (breathing, a blink now and then) in every
-     other state, greyed on a closed card; the state itself stays with the dot, tint and ring. The header
-     runs when the most pressing state in the list is working, otherwise sits. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
+     Mascot (2026-11-22, the big-headed chibi FA hero, replacing the 2026-11-21 full-body hero): cut by
+     tools/hero-export.py into mascot/ (56 and 112 px frames) and inlined by agent-panel.pyw as
+     window.MASCOT. It is the header's logo and stands 56 px on every card: running while the session
+     works, asleep (a slow breath, a "z" rising) in every other state, greyed on a closed card; the state
+     itself stays with the dot, tint and ring. The header runs when the most pressing state in the list
+     is working, otherwise sleeps. Without the strips the old logo stays. The bars' 50-80 % band is gold to match the status line,
      an exception to Spark's "gold for rewards only". Written-down exceptions to design.md "One row,
      one shape": the header's logo (36, the hero), count pill (18, pill radius) and hide and screenshot-strip buttons (26) differ, the
      pill qualifying the title and the button standing apart at the edge. Headings and boxes share the
@@ -68,10 +69,10 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .mascot { flex: none; background-repeat: no-repeat; background-position: 0 0; }
 .mascot[hidden] { display: none; }
 .logo.mascot { width: 36px; height: 36px; }
-.av { width: 38px; height: 38px; align-self: center; }
-/* a closed card's hero, sitting, in light grey */
+.av { width: 56px; height: 56px; align-self: center; }
+/* a closed card's hero, asleep, in light grey */
 .av.gone { filter: grayscale(1); opacity: .5; }
-.body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.body { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
 h1 { font-size: 15px; font-weight: 600; }
 #count {
   min-width: 22px; height: 18px; padding: 0 7px; border-radius: var(--r-pill); background: var(--surface2);
@@ -120,7 +121,7 @@ h1 { font-size: 15px; font-weight: 600; }
 #list::-webkit-scrollbar-thumb:hover { background: var(--thumb-hover); }
 
 .card {
-  height: 56px; margin-bottom: 8px; padding: 9px 14px 9px 8px; display: flex; gap: 8px;
+  height: 74px; margin-bottom: 8px; padding: 8px 14px 8px 6px; display: flex; gap: 8px;
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--card-shadow);
   transition: transform .16s ease-out;
 }
@@ -330,7 +331,7 @@ body.top #list .body { flex-direction: row; align-items: center; gap: 8px; }
 body.top #list .t { flex: 1; min-width: 0; }
 body.top #list .name { font-size: 12px; }
 body.top #list .age, body.top #list .arrow, body.top #list .cx, body.top #list .flags { display: none; }
-/* the tab's tint and the hero (running, sitting, grey when closed) show the state; the dot stands in only without a hero */
+/* the tab's tint and the hero (running, asleep, grey when closed) show the state; the dot stands in only without a hero */
 body.top #list .av:not([hidden]) + .body .dot { display: none; }
 body.top #list .meta { flex: none; padding-left: 0; gap: 4px; }
 body.top #list .meta .bar { width: 20px; }
@@ -430,24 +431,32 @@ const onTop = () => document.body.classList.contains("top");
 // ----- the mascot (mindmap mascot.md: frame 0 the rest, frame 0 only under reduced motion) -----
 const sprites = new Map();   // element -> {key, n, seq, i, at}
 // strip, its frame count (fixed by tools/hero-export.py), and the play order as [frame, ms] steps:
-// the run was drawn at 11 fps; the sitting hero breathes slowly (rest, half, full, half breath) and
-// blinks once every second breath
+// the run was drawn at 11 fps; asleep, the hero breathes slowly (rest, half, full, half breath, the "z"
+// rising one step a frame)
 const RUN = ["hero-run", 8, [0, 1, 2, 3, 4, 5, 6, 7].map(f => [f, 90])];
-const SIT = ["hero-sit", 4, [[0, 1400], [1, 250], [2, 1100], [1, 250], [0, 1400], [1, 250], [2, 1100], [1, 250],
-                             [0, 700], [3, 160], [0, 500]]];
-const heroOf = st => st === "busy" ? RUN : SIT;
+const SLEEP = ["hero-sleep", 4, [[0, 900], [1, 700], [2, 900], [3, 700]]];
+const heroOf = st => st === "busy" ? RUN : SLEEP;
+// each strip comes in 56 px frames and in 112 px ("@2x"): the smaller one when it still covers the
+// element's device pixels (a 56 px card at 1x, the 36 px header and 28 px tab at 1x), else the larger
+const stripOf = (el, key) => {
+  const need = (el.clientWidth || 56) * (window.devicePixelRatio || 1);
+  return need <= 56 && MASCOT[key] ? MASCOT[key] : MASCOT[key + "@2x"] || MASCOT[key];
+};
 const frameAt = (el, n, f) => { el.style.backgroundPosition = f * 100 / (n - 1) + "% 0"; };
 function sprite(el, [key, n, seq]) {
-  const src = MASCOT[key];
-  el.hidden = !src;
-  if (!src) return false;
-  const s = sprites.get(el);
-  if (s && s.key === key) return true;
+  el.hidden = !MASCOT[key] && !MASCOT[key + "@2x"];
+  if (el.hidden) return false;
+  const src = stripOf(el, key), s = sprites.get(el);
+  if (s && s.key === key) {
+    // the dock or the screen's scale changed: the same frame from the other size
+    if (s.src !== src) { s.src = src; el.style.backgroundImage = `url(${src})`; }
+    return true;
+  }
   el.style.backgroundImage = `url(${src})`;
   el.style.backgroundSize = n * 100 + "% 100%";
   frameAt(el, n, 0);
   // each card starts at its own moment, so the heroes do not move in step
-  sprites.set(el, {key, n, seq, i: 0, at: performance.now() + Math.random() * 1200});
+  sprites.set(el, {key, src, n, seq, i: 0, at: performance.now() + Math.random() * 1200});
   return true;
 }
 function tick(now) {
@@ -485,7 +494,7 @@ function syncRegion() {
   api().region(rs);
 }
 requestAnimationFrame(tick);
-// the header's hero runs when the most pressing state in the list is working, otherwise sits (full colour)
+// the header's hero runs when the most pressing state in the list is working, otherwise sleeps (full colour)
 function headerMascot() {
   const st = state.sessions.map(stateOf);
   const top = st.includes("ask") ? "ask" : st.includes("busy") ? "busy" : "idle";
