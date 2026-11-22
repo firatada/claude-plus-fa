@@ -340,6 +340,27 @@ class GlmTitle(unittest.TestCase):
         self.assertIn(s["name"], title)  # in_front() and focus_session(): the name is in the title, no Ctrl+Tab
 
 
+class AgentEnded(unittest.TestCase):
+    """busy_work() keeps the old window open for an agent without "finished" only while it has not ended."""
+
+    def test_record_and_quiet(self):
+        sess = os.path.join(TMP, "E%d" % (time.time() * 1e6))
+        run = os.path.join(sess, "subagents", "workflows", "wf_x")
+        os.makedirs(run)
+        for name in ("agent-a.jsonl", "agent-b.jsonl"):
+            put(os.path.join(sess, "subagents", name), "{}\n")
+        put(os.path.join(run, "agent-w.jsonl"), "{}\n")
+        t = time.time() - FB.QUIET - 60
+        os.utime(os.path.join(sess, "subagents", "agent-b.jsonl"), (t, t))
+        ended = lambda p: FB.agent_ended(sess + ".jsonl", p)
+        self.assertFalse(ended(os.path.join(sess, "subagents", "agent-a.meta.json")))  # growing
+        self.assertTrue(ended(os.path.join(sess, "subagents", "agent-b.meta.json")))  # quiet past QUIET
+        self.assertFalse(ended(os.path.join(run, "agent-w.meta.json")))  # its run has no record yet
+        os.makedirs(os.path.join(sess, "workflows"))
+        put(os.path.join(sess, "workflows", "wf_x.json"), '{"status": "completed"}')
+        self.assertTrue(ended(os.path.join(run, "agent-w.meta.json")))
+
+
 if __name__ == "__main__":
     try:
         unittest.main(verbosity=1)

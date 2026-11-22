@@ -1079,14 +1079,23 @@ def child_runs(live, table):
     return out
 
 
-def subagents(s, started, cache):
+QUIET = 30 * 60  # seconds: an agent without "finished" whose transcript, and every agent's under it, has not grown
+                 # this long has ended (killed, or its turn interrupted); a tool call of its own lasts at most 10 min
+
+
+def subagents(s, started, cache, now=None):
     """The in-process agents (Agent/Task tool, workflow agents) of an open session that are running now.
     Claude Code writes subagents[/<subfolder>]/agent-<id>.meta.json beside the session's transcript when an
     agent starts and rewrites it with "finished": true when it ends ("stoppedByUser": true when stopped).
     Only files written since the session's process started count, so an agent cut off by a closed or
-    crashed session, which never got its "finished", is not shown as running. Each meta is read again
-    only when its time changes; transcripts are never opened."""
-    out, todo = [], [os.path.join(os.path.dirname(s["path"]), s["id"], "subagents")]
+    crashed session, which never got its "finished", is not shown as running. A Workflow's agents never get
+    "finished" (Claude Code 2.1.330): their run has ended once Claude Code wrote the run's record
+    <session>/workflows/wf_<run>.json, which it writes once, when the run completes, fails or is killed.
+    Any agent still unfinished whose transcript and those of the agents under it (parentAgentId) have not
+    grown for QUIET has ended too. Each meta is read again only when its time changes; transcripts are only
+    stat'ed."""
+    base = os.path.join(os.path.dirname(s["path"]), s["id"])
+    out, todo, now = [], [os.path.join(base, "subagents")], now or time.time()
     while todo:
         try:
             entries = list(os.scandir(todo.pop()))
@@ -1114,12 +1123,26 @@ def subagents(s, started, cache):
                     hit = cache[e.path] = (st.st_mtime, run and {
                         "kind": "subagent", "what": m.get("description") or m.get("agentType") or "", "since": since,
                         "file": e.path[:-10] + ".jsonl", "use": m.get("toolUseId"), "parent": m.get("parentAgentId"),
-                        "wf": wf_run(e.path)})
+                        "wf": wf_run(e.path), "aid": e.name[6:-10]})
                 if hit[1]:
                     out.append(hit[1])
             except (OSError, ValueError, AttributeError):
                 continue
-    return out
+    ended = {}
+    for w in out:  # one stat per run
+        if w["wf"] and w["wf"] not in ended:
+            ended[w["wf"]] = os.path.isfile(os.path.join(base, "workflows", w["wf"] + ".json"))
+    out = [w for w in out if not ended.get(w["wf"])]
+    by, live = {w["aid"]: w for w in out}, set()
+    for w in out:
+        try:
+            grown = now - os.stat(w["file"]).st_mtime < QUIET
+        except OSError:
+            grown = now - w["since"] < QUIET
+        while grown and w and w["aid"] not in live:  # a growing agent keeps the agents above it running
+            live.add(w["aid"])
+            w = by.get(w["parent"])
+    return [w for w in out if w["aid"] in live]
 
 
 # ---------- the opened card: what a session is working on, and which prompt set each piece off ----------

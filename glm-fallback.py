@@ -1396,6 +1396,25 @@ BG_TAIL = 4 * 1048576  # bytes of transcript read for background commands starte
 LATE = 20              # seconds after the Claude process started: a child born later is a tool's, not an MCP server
 
 
+QUIET = 30 * 60        # seconds an agent without "finished" may go without its transcript growing before it has ended
+
+
+def agent_ended(transcript, meta):
+    """An agent whose meta has no "finished" has ended all the same: a Workflow's agents (subagents/workflows/wf_<run>/)
+    once the run's record <session>/workflows/wf_<run>.json exists (Claude Code writes it once, when the run ends; its
+    agents never get "finished"), and any agent whose transcript has not grown for QUIET. Same rule as subagents()
+    in agent-panel.pyw (which also keeps an agent running while one under it grows)."""
+    d = os.path.dirname(meta)
+    run = os.path.basename(d)
+    if run.startswith("wf_") and os.path.basename(os.path.dirname(d)) == "workflows" and \
+            os.path.isfile(os.path.join(os.path.splitext(transcript)[0], "workflows", run + ".json")):
+        return True
+    try:
+        return time.time() - os.path.getmtime(meta[:-10] + ".jsonl") >= QUIET
+    except OSError:
+        return False
+
+
 def busy_work(sid, pid, transcript):
     """What the Claude process pid (the old window of session sid) still runs, as short phrases: subagents
     without "finished", Claude Code runs started under it that hold a session of their own (a claude -p), and
@@ -1414,7 +1433,8 @@ def busy_work(sid, pid, transcript):
                         m = json.load(f)
                 except (OSError, ValueError):
                     continue
-                if isinstance(m, dict) and not m.get("finished") and not m.get("stoppedByUser"):
+                if isinstance(m, dict) and not m.get("finished") and not m.get("stoppedByUser") \
+                        and not agent_ended(transcript, p):
                     out.append("a subagent (%s)" % (m.get("description") or m.get("agentType") or "agent"))
     holders = {}
     for n in os.listdir(os.path.join(HOME, ".claude", "sessions")) if os.path.isdir(

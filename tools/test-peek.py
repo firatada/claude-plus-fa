@@ -10,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 FT_EPOCH = 116444736000000000
 CONSTS = ("PEEK_TAIL", "PEEK_MORE", "PEEK_CHARS", "BG_TAIL", "LATE", "BG_START", "BG_END", "KIND",
-          "CHAIN_STEP", "CHAIN_MAX", "RUN_WAIT", "UUID_OF", "STAMP")
+          "CHAIN_STEP", "CHAIN_MAX", "RUN_WAIT", "UUID_OF", "STAMP", "QUIET")
 FUNCS = ("text_of", "flat", "typed_prompt", "last_prompt", "bg_commands", "late_child", "subagents", "stamp", "back",
          "chain_prompt", "blocks", "call_of", "workflow_of", "shell_of", "settled", "wf_run", "agent_meta",
          "agent_trigger", "run_trigger", "flow_name", "arrange")
@@ -454,6 +454,52 @@ class Peek(unittest.TestCase):
         self.assertEqual((done, got["id"]), (True, p["uuid"]))
         self.ns["CHAIN_MAX"] = 4096  # past CHAIN_MAX: settled as not found, never read again
         self.assertEqual(self.ns["chain_prompt"](main, self.ns["call_of"]("toolu_a")), (False, os.path.getsize(main)))
+
+    # ----- when an agent without "finished" has ended -----
+    def run_agents(self, run, n, quiet=False):
+        """n agents of Workflow run `run`, metas without "finished" as Claude Code leaves them; quiet: their
+        transcripts last grew longer than QUIET ago."""
+        for i in range(n):
+            d = self.agent("%s%d" % (run, i), "audit:%s" % "ABCDE"[i], sub=os.path.join("workflows", run),
+                           agentType="workflow-subagent", inWorkflowRun=True)
+            if quiet:
+                self.quiet(d, "%s%d" % (run, i))
+
+    def quiet(self, d, aid):
+        t = self.now - self.ns["QUIET"] - 600
+        os.utime(os.path.join(d, "agent-%s.jsonl" % aid), (t, t))
+
+    def running(self):
+        main = self.path("S")
+        return sorted(w["what"] for w in self.ns["subagents"]({"path": main, "id": "S"}, self.started - 1, {},
+                                                                 self.now))
+
+    def test_a_workflow_run_with_its_record_has_ended(self):
+        self.run_agents("wf_done", 5)  # killed a moment ago: transcripts fresh, no "finished" in any meta
+        os.makedirs(os.path.join(self.tmp, "projects", "C--work-app", "S", "workflows"))
+        with open(os.path.join(self.tmp, "projects", "C--work-app", "S", "workflows", "wf_done.json"), "w") as f:
+            json.dump({"runId": "wf_done", "status": "killed", "agentCount": 5}, f)
+        self.run_agents("wf_live", 2)  # another run of the same session, still going: no record yet
+        self.assertEqual(self.running(), ["audit:A", "audit:B"])
+
+    def test_an_interrupted_run_without_a_record_ends_once_quiet(self):
+        self.run_agents("wf_cut", 3, quiet=True)
+        self.assertEqual(self.running(), [])
+
+    def test_a_plain_agent_without_finished_ends_once_quiet(self):
+        d = self.agent("stale", "Killed", toolUseId="toolu_1")
+        self.quiet(d, "stale")
+        self.agent("done", "Done", toolUseId="toolu_2", finished=True)
+        self.agent("busy", "Busy", toolUseId="toolu_3")
+        self.assertEqual(self.running(), ["Busy"])
+
+    def test_a_quiet_agent_waiting_on_a_growing_one_runs(self):
+        d = self.agent("top", "Lead", toolUseId="toolu_top")
+        self.quiet(d, "top")
+        self.agent("kid", "Reader", toolUseId="toolu_k", parentAgentId="top")  # grows: its parent waits on it
+        d = self.agent("lone", "Alone", toolUseId="toolu_l")
+        self.quiet(d, "lone")
+        self.assertEqual(self.running(), ["Lead", "Reader"])
 
     def test_closed_session_shows_only_its_prompt(self):
         log = Log(self.started)
