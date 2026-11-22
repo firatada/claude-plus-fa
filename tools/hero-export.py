@@ -20,6 +20,7 @@ Output, one horizontal strip per animation and size, frames side by side (the pl
   mascot/hero-<run|conduct|ask|idle|sleep>.webp      56 px frames (the card, 1x)
   mascot/hero-<run|conduct|ask|idle|sleep>@2x.webp   112 px frames (the card at 2x; the header, 36 px, and the top
                                                      strip's 28 px tabs scale these down)
+  mascot/agent-panel.ico                             the desktop shortcut's icon, 16 to 256 px (at the end)
 The panel greys the sleeping hero of a closed card itself (CSS), so there is no grey strip.
 """
 import os
@@ -100,3 +101,36 @@ for name, strip in frames.items():
         path = os.path.join(OUT, name + suffix + ".webp")
         out.save(path, "WEBP", quality=90, method=6)
         print("wrote %s (%d frames of %d px, %d bytes)" % (os.path.basename(path), len(strip), px, os.path.getsize(path)))
+
+# The desktop shortcut's icon, mascot/agent-panel.ico, at the sizes Windows asks for. Its pose is the idle glance
+# (idle-4): facing the viewer, symmetric, smiling, it reads better small than the rest pose, whose turned head and
+# tilted cap leave a lopsided blob. Up to 48 px (the desktop's size at 100 %) the whole figure's face is a few
+# pixels, so these sizes show a bust: a square as wide as the head and cap (the widest rows of the drawing's top
+# ICON_HEAD) plus ICON_PAD, its bottom edge on ICON_CUT, the row just above the white gloves (measured), so the
+# shirt runs off the edge and no glove shows as a stray white fleck; the air left above the cap stays. From 64 px
+# up, the whole figure in a square standing on its feet. Each size is one Lanczos pass from the 512 px source.
+ICON_POSE = "idle-4.png"
+ICON_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+ICON_BUST_UP_TO = 48
+ICON_HEAD = 0.62  # share of the drawing's height, from its top, that holds the head and cap
+ICON_CUT = 360
+ICON_PAD = 2      # source px
+a = load(ICON_POSE)
+ys, xs = np.where(ink(a).any(1))[0], np.where(ink(a).any(0))[0]
+head = np.where(ink(a)[ys[0]:ys[0] + int(ICON_HEAD * (ys[-1] - ys[0]))].any(0))[0]
+side = head[-1] - head[0] + 1 + 2 * ICON_PAD
+cx = (head[0] + head[-1] + 1) / 2
+if ICON_CUT - side > ys[0]:
+    raise SystemExit("the icon's bust cuts into the cap")
+bust = (cx - side / 2, ICON_CUT - side, cx + side / 2, ICON_CUT)
+side = max(xs[-1] - xs[0], ys[-1] - ys[0]) + 1 + 2 * ICON_PAD
+cx = (xs[0] + xs[-1] + 1) / 2
+whole = (cx - side / 2, ys[-1] + 1 + ICON_PAD - side, cx + side / 2, ys[-1] + 1 + ICON_PAD)
+big = Image.new("RGBA", (a.shape[1] + 2 * M, a.shape[0] + 2 * M))
+big.paste(Image.fromarray(a), (M, M))
+icons = [big.resize((n, n), Image.LANCZOS, box=tuple(v + M for v in (bust if n <= ICON_BUST_UP_TO else whole)))
+         for n in ICON_SIZES]
+path = os.path.join(OUT, "agent-panel.ico")
+icons[-1].save(path, format="ICO", sizes=[(n, n) for n in ICON_SIZES], append_images=icons[:-1])
+print("wrote agent-panel.ico (%s px; bust up to %d, whole figure above; %d bytes)"
+      % (", ".join(map(str, ICON_SIZES)), ICON_BUST_UP_TO, os.path.getsize(path)))

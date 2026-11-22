@@ -203,6 +203,23 @@ def desktop():
     return buf.value
 
 
+def refresh_icon(link, icon):
+    """The shell caches an icon it has drawn, keyed by the icon file's path and index, so a new agent-panel.ico at
+    the same path would keep showing the old picture. SHUpdateImage tells the shell that cached image changed
+    and SHCNE_UPDATEITEM redraws the shortcut, but measured, that renews only the 16 and 32 px lists: the 48 px
+    one, the desktop's size at 100 %, kept the old picture until SHCNE_ASSOCCHANGED, which makes the shell drop
+    its cached icons (every icon is read again once). Explorer keeps running."""
+    shell32 = ctypes.windll.shell32
+    shell32.Shell_GetCachedImageIndexW.argtypes = [ctypes.c_wchar_p, ctypes.c_int, ctypes.c_uint]
+    shell32.SHUpdateImageW.argtypes = [ctypes.c_wchar_p, ctypes.c_int, ctypes.c_uint, ctypes.c_int]
+    shell32.SHChangeNotify.argtypes = [ctypes.c_long, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_void_p]
+    index = shell32.Shell_GetCachedImageIndexW(icon, 0, 0)
+    if index >= 0:
+        shell32.SHUpdateImageW(icon, 0, 0, index)
+    shell32.SHChangeNotify(0x2000, 0x0005 | 0x1000, link, None)  # SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSH
+    shell32.SHChangeNotify(0x08000000, 0x1000, None, None)  # SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH
+
+
 def desktop_shortcut(pythonw):
     """A "Field Agents" icon on the Desktop: pythonw (no console) running the panel. A panel already
     running is brought up instead of a second copy (the .pyw's single-instance check). The same
@@ -222,6 +239,7 @@ def desktop_shortcut(pythonw):
     if r.returncode != 0 or not os.path.exists(link):
         print("WARNING could not put the Field Agents icon on the Desktop (%s)" % r.stderr.strip()[-200:])
         return
+    refresh_icon(link, env["CPFA_ICON"])
     print("ok      desktop icon %s" % link)
     for old in OLD_SHORTCUTS:  # the icon an earlier install wrote, only if it starts our panel
         path = os.path.join(desktop(), old)

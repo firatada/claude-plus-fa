@@ -1,6 +1,6 @@
 """Builds the octopus pieces still in use from the purple octopus sheet: the alert's and the way-out
-dialog's asking strip, the README logo, the tray icon and the desktop icon. The panel's cards and
-header show the hero instead (tools/hero-export.py).
+dialog's asking strip, the README logo and the tray icon. The panel's cards and header and the
+desktop icon show the hero instead (tools/hero-export.py).
 
 Usage: python -I tools/mascot-export.py
 
@@ -12,8 +12,7 @@ line up when played; then scaled to 96 px frames (shown at 36 to 38 px, sharp on
 and recoloured to the alert's red: only the octopus's purple changes hue (the blue eyes, the white
 and the props keep theirs); also as <name>-purple.webp, in the octopus's own colour.
 Output: mascot/<name>.webp next to this folder's parent, one horizontal strip per name, and
-mascot/logo.png, the package's logo (256 px), mascot/tray.png, the tray icon (64 px), and
-mascot/agent-panel.ico, the desktop shortcut's icon (16 to 256 px).
+mascot/logo.png, the package's logo (256 px), and mascot/tray.png, the tray icon (64 px).
 """
 import os
 import numpy as np
@@ -123,11 +122,3 @@ logo.crop((x, top, x + side, top + side)).resize((64, 64), Image.LANCZOS).save(
     os.path.join(OUT, "tray.png"), optimize=True)
 print("wrote tray.png")
 
-# the desktop shortcut's icon, at the sizes Windows asks for: the tray cut up to 32 px (where the
-# full logo is a speck), the full logo from 40 px up (desktop icons are 48 px at 100 % scale)
-tray = Image.open(os.path.join(OUT, "tray.png")).convert("RGBA")
-ICON_SIZES = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
-icons = [(tray if n <= 32 else logo).resize((n, n), Image.LANCZOS) for n in ICON_SIZES]
-icons[-1].save(os.path.join(OUT, "agent-panel.ico"), format="ICO",
-               sizes=[(n, n) for n in ICON_SIZES], append_images=icons[:-1])
-print("wrote agent-panel.ico")
