@@ -2,7 +2,7 @@
 # edge of the screen, or in a strip of tabs over the top edge (drag its header there; tray: Dock). Double-click a closed session to resume it in its own folder, in a new
 # terminal; click an open one to bring its window forward, click it again to minimise it. While a session's own
 # window is in front the panel stays over it, as if that window were part of the panel. Tray icon: the 5-hour usage
-# figure in its level colour (the octopus until there is one); click it to show or hide; Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
+# figure in its level colour (the hero's head until there is one); click it to show or hide; Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
 # sounds (tray menu: Alerts, Alert Sound). A card counts what its session runs in the background (child
 # `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
@@ -1858,12 +1858,16 @@ def hotkey_loop(events):
 
 
 def logo_image(size):
-    """The octopus cut close (mascot/tray.png: the whole logo is a speck at tray size); without
-    it the Spark logo tile: a blue to cyan gradient at 135 degrees, white list mark."""
+    """The hero's head and cap: the desktop icon's own bust at this size (agent-panel.ico holds it at 16 to 48 px,
+    each cut straight from the source; the whole figure is a speck at tray size), else the nearest larger bust
+    shrunk; without the icon the Spark logo tile: a blue to cyan gradient at 135 degrees, white list mark."""
     from PIL import Image, ImageDraw
     try:
-        return Image.open(os.path.join(MASCOT, "tray.png")).convert("RGBA").resize((size, size), Image.LANCZOS)
-    except OSError:
+        ico = Image.open(os.path.join(MASCOT, "agent-panel.ico"))
+        busts = sorted(w for w, h in ico.ico.sizes() if w <= 48) or [48]
+        pick = next((n for n in busts if n >= size), busts[-1])
+        return ico.ico.getimage((pick, pick)).convert("RGBA").resize((size, size), Image.LANCZOS)
+    except (OSError, ValueError, KeyError, AttributeError):
         pass
     big = 256
     a, b = (0x1b, 0x4d, 0xf5), (0x33, 0xc6, 0xf4)
@@ -1960,7 +1964,7 @@ def tray_key():
 
 
 def tray_look(key):
-    """(image, tooltip) for a tray_key(): the 5h figure, or the octopus while there is none."""
+    """(image, tooltip) for a tray_key(): the 5h figure, or the hero's head while there is none."""
     n, pct, reset = key
     if pct is None:
         return logo_image(n), "Field Agents: 5h no figure yet"
@@ -2392,7 +2396,7 @@ class Panel:
         # the alert: its own window, made now and kept hidden until a session waits for an answer
         self.alert_hwnd, self.alert_ready, self.alert_ids, self.alerted = None, False, [], set()
         with open(ALERT_HTML, encoding="utf-8") as f:
-            ahtml = f.read().replace("/*MASCOT*/", mascot_js(("asking",)), 1)
+            ahtml = f.read().replace("/*MASCOT*/", mascot_js(("hero-ask", "hero-ask@2x")), 1)
         self.alert = webview.create_window(ALERT_TITLE, html=ahtml, js_api=AlertApi(self), width=ALERT_W, height=130,
                                            min_size=(0, 0), frameless=True, easy_drag=False, on_top=True, hidden=True,
                                            focus=False, shadow=False, background_color="#FFFFFF")
@@ -4071,7 +4075,7 @@ class Panel:
 
     def tray_update(self):
         """The tray follows the 5h figure: redrawn only when the number, its reset or the icon size changes,
-        and back to the octopus once the figure is gone or past its reset."""
+        and back to the hero's head once the figure is gone or past its reset."""
         key = tray_key()
         if self.icon and key != self.icon.key:
             self.icon.key = key

@@ -57,8 +57,8 @@ BACK = {"window": RETURN_TITLE, "title": "Usage Limit Reset: %(folder)s",
 # Spark tokens as agent-panel.html. Shape per design-dashboard.md "Modals": a title naming the
 # thing, an X, the body with an amber callout for the side effect, Cancel and confirms that
 # name their action, side by side and equally wide. Above the title a brand line says the window
-# comes from claude-plus-fa, with the Agent Panel's purple octopus in its asking pose (the maintainer,
-# 2026-11-10: so the user knows where the question comes from).
+# comes from claude-plus-fa, with the Field Agents hero in its asking pose (waving, a red "!"), as on a card that
+# waits for an answer (the maintainer, 2026-11-10: so the user knows where the question comes from).
 STYLE = """<style>
 :root { --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
   --blue: #1b4df5; --on-accent: #ffffff; --amber-tint: #fff7e6; --amber-line: #f5d9a8; --amber-text: #7a4b00;
@@ -73,7 +73,7 @@ button { font: inherit; cursor: pointer; }
 button:disabled { cursor: default; opacity: .55; }
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-/* the octopus's drawing fills its 96 px frames almost edge to edge (ink x 3..94), so the box is the drawing's
+/* the hero's drawing fills its 56 px frames almost edge to edge (ink x 3..52), so the box is the drawing's
    size; -1 px puts its ink on the title's left edge */
 .brand { display: flex; align-items: center; gap: 8px; padding: 12px 20px 0; color: var(--muted);
   font-size: 12px; font-weight: 600; -webkit-app-region: drag; }
@@ -120,9 +120,9 @@ HEAD = """<!doctype html><html lang="en"><head><meta charset="utf-8">%(style)s</
     stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></header>"""
 
 SIZE_JS = """
-// the asking octopus, its 4 frames played as in the Agent Panel (550 ms each); frame 0 only under reduced motion
+// the asking hero, its 4 frames played as on an asking card (180 ms each); frame 0 only under reduced motion
 const me = document.getElementById("me"), still = matchMedia("(prefers-reduced-motion: reduce)");
-if (me) { let f = 0; setInterval(() => { f = still.matches ? 0 : (f + 1) % 4; me.style.backgroundPositionX = f * 100 / 3 + "%"; }, 550); }
+if (me) { let f = 0; setInterval(() => { f = still.matches ? 0 : (f + 1) % 4; me.style.backgroundPositionX = f * 100 / 3 + "%"; }, 180); }
 // the window is sized to its content (again after every change of it), so nothing is cut at any display scale
 // one resize at a time: each measures after the last one has landed, so two quick changes never add up
 let sizing = Promise.resolve();
@@ -240,12 +240,13 @@ addEventListener("pywebviewready", async () => { await poll(); setInterval(() =>
 
 
 def mascot_html():
-    """The octopus strip the Agent Panel installs (or the repo's, run from the claude-plus-fa folder) as a data
-    URL, since the page is handed over as a string; without it the brand line is the name alone."""
+    """The asking hero's 56 px strip (shown at 28 px: sharp at 2x, shrunk by the page at 1x) that Field Agents
+    installs (or the repo's, run from the claude-plus-fa folder) as a data URL, since the page is handed over as a
+    string; without it the brand line is the name alone."""
     here = os.path.dirname(os.path.abspath(__file__))
     for folder in (os.path.join(os.path.dirname(here), "agent-panel-mascot"), os.path.join(here, "mascot")):
         try:
-            with open(os.path.join(folder, "asking-purple.webp"), "rb") as f:
+            with open(os.path.join(folder, "hero-ask.webp"), "rb") as f:
                 data = base64.b64encode(f.read()).decode()
         except OSError:
             continue

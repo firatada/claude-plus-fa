@@ -76,14 +76,15 @@ const api = () => window.pywebview.api;
 const still = matchMedia("(prefers-reduced-motion: reduce)");
 const SHOWN = 4;   // rows listed; the rest are counted (agent-panel.pyw sizes the window the same way)
 
-// the asking octopus, red, its frames played like the panel's (550 ms each)
-const strip = MASCOT["asking"];
+// the asking hero (waving, red "!"), as on an asking card: its 4 frames 180 ms each, frame 0 only under reduced
+// motion; the 56 px strip at 1x, the 112 px one on a scaled screen (each drawn for that size)
+const strip = devicePixelRatio > 1 && MASCOT["hero-ask@2x"] || MASCOT["hero-ask"];
 if (strip) {
   const me = $("me"), n = 4;
   me.style.backgroundImage = `url(${strip})`;
   me.style.backgroundSize = n * 100 + "% 100%";
   let f = 0;
-  setInterval(() => { if (still.matches) f = 0; else f = (f + 1) % n; me.style.backgroundPosition = f * 100 / (n - 1) + "% 0"; }, 550);
+  setInterval(() => { if (still.matches) f = 0; else f = (f + 1) % n; me.style.backgroundPosition = f * 100 / (n - 1) + "% 0"; }, 180);
 }
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]); }

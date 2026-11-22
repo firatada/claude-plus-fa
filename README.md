@@ -1,4 +1,4 @@
-<p align="center"><img src="mascot/logo.png" alt="The claude-plus-fa octopus" width="140"></p>
+<p align="center"><img src="mascot/logo.png" alt="The Field Agents hero, a big-headed chibi in a violet FA cap" width="140"></p>
 
 # claude-plus-fa
 

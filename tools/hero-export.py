@@ -1,4 +1,4 @@
-"""Builds the Field Agents mascot strips (the big-headed chibi FA hero) from the high-resolution source frames.
+"""Builds every Field Agents mascot asset (the big-headed chibi FA hero) from the high-resolution source frames.
 
 Usage: python -I tools/hero-export.py
 
@@ -20,7 +20,10 @@ Output, one horizontal strip per animation and size, frames side by side (the pl
   mascot/hero-<run|conduct|ask|idle|sleep>.webp      56 px frames (the card, 1x)
   mascot/hero-<run|conduct|ask|idle|sleep>@2x.webp   112 px frames (the card at 2x; the header, 36 px, and the top
                                                      strip's 28 px tabs scale these down)
-  mascot/agent-panel.ico                             the desktop shortcut's icon, 16 to 256 px (at the end)
+  mascot/agent-panel.ico                             the desktop shortcut's icon, 16 to 256 px, whose small sizes
+                                                     are also the tray's picture while there is no 5h figure
+  mascot/logo.png                                    the README's logo, the standing glance, 280 px (at the end)
+The alert and the way-out dialog show hero-ask too, so nothing else is cut.
 The panel greys the sleeping hero of a closed card itself (CSS), so there is no grey strip.
 """
 import os
@@ -134,3 +137,11 @@ path = os.path.join(OUT, "agent-panel.ico")
 icons[-1].save(path, format="ICO", sizes=[(n, n) for n in ICON_SIZES], append_images=icons[:-1])
 print("wrote agent-panel.ico (%s px; bust up to %d, whole figure above; %d bytes)"
       % (", ".join(map(str, ICON_SIZES)), ICON_BUST_UP_TO, os.path.getsize(path)))
+
+# The README's logo, mascot/logo.png: the same standing glance, whole figure, transparent. The README shows it
+# 140 px wide, so it is drawn for twice that (a 2x screen), one Lanczos pass from the source.
+LOGO_PX = 280
+logo = big.resize((LOGO_PX, LOGO_PX), Image.LANCZOS, box=tuple(v + M for v in whole))
+path = os.path.join(OUT, "logo.png")
+logo.save(path, optimize=True)
+print("wrote logo.png (%d px, %d bytes)" % (LOGO_PX, os.path.getsize(path)))
