@@ -47,9 +47,10 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 
 - **Red**: the session asks you something. It stays at the top; a permission prompt makes its card pulse.
 - **Green**: the session is working. Its dot turns and the clock shows how long the current turn has run.
-- **Turning badge**: work the session started in the background (a subagent or a `claude -p` run), with the number of runs. Point at it to see what they are.
+- **Turning badge**: work the session started in the background (a subagent or a `claude -p` run), with the number of runs.
 - **Purple**: open and waiting for you. **Grey**: closed.
 - The hero on each card runs while its session works and sleeps the rest of the time.
+- **Point at a card** to see what its session is working on: its last prompt and, for each subagent, `claude -p` run or background command still running, the prompt or command it was given and how long it has run.
 - Each card shows how full that session's context is. The bottom shows your 5-hour and weekly usage.
 
 Using it:

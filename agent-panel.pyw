@@ -1064,7 +1064,8 @@ def child_runs(live, table):
             if sid and sid != mine:  # the same session (GLM taking it over) is no child run
                 r = live.get(mine) or {}
                 out.setdefault(sid, []).append({"kind": "run", "what": os.path.basename((r.get("cwd") or "").rstrip("\\/")),
-                                                "since": (t0 - FT_EPOCH) / 1e7})
+                                                "since": (t0 - FT_EPOCH) / 1e7, "pid": pid, "sid": mine,
+                                                "cwd": r.get("cwd")})
                 break
             cur, t = up, bu
     return out
@@ -1103,12 +1104,198 @@ def subagents(s, started, cache):
                     except (OSError, AttributeError):
                         since = getattr(st, "st_birthtime", st.st_ctime)
                     hit = cache[e.path] = (st.st_mtime, run and {
-                        "kind": "subagent", "what": m.get("description") or m.get("agentType") or "", "since": since})
+                        "kind": "subagent", "what": m.get("description") or m.get("agentType") or "", "since": since,
+                        "file": e.path[:-10] + ".jsonl"})
                 if hit[1]:
                     out.append(hit[1])
             except (OSError, ValueError, AttributeError):
                 continue
     return out
+
+
+# ---------- the card's popover: what a session is working on ----------
+# Read only for the card under the pointer (Api.peek), never on the live pass. Each reader opens a few hundred KB
+# at the end (or the start) of one transcript and keeps its answer by the file's size and time, so a pointer
+# resting on a card costs one stat per file every refresh. Nothing read here is written or logged anywhere.
+PEEK_TAIL = 262144       # bytes read from a transcript's end for its last prompt; PEEK_MORE when none is in it
+PEEK_MORE = 4 * 1048576
+PEEK_HEAD = 262144       # bytes read from a subagent's or a run's transcript start for its prompt
+PEEK_CHARS = 1200        # a prompt is cut here (the popover shows its first lines)
+BG_TAIL = 4 * 1048576    # bytes read from a transcript's end for its background commands, as glm-fallback.py's
+LATE = 20                # seconds after a session's process started: a child born later is a tool's
+BG_START = re.compile(rb"running in background with ID: (\w+)")
+BG_END = re.compile(rb"<task-id>(\w+)</task-id>")
+KIND = {"subagent": "Subagent", "run": "claude -p", "command": "Command"}
+
+
+def flat(t):
+    """A prompt as one line of words (whitespace collapsed) cut at PEEK_CHARS; None when empty."""
+    t = " ".join((t or "").replace("\ufeff", "").split())  # a prompt pasted from a file can start with a BOM
+    return (t[:PEEK_CHARS - 1] + "…" if len(t) > PEEK_CHARS else t) or None
+
+
+def typed_prompt(o):
+    """The text of a transcript line when it is a prompt the user typed, else None: not a tool result, a meta
+    line, a subagent's line, a slash command, a task notification or another tag Claude Code wraps its own
+    messages in, nor the summary a compaction starts with."""
+    if o.get("type") != "user" or o.get("isMeta") or o.get("isSidechain") or o.get("toolUseResult") is not None:
+        return None
+    c = (o.get("message") or {}).get("content")
+    if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c):
+        return None
+    t = text_of(o.get("message")).strip()
+    if not t or t.startswith("<") or t.startswith("This session is being continued") or t.startswith("[Request interrupted"):
+        return None
+    return flat(t)
+
+
+def last_prompt(path, cache):
+    """The latest prompt typed in a session, from the end of its transcript (PEEK_TAIL, then PEEK_MORE when that
+    holds none). Kept in cache by the file's size and time."""
+    st = os.stat(path)
+    key = (st.st_size, st.st_mtime)
+    hit = cache.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    found = None
+    for n in (PEEK_TAIL, PEEK_MORE):
+        with open(path, "rb") as f:
+            f.seek(max(0, st.st_size - n))
+            tail = f.read(n)
+        for line in reversed(tail.split(b"\n")):
+            if b'"type":"user"' not in line:
+                continue
+            try:
+                found = typed_prompt(json.loads(line))
+            except ValueError:
+                continue
+            if found:
+                break
+        if found or n >= st.st_size:
+            break
+    cache[path] = (key, found)
+    return found
+
+
+def first_prompt(path, cache):
+    """The prompt a subagent or a headless run was given: the first user line of its own transcript, which
+    never changes once written (kept in cache for good; a file without it yet is read again next time)."""
+    if path in cache:
+        return cache[path]
+    with open(path, "rb") as f:
+        head = f.read(PEEK_HEAD)
+    for line in head.split(b"\n"):
+        if b'"type":"user"' not in line:
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("type") == "user" and not o.get("isMeta") and o.get("toolUseResult") is None:
+            t = flat(text_of(o.get("message")))
+            if t:
+                cache[path] = t
+                return t
+    return None
+
+
+ntdll = ctypes.WinDLL("ntdll")
+ntdll.NtQueryInformationProcess.argtypes = [wt.HANDLE, wt.ULONG, ctypes.c_void_p, wt.ULONG, ctypes.POINTER(wt.ULONG)]
+shell32.CommandLineToArgvW.restype = ctypes.POINTER(wt.LPWSTR)
+shell32.CommandLineToArgvW.argtypes = [wt.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+
+class UNICODE_STRING(ctypes.Structure):
+    _fields_ = [("Length", wt.USHORT), ("MaximumLength", wt.USHORT), ("Buffer", ctypes.c_void_p)]
+
+
+def command_line(pid):
+    """A process's command line split into its arguments (ProcessCommandLineInformation, which needs only
+    PROCESS_QUERY_LIMITED_INFORMATION); [] when it cannot be read."""
+    h = kernel32.OpenProcess(0x1000, False, int(pid))
+    if not h:
+        return []
+    try:
+        buf, n = ctypes.create_string_buffer(65536), wt.ULONG(0)
+        if ntdll.NtQueryInformationProcess(h, 60, buf, len(buf), ctypes.byref(n)) != 0:
+            return []
+        us = UNICODE_STRING.from_buffer(buf)
+        line = ctypes.wstring_at(us.Buffer, us.Length // 2) if us.Buffer else ""
+    finally:
+        kernel32.CloseHandle(h)
+    argc = ctypes.c_int(0)
+    argv = shell32.CommandLineToArgvW(line, ctypes.byref(argc)) if line else None
+    if not argv:
+        return []
+    try:
+        return [argv[i] for i in range(argc.value)]
+    finally:
+        kernel32.LocalFree(argv)
+
+
+def print_prompt(args):
+    """The prompt on a `claude -p` command line: the argument after -p/--print when it is not an option, else the
+    longest argument that is not one (option values are short). None when the prompt came on stdin."""
+    rest = args[1:]
+    for i, a in enumerate(rest):
+        if a in ("-p", "--print") and i + 1 < len(rest) and not rest[i + 1].startswith("-"):
+            return flat(rest[i + 1])
+    words = [a for a in rest if not a.startswith("-")]
+    return flat(max(words, key=len)) if words else None
+
+
+def bg_commands(path, started, cache):
+    """The background commands a session started since its process did (started, unix seconds) and has not seen
+    end: a tool call with run_in_background whose result says "running in background with ID: X", without a later
+    <task-id>X</task-id> notification or a TaskStop of X. Subagents started in the background are left out (their
+    meta files count them). [{"kind": "command", "what": description, "text": command, "since": unix}], read
+    from the transcript's last BG_TAIL bytes and kept in cache by the file's size and time."""
+    st = os.stat(path)
+    key = (st.st_size, st.st_mtime, started)
+    hit = cache.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    with open(path, "rb") as f:
+        f.seek(max(0, st.st_size - BG_TAIL))
+        tail = f.read()
+    calls, runs = {}, {}
+    for line in tail.split(b"\n"):
+        ends = BG_END.findall(line)
+        if b"run_in_background" in line or b'"TaskStop"' in line or b'"KillShell"' in line or BG_START.search(line):
+            try:
+                o = json.loads(line)
+            except ValueError:
+                o = {}
+            c = (o.get("message") or {}).get("content")
+            for b in c if isinstance(c, list) else []:
+                if not isinstance(b, dict):
+                    continue
+                inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                if b.get("type") == "tool_use" and b.get("name") in ("TaskStop", "KillShell"):
+                    ends += [str(inp.get(k)).encode() for k in ("task_id", "shell_id") if inp.get(k)]
+                elif b.get("type") == "tool_use" and inp.get("run_in_background") and b.get("name") not in ("Agent", "Task"):
+                    calls[b.get("id")] = {"what": inp.get("description") or "", "text": flat(inp.get("command")
+                                                                                           or inp.get("prompt") or "")}
+                elif b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
+                    m = BG_START.search(line)
+                    try:
+                        t = datetime.datetime.fromisoformat(o["timestamp"].replace("Z", "+00:00")).timestamp()
+                    except (KeyError, ValueError, AttributeError):
+                        t = 0
+                    if m and t >= started:
+                        runs[m.group(1)] = dict(calls[b["tool_use_id"]], kind="command", since=t)
+        for x in ends:  # ids as bytes, as the patterns find them
+            runs.pop(x, None)
+    out = sorted(runs.values(), key=lambda w: w["since"])
+    cache[path] = (key, out)
+    return out
+
+
+def late_child(pid, started, table):
+    """The session's process has a child born more than LATE seconds after it started (a tool's, not an MCP
+    server's): without one, no background command can still be running, whatever the transcript says."""
+    return any(pp == pid and (born(p) or 0) > (started + LATE) * 1e7 + FT_EPOCH for p, (pp, _) in table.items())
 
 
 def lasted(ts):
@@ -1723,6 +1910,12 @@ class Api:
     def region(self, rects):
         self._p.region(rects)
 
+    def peek(self, sid):
+        try:
+            return self._p.peek(sid)
+        except Exception:
+            return None
+
     def strip(self):
         self._p.events.put("strip")
 
@@ -1920,6 +2113,8 @@ class Panel:
         self.turns = {}  # session id -> its current turn, for the working card's timer; see turn_start()
         self.bg_seen = {}  # session id -> first read that saw its background work (ms); see bg_start()
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
+        self.live = {}  # the session files of the last live pass, for peek()
+        self.peeks = {}  # what peek() read so far, by transcript: last prompts, first prompts, background commands
         with open(HTML, encoding="utf-8") as f:
             html = f.read().replace("/*MASCOT*/", mascot_js(("hero-run", "hero-run@2x", "hero-sleep", "hero-sleep@2x")) + " window.DOCK = %s;" % json.dumps(self.opts["dock"]), 1)
         # min_size=(0, 0) on every window: a minimum set as the form is made activates it (see quiet_forms())
@@ -2255,6 +2450,7 @@ class Panel:
     def background(self, live):
         """What each open session runs in the background, for the badge on its card: its child runs (from the
         process snapshot) and its subagents (from their meta files). Every live pass; closed sessions have none."""
+        self.live = live
         try:
             runs = child_runs(live, procs())
         except Exception:
@@ -3446,6 +3642,53 @@ class Panel:
         t["since"], t["ask"] = since, ask
         turns[s["id"]] = t
         return t["start"]
+
+    def peek(self, sid):
+        """What the card's popover shows for one session, read now for the card under the pointer only: its last
+        prompt, and each piece of background work still running with the prompt or command it was given
+        ({"kind", "what", "text", "since" ms}), oldest first. None for a session not in the list."""
+        s = next((x for x in self.sessions if x["id"] == sid), None)
+        if not s:
+            return None
+        c = self.peeks
+        out = {"id": sid, "prompt": None, "bg": []}
+        try:
+            out["prompt"] = last_prompt(s["path"], c.setdefault("last", {}))
+        except OSError:
+            pass
+        if not s["status"]:
+            return out
+        work = list(s.get("bg") or [])
+        run = self.live.get(sid) or {}
+        if run.get("pid"):
+            started = (run.get("started") or 0) / 1000.0
+            if not started:
+                b = born(run["pid"])
+                started = (b - FT_EPOCH) / 1e7 if b else time.time()
+            try:
+                cmds = bg_commands(s["path"], started - 1, c.setdefault("commands", {}))
+                if cmds and late_child(int(run["pid"]), started, procs()):
+                    work += cmds
+            except OSError:
+                pass
+        for w in work:
+            text = w.get("text")
+            try:
+                if w["kind"] == "subagent" and w.get("file"):
+                    text = first_prompt(w["file"], c.setdefault("first", {}))
+                elif w["kind"] == "run":
+                    try:  # a run started with --no-session-persistence has no transcript: its command line then
+                        text = first_prompt(os.path.join(CLAUDE, "projects", slug(w["cwd"]), w["sid"] + ".jsonl"),
+                                            c.setdefault("first", {}))
+                    except (OSError, KeyError, TypeError):
+                        text = None
+                    text = text or print_prompt(command_line(w["pid"]))
+            except (OSError, KeyError, TypeError):
+                pass
+            out["bg"].append({"kind": KIND[w["kind"]], "what": w.get("what") or "", "text": text,
+                              "since": int(w["since"] * 1000) if w.get("since") else None})
+        out["bg"].sort(key=lambda w: w["since"] or 0)
+        return out
 
     def bg_start(self, s, seen):
         """When an open session's background work began, in ms since the epoch, for the timer on a card that shows as

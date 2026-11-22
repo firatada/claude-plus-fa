@@ -122,7 +122,6 @@ const cases = {
   badgeOne: bgSaid(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
   badgeTwo: bgSaid(S({title: "b", status: "busy", turn: T0 + 150_000, bg: [run, {kind: "subagent", what: "Explore"}], bgSince: T0})),
   badgeNoStart: bgSaid(S({title: "b", status: "idle", bg: [run]})),
-  badgeTip: bgTip(S({title: "b", status: "idle", bg: [run], bgSince: T0})),
   labelIdleChild: cardLabel(S({title: "b", status: "idle", path: "C:/b", age: "2h", bg: [run], bgSince: T0}), "idle"),
   order: byState([
     S({title: "new-idle", status: "idle"}),
@@ -176,7 +175,6 @@ class Page(unittest.TestCase):
         self.assertEqual(r["badgeOne"], "1 background run, 3:10")
         self.assertEqual(r["badgeTwo"], "2 background runs, 3:10")
         self.assertEqual(r["badgeNoStart"], "1 background run")
-        self.assertEqual(r["badgeTip"], "1 background run, 3:10\nrun · mindmap · 3 min")
         self.assertEqual(r["labelIdleChild"], "b, open, waiting for you, C:/b, 1 background run, 3:10")
 
     def test_order(self):

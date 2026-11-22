@@ -282,6 +282,18 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
   background: var(--tip-bg); color: var(--on-accent); font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere;
   pointer-events: none; box-shadow: var(--shadow-tip); animation: fade .12s ease-out;
 }
+/* the card's popover (peek): the tooltip's look, wider and in sections; its text is clamped, never scrolled */
+.tip.peek { width: 264px; padding: 8px 10px 9px; white-space: normal; line-height: 14px; }
+body.top .tip.peek { width: 340px; }
+.peek .ph { font-size: 12px; line-height: 16px; font-weight: 600; }
+.peek .pw, .peek .ps { opacity: .78; }
+.peek h4 { margin: 7px 0 1px; font-size: 11px; font-weight: 600; opacity: .78; }
+.peek .pr { margin-top: 4px; }
+.peek .pr b { font-weight: 600; }
+.peek .pf { opacity: .78; }
+.peek .clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+.peek .pr .clamp { -webkit-line-clamp: 2; opacity: .9; }
+.peek .more { margin-top: 4px; opacity: .78; }
 @keyframes fade { from { opacity: 0; } }
 /* a figure that changed fades in rather than snapping */
 .chg { animation: chg .2s ease-out; }
@@ -534,9 +546,6 @@ function bgSaid(s) {
   const n = (s.bg || []).length;
   return n + (n === 1 ? " background run" : " background runs") + (s.bgSince ? ", " + clock(Date.now() - s.bgSince) : "");
 }
-// the badge's tooltip: that line, then each piece of work
-const bgTip = s => bgSaid(s) + "\n" + s.bg.slice(0, 8).map(b => [b.kind, b.what, b.for].filter(Boolean).join(" · ")).join("\n") +
-                   (s.bg.length > 8 ? `\nand ${s.bg.length - 8} more` : "");
 
 // green under 50 %, gold under 80 %, red above, as on the status line; colour and figure both
 // come from the same rounded value, so the two can never disagree
@@ -578,52 +587,41 @@ function fill(el, s, q) {
   d.setAttribute("aria-label", d.dataset.full);
   const n = el.querySelector(".name"), nh = hit(s.title, q);
   if (n.dataset.html !== nh) { n.innerHTML = nh; n.dataset.html = nh; }
-  // the folder path lives in the title's tooltip; a title cut short shows there in full above it
-  n.dataset.title = s.title;
-  n.dataset.path = s.path;
-  n.dataset.full = n.classList.contains("cut") ? s.title + "\n" + s.path : s.path;
   // a card in the working group shows how long its turn, or else its background work, has run instead of its
   // age, moved on each second by ticking();
   // that text stays out of the fade of changed figures, which would otherwise blur it at every refresh
   const a = el.querySelector(".age"), t = runSince(s), run = !!t;
   a.classList.toggle("run", run);
-  a.toggleAttribute("data-tip", run);
   if (run) {
     a.dataset.turn = t;
-    a.dataset.full = own(s) ? "How long the current turn has run" : "How long its background work has run";
     a.textContent = clock(Date.now() - t);
     delete a.dataset.k;
   } else {
     delete a.dataset.turn;
-    delete a.dataset.full;
     a.textContent = s.age;
     a.dataset.k = "age:" + s.id;
   }
   const flags = flagsOf(s);
-  // what the session runs in the background: a count on the title row, each one listed in its tooltip
+  // what the session runs in the background: a count on the title row, each one listed in the card's popover
   const bg = s.bg || [], w = el.querySelector(".bgw");
   w.hidden = !bg.length;
-  if (bg.length) {
-    w.lastChild.textContent = bg.length;
-    w.dataset.full = bgTip(s);
-  }
+  if (bg.length) w.lastChild.textContent = bg.length;
   el.setAttribute("aria-label", cardLabel(s, st));
   // the meta row is built once and patched, so a tooltip on it survives the 2 s refresh;
   // a session with no context reading shows no ctx bar at all
   const m = el.querySelector(".meta");
-  if (!m.firstChild) m.innerHTML = '<span class="cx" data-tip>ctx</span><span class="bar"><i></i></span>' +
+  if (!m.firstChild) m.innerHTML = '<span class="cx">ctx</span><span class="bar"><i></i></span>' +
                                    '<span class="pc"></span><span class="flags"></span>';
   const [cx, b, pc, fl] = m.children, has = s.ctx != null;
   [cx, b, pc].forEach(x => { x.hidden = !has; });
   if (has) {
     const v = Math.round(Math.max(0, Math.min(100, s.ctx)));
-    cx.dataset.full = `Context used: ${v}% of the window`;
     b.firstChild.style.width = v ? `max(6px, ${v}%)` : "0";
     b.firstChild.style.background = v < 50 ? "var(--green)" : v < 80 ? "var(--gold)" : "var(--red)";
     pc.textContent = v + "%";
     pc.dataset.k = "ctx:" + s.id;
   }
-  if (fl.textContent !== flags) { fl.textContent = flags; fl.dataset.full = flags; }
+  if (fl.textContent !== flags) fl.textContent = flags;
 }
 // what a screen reader hears for a card: "my-app, working, 0:42, <its folder>, context 41%"
 function cardLabel(s, st) {
@@ -639,13 +637,13 @@ function cardLabel(s, st) {
 function ticking() {
   for (const el of document.querySelectorAll(".card[data-id]")) {
     const a = el.querySelector(".age[data-turn]"), w = el.querySelector(".bgw:not([hidden])");
-    const s = (a || w) && find(el.dataset.id);
+    const s = (a || w || el === peekCard) && find(el.dataset.id);
     if (!s) continue;
     const st = stateOf(s), t = runSince(s), d = el.querySelector(".dot");
     if (a && t) a.textContent = clock(Date.now() - t);
+    if (el === peekCard) peekTick(s, st);
     d.dataset.full = said(s, st);
     d.setAttribute("aria-label", d.dataset.full);
-    if (w && (s.bg || []).length) w.dataset.full = bgTip(s);
     if (el !== document.activeElement) el.setAttribute("aria-label", cardLabel(s, st));
   }
 }
@@ -658,8 +656,8 @@ function cardEl(s, old, q) {
     el.tabIndex = 0;
     el.setAttribute("role", "button");
     el.innerHTML = '<span class="mascot av" aria-hidden="true" hidden></span><div class="body">' +
-                   '<div class="t"><span class="dot" role="img" data-tip></span><span class="name" data-tip></span>' +
-                   '<span class="arrow" aria-hidden="true">↗</span><span class="bgw" data-tip hidden>' +
+                   '<div class="t"><span class="dot" role="img"></span><span class="name"></span>' +
+                   '<span class="arrow" aria-hidden="true">↗</span><span class="bgw" hidden>' +
                    '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 1a4 4 0 1 1-4 4" fill="none" ' +
                    'stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><b></b></span>' +
                    '<span class="age"></span></div>' +
@@ -799,7 +797,6 @@ function render() {
     }
     revealing = false;
     if (tip && !document.body.contains(tipTarget)) tipHide();
-    fitPaths();
   }
   fit();
   if (scrollToAside && rest.length && !top) {
@@ -869,15 +866,7 @@ function fit() {
     if (off && c === document.activeElement) c.blur();
   });
 }
-function fitPaths() {
-  // a title or flags that do not fit end in "…" and show in full in the tooltip
-  const cut = [...document.querySelectorAll(".name, .flags")].map(el => [el, el.scrollWidth > el.clientWidth]);
-  cut.forEach(([el, c]) => {
-    el.classList.toggle("cut", c);
-    if (el.dataset.path) el.dataset.full = c ? el.dataset.title + "\n" + el.dataset.path : el.dataset.path;
-  });
-}
-addEventListener("resize", () => { fitPaths(); fit(); closeMenu(); sayGone(); });
+addEventListener("resize", () => { fit(); peekHide(); closeMenu(); sayGone(); });
 
 // ----- messages: one about a card sits under that card; one about the whole panel floats above the link -----
 // The bottom line shows a passing message when there is one, else the standing one (a failed
@@ -972,13 +961,111 @@ function tipHide() {
 addEventListener("pointermove", e => {
   if (e.pointerType !== "mouse" || (e.clientX === lx && e.clientY === ly)) return;
   lx = e.clientX; ly = e.clientY;
-  let p = e.target.closest(".cut, [data-tip]");
+  let p = e.target.closest("[data-tip]");
   if (menu && p && !menu.contains(p)) p = null;
   if (p !== tipDone) tipDone = null;
   if (p) { if (tipTarget && tipTarget !== p) tipHide(); tipArm(p); }
   else if (tipTarget) tipHide();
 });
 document.documentElement.addEventListener("mouseleave", tipHide);
+
+// ----- the card's popover (peek): what the session is working on -----
+// Opens like a tooltip (tooltip.md: a real mouse movement over the card, ~400 ms), stays while the pointer is on
+// the card and closes by itself when it leaves; any click, key, scroll, menu or focus change closes it too. It
+// takes no pointer, focus or keys, so a click through it lands on whatever it covers. It is the card's only
+// floating hint: the card's title, dot, time, ctx and badge have no tooltip of their own (their words are in it).
+// Placed above the card on the right (the card's menu and messages open below it), under the tab on top.
+// agent-panel.pyw reads the prompts for this one card only (Api.peek); nothing is kept by the page.
+const PEEK_ROWS = 8;
+let peek = null, peekCard = null, peekJob = null, peekData = null;
+const sinceWords = ms => ms ? clock(Date.now() - ms) : "";
+function peekArm(card) {
+  if (card === peekCard) return;
+  peekHide();
+  peekCard = card;
+  peekJob = setTimeout(() => { peekJob = null; peekAsk(); }, 400);
+}
+function peekAsk() {
+  const card = peekCard;
+  if (!card || !bridged || !document.body.contains(card)) return;
+  api().peek(card.dataset.id).then(d => {
+    if (card !== peekCard || !d || menu || document.body.classList.contains("dragging")) return;
+    peekData = d;
+    peekDraw();
+  });
+}
+function peekHide() {
+  clearTimeout(peekJob);
+  peekJob = null; peekCard = null; peekData = null;
+  if (peek) { peek.remove(); peek = null; }
+}
+function peekDraw() {
+  const s = find(peekCard.dataset.id), d = peekData;
+  if (!s || !document.body.contains(peekCard)) { peekHide(); return; }
+  const st = stateOf(s), flags = flagsOf(s), bg = d.bg || [];
+  const known = bg.map(b => b.since).filter(Boolean);
+  let h = `<div class="ph">${esc(s.title)}</div><div class="pw">${esc(s.path)}</div>` +
+          `<div class="ps" data-said>${esc([said(s, st), flags].filter(Boolean).join(" · "))}</div>`;
+  if (d.prompt) h += `<h4>Last Prompt</h4><div class="clamp">${esc(d.prompt)}</div>`;
+  if (bg.length) {
+    h += `<h4 data-since="${known.length ? Math.min(...known) : ""}">${esc(bgHead(Math.min(...known)))}</h4>`;
+    for (const b of bg.slice(0, PEEK_ROWS)) {
+      h += `<div class="pr"><div><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
+           (b.since ? ` · <span class="pf" data-since="${b.since}">${sinceWords(b.since)}</span>` : "") + "</div>" +
+           (b.text ? `<div class="clamp">${esc(b.text)}</div>` : "") + "</div>";
+    }
+  }
+  if (!peek) {
+    peek = document.createElement("div");
+    peek.className = "tip peek";
+    peek.setAttribute("aria-hidden", "true");  // a mouse-only view of words the card's label already has
+    document.body.append(peek);
+  }
+  peek.innerHTML = h;
+  peekPlace(bg.length);
+}
+// no count here: the badge counts subagents and claude -p runs, these rows also the commands
+const bgHead = since => "In the Background" + (isFinite(since) && since ? " · " + clock(Date.now() - since) : "");
+// above the card when it fits, else below, else on the side with more room, with rows dropped (and counted)
+// until it fits there: it grows to its content and never scrolls (design.md, popover content)
+function peekPlace(total) {
+  const r = peekCard.getBoundingClientRect(), top = onTop();
+  const above = r.top - 6 - 8, below = innerHeight - r.bottom - 6 - 8;
+  const room = top ? below : Math.max(above, below);
+  let rows = [...peek.querySelectorAll(".pr")];
+  while (peek.offsetHeight > room && rows.length > 1) rows.pop().remove();
+  const left = total - rows.length;
+  if (left > 0) peek.insertAdjacentHTML("beforeend", `<div class="more">and ${left} more</div>`);
+  const w = peek.offsetWidth, h = peek.offsetHeight;
+  const up = !top && (h <= above || (h > below && above > below));
+  const y = up ? r.top - 6 - h : r.bottom + 6;
+  const x = (r.left + r.right) / 2 - w / 2;
+  peek.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + "px";
+  peek.style.top = Math.max(8, Math.min(y, innerHeight - h - 8)) + "px";
+}
+// each second: the state line and every time in it move on, nothing else is redrawn
+function peekTick(s, st) {
+  if (!peek) return;
+  const p = peek.querySelector("[data-said]");
+  if (p) p.textContent = [said(s, st), flagsOf(s)].filter(Boolean).join(" · ");
+  for (const e of peek.querySelectorAll(".pf[data-since]")) e.textContent = sinceWords(+e.dataset.since);
+  const hd = peek.querySelector("h4[data-since]");
+  if (hd) hd.textContent = bgHead(+hd.dataset.since);
+}
+// a card whose popover the reader dismissed (a click, a key) opens it again only after the pointer left it
+let peekDone = null, px = -1, py = -1;
+addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse" || (e.clientX === px && e.clientY === py)) return;
+  px = e.clientX; py = e.clientY;
+  const c = !menu && !document.body.classList.contains("dragging") && e.target.closest(".card[data-id]");
+  if (c !== peekDone) peekDone = null;
+  if (c && c !== peekDone) peekArm(c);
+  else if (peekCard) peekHide();
+});
+const peekShut = () => { if (peekCard) peekDone = peekCard; peekHide(); };
+document.documentElement.addEventListener("mouseleave", () => { peekDone = null; peekHide(); });
+for (const ev of ["pointerdown", "contextmenu", "wheel", "keydown", "focusin"]) addEventListener(ev, peekShut, true);
+addEventListener("blur", peekShut);
 // anything the reader does with the keyboard dismisses it
 addEventListener("keydown", e => { if (e.key !== "Escape") tipHide(); }, true);
 addEventListener("focusin", () => tipHide());
@@ -1171,8 +1258,8 @@ list.addEventListener("pointermove", () => { hovering = true; });
 list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
 // the keyboard leaving the list ends its hold (a move between two cards keeps it: render() checks again)
 list.addEventListener("focusout", letGo);
-list.addEventListener("scroll", () => { tipHide(); if (quiet) quiet = false; else closeMenu(); });
-$("drop").addEventListener("scroll", () => { tipHide(); sayGone(); closeMenu(); });
+list.addEventListener("scroll", () => { tipHide(); peekHide(); if (quiet) quiet = false; else closeMenu(); });
+$("drop").addEventListener("scroll", () => { tipHide(); peekHide(); sayGone(); closeMenu(); });
 // a window raised over the panel sends no pointerleave, so losing focus ends the hold as well;
 // on top it also closes the list under the strip, as a dropdown does
 addEventListener("blur", () => { tipHide(); closeMenu(); hovering = false; if (onTop()) showHidden = false; lastKey = null; render(); });
@@ -1236,7 +1323,7 @@ addEventListener("pointerup", () => { grab = null; });
 function setDock(d) {
   const top = d === "top";
   if (top === onTop()) return;
-  tipHide(); closeMenu(); sayGone();
+  tipHide(); peekHide(); closeMenu(); sayGone();
   document.body.classList.toggle("top", top);
   placeHide();
   showHidden = false;
@@ -1253,7 +1340,7 @@ function placeHide() {
   $("hide").before($("shots"));
 }
 
-window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); }, dock: setDock };
+window.app = { update(st) { state = Object.assign(st, {ready: !!st.scanned}); render(); if (peek) peekAsk(); }, dock: setDock };
 document.body.classList.toggle("top", window.DOCK === "top");
 placeHide();
 render();
