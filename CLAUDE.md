@@ -9,7 +9,7 @@ Add-ons for Claude Code on Windows, so a session and its context are never lost.
 5. Compaction: extra summary instructions before, `handoff.md` + `memory.md` read back after.
 6. New sessions start from `handoff.md` when the project has one.
 7. Prompt recall: the status line's second line shows your last prompt, so you never scroll up to find it.
-8. Field Agents (the panel; called Agent Panel before): every session on the PC in a list docked to the right edge; a click resumes it in its own folder; resting the pointer on a card opens it with its last prompt and what runs in its background; right-click hides, closes or deletes one.
+8. Field Agents (the panel; called Agent Panel before): every session on the PC in a list docked to the right edge; a click resumes it in its own folder; resting the pointer on a card opens it with what runs in its background, grouped under the prompt you typed that started each piece; right-click hides, closes or deletes one.
 9. Reply to passages: select part of Claude's answer, type `: your answer`, press Enter; the selection goes with the prompt as the passage being replied to. Several selections are numbered in the screenshot strip, and `:1 yes :3 no` answers each by number in one prompt.
 
 Install or reinstall: double-click `install.cmd` (or `python install.py`). Remove: `uninstall.cmd`. Both are safe to rerun.

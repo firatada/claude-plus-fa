@@ -5,7 +5,7 @@
 <title>Field Agents Column</title>
 <!-- The column of an opened card on the right dock (agent-panel.html, "the opened card"): an opened card with more
      work than fits ends in "and n more", whose click opens this column left of the panel, its top at the card's
-     top, listing every piece of work still running in that session with what it works on now. agent-panel.pyw
+     top, listing every piece of work still running in that session under the prompt that set it off. agent-panel.pyw
      fills it (col.fill), sizes the window to what this page measures (up to the screen's bottom, then it scrolls
      inside) and shows it without the keyboard ever coming here; it closes once the pointer has left both the card
      and this column, which this page reports (hover). Rows look as in the opened card; Spark tokens as there. -->
@@ -21,7 +21,9 @@ body::-webkit-scrollbar { width: 8px; }
 body::-webkit-scrollbar-thumb { background: var(--thumb); border-radius: 4px; border: 2px solid var(--panel); }
 /* the window is the box: its border drawn inside, the window region rounds the corners */
 #box { border: 1px solid var(--line); border-radius: 14px; padding: 2px 12px 10px; overflow-wrap: anywhere; }
-.xq { margin-top: 6px; }
+.xh { margin-top: 6px; }
+.xq + .xh { margin-top: 10px; }
+.xq { margin-top: 3px; padding-left: 8px; }
 .xl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .xl b { font-weight: 600; color: var(--text); }
 .x3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
@@ -38,13 +40,14 @@ function clock(ms) {
 }
 const since = ms => ms ? clock(Date.now() - ms) : "";
 const row = b => `<div class="xq"><div class="xl"><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
-                 (b.since ? ` · <span data-since="${b.since}">${since(b.since)}</span>` : "") + "</div>" +
-                 (b.text ? `<div class="x3">${esc(b.text)}</div>` : "") + "</div>";
+                 (b.since ? ` · <span data-since="${b.since}">${since(b.since)}</span>` : "") + "</div></div>";
+const group = g => `<div class="xh"><div class="xl">${g.last ? "Last Prompt" : g.prompt ? "Earlier Prompt" : "Prompt not found"}</div>` +
+                   (g.prompt ? `<div class="x3">${esc(g.prompt)}</div>` : "") + "</div>" + g.bg.map(row).join("");
 let shown = "";
 window.col = {
-  // the rows, oldest first; returns the height they need, in css px, for the window to take
-  fill(rows) {
-    const h = rows.map(row).join("");
+  // the groups, newest prompt first, each with its rows oldest first; returns the height they need, in css px
+  fill(groups) {
+    const h = groups.map(group).join("");
     if (h !== shown) { shown = h; document.getElementById("box").innerHTML = h; scrollTo(0, 0); }
     return Math.ceil(document.getElementById("box").getBoundingClientRect().height);
   },

@@ -1113,7 +1113,8 @@ def subagents(s, started, cache):
                         since = getattr(st, "st_birthtime", st.st_ctime)
                     hit = cache[e.path] = (st.st_mtime, run and {
                         "kind": "subagent", "what": m.get("description") or m.get("agentType") or "", "since": since,
-                        "file": e.path[:-10] + ".jsonl"})
+                        "file": e.path[:-10] + ".jsonl", "use": m.get("toolUseId"), "parent": m.get("parentAgentId"),
+                        "wf": wf_run(e.path)})
                 if hit[1]:
                     out.append(hit[1])
             except (OSError, ValueError, AttributeError):
@@ -1121,19 +1122,19 @@ def subagents(s, started, cache):
     return out
 
 
-# ---------- the card's popover: what a session is working on ----------
-# Read only for the card under the pointer (Api.peek), never on the live pass. Each reader opens a few hundred KB
-# at the end (or the start) of one transcript and keeps its answer by the file's size and time, so a pointer
-# resting on a card costs one stat per file every refresh. Nothing read here is written or logged anywhere.
+# ---------- the opened card: what a session is working on, and which prompt set each piece off ----------
+# Read only for the card under the pointer (Api.peek), never on the live pass. Each reader reads one transcript
+# from its end back, and keeps its answer by the file's size and time, or for good once a piece of work's prompt is
+# found, so a pointer resting on a card costs one stat per file every refresh. Nothing read here is written or
+# logged anywhere.
 PEEK_TAIL = 262144       # bytes read from a transcript's end for its last prompt; PEEK_MORE when none is in it
 PEEK_MORE = 4 * 1048576
-PEEK_HEAD = 262144       # bytes read from a subagent's or a run's transcript start for its prompt
 PEEK_CHARS = 1200        # a prompt is cut here (the popover shows its first lines)
 BG_TAIL = 4 * 1048576    # bytes read from a transcript's end for its background commands, as glm-fallback.py's
 LATE = 20                # seconds after a session's process started: a child born later is a tool's
 BG_START = re.compile(rb"running in background with ID: (\w+)")
 BG_END = re.compile(rb"<task-id>(\w+)</task-id>")
-KIND = {"subagent": "Subagent", "run": "claude -p", "command": "Command"}
+KIND = {"subagent": "Subagent", "run": "claude -p", "command": "Command", "wf": "Workflow"}  # a Workflow's agent: "wf"
 
 
 def flat(t):
@@ -1145,8 +1146,19 @@ def flat(t):
 def typed_prompt(o):
     """The text of a transcript line when it is a prompt the user typed, else None: not a tool result, a meta
     line, a subagent's line, a slash command, a task notification or another tag Claude Code wraps its own
-    messages in, nor the summary a compaction starts with."""
-    if o.get("type") != "user" or o.get("isMeta") or o.get("isSidechain") or o.get("toolUseResult") is not None:
+    messages in, a message from another session or an automatic continuation (their origin), nor the summary a
+    compaction starts with. A prompt typed while Claude works is an attachment, queued_command from a human. What
+    a hook adds to a prompt (a ":N" reply's passages) is in attachment lines of its own, never in the prompt."""
+    if o.get("isMeta") or o.get("isSidechain"):
+        return None
+    if o.get("type") == "attachment":
+        a = o.get("attachment") if isinstance(o.get("attachment"), dict) else {}
+        if a.get("type") != "queued_command" or a.get("isMeta") or a.get("commandMode") not in (None, "prompt") or \
+                (a.get("origin") or {}).get("kind", "human") != "human":
+            return None
+        o = {"type": "user", "message": {"content": a.get("prompt")}}
+    if o.get("type") != "user" or o.get("toolUseResult") is not None or \
+            (o.get("origin") or {}).get("kind", "human") != "human":
         return None
     c = (o.get("message") or {}).get("content")
     if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c):
@@ -1158,8 +1170,8 @@ def typed_prompt(o):
 
 
 def last_prompt(path, cache):
-    """The latest prompt typed in a session, from the end of its transcript (PEEK_TAIL, then PEEK_MORE when that
-    holds none). Kept in cache by the file's size and time."""
+    """The latest prompt typed in a session, {"id": its line's uuid, "text", "at"}, from the end of its transcript
+    (PEEK_TAIL, then PEEK_MORE when that holds none). Kept in cache by the file's size and time."""
     st = os.stat(path)
     key = (st.st_size, st.st_mtime)
     hit = cache.get(path)
@@ -1171,13 +1183,15 @@ def last_prompt(path, cache):
             f.seek(max(0, st.st_size - n))
             tail = f.read(n)
         for line in reversed(tail.split(b"\n")):
-            if b'"type":"user"' not in line:
+            if b'"type":"user"' not in line and b'"queued_command"' not in line:
                 continue
             try:
-                found = typed_prompt(json.loads(line))
-            except ValueError:
+                o = json.loads(line)
+                t = typed_prompt(o)
+            except (ValueError, AttributeError):
                 continue
-            if found:
+            if t:
+                found = {"id": o.get("uuid"), "text": t, "at": stamp(o.get("timestamp"))}
                 break
         if found or n >= st.st_size:
             break
@@ -1185,147 +1199,225 @@ def last_prompt(path, cache):
     return found
 
 
-HARNESS = "[Workflow harness"   # a Workflow tool agent's task: this frame line, then the script's text indented
-FORK_END = "</fork-boilerplate>"  # a fork's task: the inherited history, the fork's rules, then "Your directive:"
-TOLD = re.compile(r"\AThe coordinator sent a message[^\n]*:\n")  # SendMessage reaching an agent at work
+CHAIN_STEP = 4 * 1048576   # bytes read at a time when a transcript's chain is followed from its end back
+CHAIN_MAX = 256 * 1048576  # how far back from the end it is followed (transcripts reach 1 GB); older is not found
+RUN_WAIT = 60              # seconds from a Bash call to the `claude -p` process it started, at the most
+UUID_OF = b'"uuid":"'      # a line's own id as the file holds it ("parentUuid", "source_uuid" never match it)
+STAMP = re.compile(rb'"timestamp":"([^"]+)"')
 
 
-def unframe(t):
-    """The task itself out of the frame Claude Code puts round some agents' first prompt. A Workflow agent's
-    starts with a "[Workflow harness — computed task]" line saying the computed text follows, every line of it
-    indented by two spaces (so a column-zero line inside it would be forged): the indented lines are the task. A
-    fork's carries its rules in <fork-boilerplate>...</fork-boilerplate>, then "Your directive: <task>"."""
-    t = (t or "").replace("\r\n", "\n")
-    if t.lstrip().startswith(HARNESS):
-        body = [line[2:] for line in t.split("\n") if line.startswith("  ")]
-        if body:
-            return "\n".join(body)
-    if FORK_END in t:
-        t = t.split(FORK_END, 1)[1].strip()
-        return t[len("Your directive:"):] if t.startswith("Your directive:") else t
-    return t
+def stamp(s):
+    """An ISO time of a transcript as unix seconds; 0 when there is none."""
+    try:
+        return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return 0
 
 
-def first_prompt(path, cache):
-    """The prompt a subagent or a headless run was given: the first user line of its own transcript, its frame
-    taken off (unframe()); for a fork the line holding its directive, which comes after the history it inherited.
-    It never changes once written (kept in cache for good; a file without it yet is read again next time)."""
-    if path in cache:
-        return cache[path]
+def back(f, end, stop):
+    """The whole lines of an open transcript between byte offsets stop and end, newest first, as (offset, line). A
+    line still being written at the end is left out, and so is one cut at stop unless stop is where it starts."""
+    pos, step = end, CHAIN_STEP
+    while pos > stop:
+        lo = max(stop, pos - step)
+        base = lo - 1 if lo else 0  # one byte before: a line starting at lo is then seen to start there
+        f.seek(base)
+        buf = f.read(pos - base)
+        cut = buf.find(b"\n", 0, len(buf) - 1) + 1 if lo else 0  # not the newline ending the chunk: no progress
+        if lo and not cut:  # one line longer than the step
+            if lo == stop:
+                return
+            step *= 2
+            continue
+        parts, offs, o = buf[cut:].split(b"\n")[:-1], [], base + cut
+        for line in parts:
+            offs.append(o)
+            o += len(line) + 1
+        for o, line in zip(reversed(offs), reversed(parts)):
+            yield o, line
+        pos, step = base + cut, CHAIN_STEP
+
+
+def chain_prompt(path, start, after=0):
+    """The prompt the user typed before a piece of work began. From the transcript's end back: the first line at or
+    after byte `after` that start(line) returns parsed (the tool call or result that began the work; False: give
+    up), then each line's parent (parentUuid; across a compaction logicalParentUuid), as far as CHAIN_MAX from the
+    end, up to the nearest line typed_prompt() takes. Only lines holding the id sought are parsed.
+    (True, {"id", "text", "at"} or None) once settled; (False, end of the lines searched) while the start line is
+    not written yet, so the next call searches only what came since."""
+    size = os.path.getsize(path)
+    want, pat, top = None, None, None
     with open(path, "rb") as f:
-        head = f.read(PEEK_HEAD)
-    mark = b"/fork-boilerplate"  # as the file holds it, where "<" may stand as <
-    first, fork = None, mark in head
-    for line in head.split(b"\n"):
-        if b'"type":"user"' not in line or (first and mark not in line):
-            continue
+        for off, line in back(f, size, max(0, size - CHAIN_MAX)):
+            if top is None:
+                top = off + len(line) + 1
+            if want is None:
+                if off < after:
+                    break
+                o = start(line)
+                if o is False:
+                    return True, None
+                if o is None:
+                    continue
+            else:
+                if pat not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if o.get("uuid") != want:
+                    continue
+                t = typed_prompt(o)
+                if t:
+                    return True, {"id": want, "text": t, "at": stamp(o.get("timestamp"))}
+            want = o.get("parentUuid") or o.get("logicalParentUuid")
+            if not want:
+                return True, None
+            pat = UUID_OF + want.encode() + b'"'
+    if want is not None:
+        return True, None
+    return False, top if top is not None else after
+
+
+def blocks(line, key):
+    """The parsed line and its content blocks when the line holds the bytes key and is an entry of the chain (has a
+    uuid: an api-request-blob line repeats a request's tool calls without one), else (None, [])."""
+    if key not in line:
+        return None, []
+    try:
+        o = json.loads(line)
+    except ValueError:
+        return None, []
+    if not isinstance(o, dict) or not o.get("uuid"):
+        return None, []
+    c = (o.get("message") or {}).get("content")
+    return o, [b for b in c if isinstance(b, dict)] if isinstance(c, list) else []
+
+
+def call_of(tid):
+    """start() for chain_prompt(): the line holding tool call tid (an Agent/Task call, a background command)."""
+    key = b'"id":"' + tid.encode() + b'"'
+
+    def start(line):
+        o, bs = blocks(line, key)
+        return o if any(b.get("type") == "tool_use" and b.get("id") == tid for b in bs) else None
+    return start
+
+
+def workflow_of(run):
+    """start() for chain_prompt(): the result line of the Workflow call that launched run (toolUseResult.runId)."""
+    key = b'"runId":"' + run.encode() + b'"'
+
+    def start(line):
+        o, _ = blocks(line, key)
+        r = (o or {}).get("toolUseResult")
+        return o if isinstance(r, dict) and r.get("runId") == run else None
+    return start
+
+
+def shell_of(since):
+    """start() for chain_prompt(): the Bash or PowerShell call naming claude that started a `claude -p` process
+    created at since: written before it, by RUN_WAIT at the most (an older line ends the search)."""
+    def start(line):
+        m = STAMP.search(line)
+        t = stamp(m.group(1).decode()) if m else 0
+        if t and t < since - RUN_WAIT:
+            return False
+        if t > since + 2 or (b'"name":"Bash"' not in line and b'"name":"PowerShell"' not in line):
+            return None
+        o, bs = blocks(line, b'"tool_use"')
+        return o if any(b.get("type") == "tool_use" and b.get("name") in ("Bash", "PowerShell") and
+                        "claude" in str((b.get("input") or {}).get("command") or "").lower() for b in bs) else None
+    return start
+
+
+def settled(key, path, start, cache):
+    """chain_prompt() with its answer kept in cache[key]: for good once settled, else searched on from where it
+    stopped next time. The prompt, or None."""
+    hit = cache.get(key)
+    if hit and hit[0]:
+        return hit[1]
+    try:
+        hit = cache[key] = chain_prompt(path, start, hit[1] if hit else 0)
+    except OSError:
+        return None
+    return hit[1] if hit[0] else None
+
+
+def wf_run(meta):
+    """The Workflow run an agent's meta file belongs to (subagents/workflows/wf_<run>/), else None."""
+    d = os.path.dirname(meta)
+    run = os.path.basename(d)
+    return run if run.startswith("wf_") and os.path.basename(os.path.dirname(d)) == "workflows" else None
+
+
+def agent_meta(root, aid, cache):
+    """(toolUseId, parentAgentId, Workflow run) of agent aid, from its meta file anywhere under the session's
+    subagents folder root; kept in cache by aid (these fields never change). None when there is none."""
+    if aid in cache:
+        return cache[aid]
+    name, todo = "agent-%s.meta.json" % aid, [root]
+    while todo:
+        d = todo.pop()
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                m = json.load(f)
+            cache[aid] = (m.get("toolUseId"), m.get("parentAgentId"), wf_run(p))
+            return cache[aid]
         try:
-            o = json.loads(line)
-        except ValueError:
-            continue
-        if o.get("type") == "user" and not o.get("isMeta") and o.get("toolUseResult") is None:
-            raw = text_of(o.get("message"))
-            first = flat(unframe(raw)) or first
-            if first and (not fork or FORK_END in raw):  # only a fork's head holds history before its task
-                break
-    if first:
-        cache[path] = first
-    return first
-
-
-def told(o):
-    """What a line of an agent's transcript says the session sent it later with SendMessage, else None: a meta
-    user line "The coordinator sent a message while you were working:\\n<message>", or a queued_command
-    attachment holding the message; both carry the origin {"kind": "coordinator"}."""
-    a = o.get("attachment") if isinstance(o.get("attachment"), dict) else {}
-    if o.get("type") == "attachment" and a.get("type") == "queued_command" and \
-            (a.get("origin") or o.get("origin") or {}).get("kind") == "coordinator":
-        return flat(a.get("prompt") if isinstance(a.get("prompt"), str) else "")
-    if o.get("type") == "user" and (o.get("origin") or {}).get("kind") == "coordinator":
-        return flat(TOLD.sub("", text_of(o.get("message")).replace("\r\n", "\n"), count=1))
+            todo += [e.path for e in os.scandir(d) if e.is_dir()]
+        except OSError:
+            pass
+    cache[aid] = None
     return None
 
 
-def follow_up(path, cache):
-    """The latest message the session sent an agent with SendMessage, read on from where the last call stopped
-    (the first call reads its last PEEK_MORE bytes): cache[path] = (bytes read, latest message or None)."""
-    size = os.stat(path).st_size
-    upto, found = cache.get(path, (None, None))
-    if upto is None or size < upto:
-        upto, found = max(0, size - PEEK_MORE), None
-    if size > upto:
-        with open(path, "rb") as f:
-            f.seek(upto)
-            chunk = f.read(size - upto)
-        end = chunk.rfind(b"\n") + 1  # a line still being written is read whole next time
-        for line in chunk[:end].split(b"\n"):
-            if b'"coordinator"' not in line:
-                continue
-            try:
-                found = told(json.loads(line)) or found
-            except ValueError:
-                continue
-        upto += end
-    cache[path] = (upto, found)
-    return found
+def agent_trigger(path, w, cache):
+    """The prompt that started a subagent: up its parentAgentId chain to the agent the session itself started (an
+    agent's own transcript holds no typed prompt), then that agent's tool call, or its Workflow's launch, in the
+    session's transcript, and up from there."""
+    root = os.path.join(os.path.splitext(path)[0], "subagents")
+    use, parent, run = w.get("use"), w.get("parent"), w.get("wf")
+    for _ in range(16):
+        if not parent:
+            break
+        m = agent_meta(root, parent, cache.setdefault("metas", {}))
+        if not m:
+            return None
+        use, parent, run = m
+    if run:
+        return settled(("wf", path, run), path, workflow_of(run), cache)
+    return settled(("use", path, use), path, call_of(use), cache) if use else None
 
 
-def agent_prompt(path, cache):
-    """What a subagent works on now: the latest SendMessage it got, else the task it was started with."""
-    return follow_up(path, cache.setdefault("told", {})) or first_prompt(path, cache.setdefault("first", {}))
-
-
-ntdll = ctypes.WinDLL("ntdll")
-ntdll.NtQueryInformationProcess.argtypes = [wt.HANDLE, wt.ULONG, ctypes.c_void_p, wt.ULONG, ctypes.POINTER(wt.ULONG)]
-shell32.CommandLineToArgvW.restype = ctypes.POINTER(wt.LPWSTR)
-shell32.CommandLineToArgvW.argtypes = [wt.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
-kernel32.LocalFree.argtypes = [ctypes.c_void_p]
-
-
-class UNICODE_STRING(ctypes.Structure):
-    _fields_ = [("Length", wt.USHORT), ("MaximumLength", wt.USHORT), ("Buffer", ctypes.c_void_p)]
-
-
-def command_line(pid):
-    """A process's command line split into its arguments (ProcessCommandLineInformation, which needs only
-    PROCESS_QUERY_LIMITED_INFORMATION); [] when it cannot be read."""
-    h = kernel32.OpenProcess(0x1000, False, int(pid))
-    if not h:
-        return []
-    try:
-        buf, n = ctypes.create_string_buffer(65536), wt.ULONG(0)
-        if ntdll.NtQueryInformationProcess(h, 60, buf, len(buf), ctypes.byref(n)) != 0:
-            return []
-        us = UNICODE_STRING.from_buffer(buf)
-        line = ctypes.wstring_at(us.Buffer, us.Length // 2) if us.Buffer else ""
-    finally:
-        kernel32.CloseHandle(h)
-    argc = ctypes.c_int(0)
-    argv = shell32.CommandLineToArgvW(line, ctypes.byref(argc)) if line else None
-    if not argv:
-        return []
-    try:
-        return [argv[i] for i in range(argc.value)]
-    finally:
-        kernel32.LocalFree(argv)
-
-
-def print_prompt(args):
-    """The prompt on a `claude -p` command line: the argument after -p/--print when it is not an option, else the
-    longest argument that is not one (option values are short). None when the prompt came on stdin."""
-    rest = args[1:]
-    for i, a in enumerate(rest):
-        if a in ("-p", "--print") and i + 1 < len(rest) and not rest[i + 1].startswith("-"):
-            return flat(rest[i + 1])
-    words = [a for a in rest if not a.startswith("-")]
-    return flat(max(words, key=len)) if words else None
+def run_trigger(path, w, agents, cache):
+    """The prompt that started a `claude -p` run: before the Bash call that launched it, in the session's transcript,
+    or else that of the running subagent whose transcript holds the call."""
+    key = ("run", path, w.get("pid"), w.get("since"))
+    got = settled(key, path, shell_of(w["since"]), cache)
+    if got or cache.get(("in", key)):
+        return got or cache[("in", key)][0]
+    for a in agents:
+        try:
+            with open(a["file"], "rb") as f:
+                size = os.fstat(f.fileno()).st_size
+                hold = any(shell_of(w["since"])(line) for _, line in back(f, size, max(0, size - PEEK_MORE)))
+        except (OSError, KeyError):
+            continue
+        if hold:
+            cache[("in", key)] = (agent_trigger(path, a, cache),)
+            return cache[("in", key)][0]
+    cache[("in", key)] = (None,)  # the call was written before the run started: none found now, none later
+    return None
 
 
 def bg_commands(path, started, cache):
     """The background commands a session started since its process did (started, unix seconds) and has not seen
     end: a tool call with run_in_background whose result says "running in background with ID: X", without a later
     <task-id>X</task-id> notification or a TaskStop of X. Subagents started in the background are left out (their
-    meta files count them). [{"kind": "command", "what": description, "text": command, "since": unix}], read
+    meta files count them). [{"kind": "command", "what": description, "use": tool call id, "since": unix}], read
     from the transcript's last BG_TAIL bytes and kept in cache by the file's size and time."""
     st = os.stat(path)
     key = (st.st_size, st.st_mtime, started)
@@ -1351,8 +1443,7 @@ def bg_commands(path, started, cache):
                 if b.get("type") == "tool_use" and b.get("name") in ("TaskStop", "KillShell"):
                     ends += [str(inp.get(k)).encode() for k in ("task_id", "shell_id") if inp.get(k)]
                 elif b.get("type") == "tool_use" and inp.get("run_in_background") and b.get("name") not in ("Agent", "Task"):
-                    calls[b.get("id")] = {"what": inp.get("description") or "", "text": flat(inp.get("command")
-                                                                                           or inp.get("prompt") or "")}
+                    calls[b.get("id")] = {"what": inp.get("description") or "", "use": b.get("id")}
                 elif b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
                     m = BG_START.search(line)
                     try:
@@ -3755,24 +3846,25 @@ class Panel:
         return t["start"]
 
     def peek(self, sid):
-        """What the opened card shows for one session, read now for the card under the pointer only: its last
-        prompt, and each piece of background work still running with what it works on now: a subagent's latest
-        SendMessage or else its task, a run's prompt, a command ({"kind", "what", "text", "since" ms}), oldest
-        first. None for a session not in the list."""
+        """What the opened card shows for one session, read now for the card under the pointer only: the running
+        work grouped by the prompt the user typed that started it, newest prompt first, each group {"prompt": its
+        text (None when it was not found), "last": whether it is the session's last prompt, "bg": [{"kind", "what",
+        "since" ms}] oldest first}. The last prompt comes first, with no work when it started none still running;
+        work whose prompt was not found comes last. None for a session not in the list."""
         s = next((x for x in self.sessions if x["id"] == sid), None)
         if not s:
             return None
         c = self.peeks
-        out = {"id": sid, "prompt": None, "bg": []}
+        out, groups, last = {"id": sid, "groups": []}, {}, None
         try:
-            out["prompt"] = last_prompt(s["path"], c.setdefault("last", {}))
+            last = last_prompt(s["path"], c.setdefault("last", {}))
         except OSError:
             pass
-        if not s["status"]:
-            return out
-        work = list(s.get("bg") or [])
+        if last:
+            groups[last["id"]] = {"prompt": last["text"], "last": True, "at": float("inf"), "bg": []}
+        work = list(s.get("bg") or []) if s["status"] else []
         run = self.live.get(sid) or {}
-        if run.get("pid"):
+        if s["status"] and run.get("pid"):
             started = (run.get("started") or 0) / 1000.0
             if not started:
                 b = born(run["pid"])
@@ -3783,23 +3875,25 @@ class Panel:
                     work += cmds
             except OSError:
                 pass
-        for w in work:
-            text = w.get("text")
+        agents = [w for w in work if w["kind"] == "subagent" and w.get("file")]
+        trig = c.setdefault("trig", {})
+        for w in sorted(work, key=lambda w: w.get("since") or 0):
+            p = None
             try:
-                if w["kind"] == "subagent" and w.get("file"):
-                    text = agent_prompt(w["file"], c)
-                elif w["kind"] == "run":
-                    try:  # a run started with --no-session-persistence has no transcript: its command line then
-                        text = first_prompt(os.path.join(CLAUDE, "projects", slug(w["cwd"]), w["sid"] + ".jsonl"),
-                                            c.setdefault("first", {}))
-                    except (OSError, KeyError, TypeError):
-                        text = None
-                    text = text or print_prompt(command_line(w["pid"]))
-            except (OSError, KeyError, TypeError):
-                pass
-            out["bg"].append({"kind": KIND[w["kind"]], "what": w.get("what") or "", "text": text,
-                              "since": int(w["since"] * 1000) if w.get("since") else None})
-        out["bg"].sort(key=lambda w: w["since"] or 0)
+                if w["kind"] == "subagent":
+                    p = agent_trigger(s["path"], w, trig)
+                elif w["kind"] == "run" and w.get("since"):
+                    p = run_trigger(s["path"], w, agents, trig)
+                elif w.get("use"):
+                    p = settled(("use", s["path"], w["use"]), s["path"], call_of(w["use"]), trig)
+            except (OSError, KeyError, TypeError, ValueError):
+                p = None
+            g = groups.setdefault(p and p["id"], {"prompt": p and p["text"], "last": False,
+                                                  "at": p["at"] if p else float("-inf"), "bg": []})
+            g["bg"].append({"kind": KIND["wf" if w.get("wf") else w["kind"]], "what": w.get("what") or "",
+                            "since": int(w["since"] * 1000) if w.get("since") else None})
+        out["groups"] = [{k: g[k] for k in ("prompt", "last", "bg")}
+                         for g in sorted(groups.values(), key=lambda g: -g["at"])]
         return out
 
     def col_up(self):
@@ -3816,11 +3910,11 @@ class Panel:
         if not self.col_ready or not self.hwnd or self.opts["dock"] == "top" or not self.visible:
             return
         d = self.peek(sid)
-        rows = (d or {}).get("bg") or []
-        if not rows:
+        groups = [g for g in (d or {}).get("groups") or [] if g["bg"]]
+        if not groups:
             return self.column_off()
         with self.col_lock:
-            need = self.col.evaluate_js("col.fill(%s)" % json.dumps(rows)) or 0
+            need = self.col.evaluate_js("col.fill(%s)" % json.dumps(groups)) or 0
             s = self.scale()
             r, pt = wt.RECT(), wt.POINT(0, 0)
             user32.GetWindowRect(self.hwnd, ctypes.byref(r))

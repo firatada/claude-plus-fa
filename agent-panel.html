@@ -284,14 +284,17 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 }
 /* the opened card (peek): the card itself grows downward with what its session works on, pushing the cards
    below it down; a tab in the top strip, which has no list to push, drops the same content in a box under it.
-   Every prompt is cut at three lines; what does not fit ends in "and n more", which opens the column of them all */
+   The running work comes grouped under the prompt that set it off (.xh, cut at three lines), one row each (.xq);
+   what does not fit ends in "and n more", which opens the column of them all */
 #list { overflow-anchor: none; }
 .card:has(> .xp) { height: auto; flex-wrap: wrap; }
 .card:has(.xmore:active) { transform: none; }
 .xp { flex: 0 0 100%; overflow: hidden; }
 .xp > .xi { margin-top: 8px; border-top: 1px solid var(--line); padding: 0 0 0 4px; }
 .xi { font-size: 11px; line-height: 14px; color: var(--text); overflow-wrap: anywhere; }
-.xq { margin-top: 6px; }
+.xh { margin-top: 6px; }
+.xq + .xh { margin-top: 10px; }
+.xq { margin-top: 3px; padding-left: 8px; }
 .xl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .xl b { font-weight: 600; color: var(--text); }
 .x3 { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
@@ -1005,12 +1008,15 @@ document.documentElement.addEventListener("mouseleave", tipHide);
 
 // ----- the opened card (peek): what the session is working on -----
 // A real mouse movement resting PEEK_WAIT on a card opens it: the card itself grows downward (the cards below
-// move down, the card stays where it is) with the session's last prompt, then one row per piece of work still
-// running with what it works on now. A tab in the top strip has no list to push: the same content drops in a box
+// move down, the card stays where it is) with the work still running in the session, grouped by the prompt the user
+// typed that set it off, newest prompt first: the prompt (three lines at most), then one row per piece of work (kind,
+// name, time run). The last prompt comes first, alone when it started nothing still running; work whose prompt was
+// not found comes last. A tab in the top strip has no list to push: the same content drops in a box
 // under it. Moving across the list does not make cards flap: only a card the pointer rests on opens. It closes by
 // itself when the pointer leaves the card (and its box, and the column), and on a key, a right-click, a scroll, a
 // drag or the window losing focus. It takes no focus or keys; a click on the card still does what it does.
-// Too much for PEEK_MAX: rows are dropped from the end for a last row "and n more", whose click opens the column
+// Too much for PEEK_MAX: rows are dropped from the end (a prompt left with none goes too, never the first) for a
+// last row "and n more", whose click opens the column
 // of them all: left of the panel on the right (a window of its own, agent-column.html, as the panel's window ends
 // at the card's edge), left of the box on top (right of it when the screen has no room there), its top at the
 // card's or box's top. agent-panel.pyw reads the prompts for this one card only (Api.peek); nothing is kept here.
@@ -1049,16 +1055,18 @@ function peekHide() {
   } else if (el) el.remove();
   if (had) letGo();  // the order the list kept while it was open comes in now
 }
-const row = (head, text) => `<div class="xq"><div class="xl">${head}</div>` +
-                            (text ? `<div class="x3">${esc(text)}</div>` : "") + "</div>";
-const agentRow = b => row(`<b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
-                          (b.since ? ` · <span data-since="${b.since}">${sinceWords(b.since)}</span>` : ""), b.text);
+// a group: its prompt (or that it was not found), then its work, one row each
+const agentRow = b => `<div class="xq"><div class="xl"><b>${esc(b.kind)}</b>${b.what ? " · " + esc(b.what) : ""}` +
+                      (b.since ? ` · <span data-since="${b.since}">${sinceWords(b.since)}</span>` : "") + "</div></div>";
+const groupHtml = g => `<div class="xh"><div class="xl">${g.last ? "Last Prompt" : g.prompt ? "Earlier Prompt" : "Prompt not found"}</div>` +
+                       (g.prompt ? `<div class="x3">${esc(g.prompt)}</div>` : "") + "</div>" + g.bg.map(agentRow).join("");
+const workOf = gs => gs.reduce((n, g) => n + g.bg.length, 0);
 function peekDraw() {
   const card = peekCard, d = peekData, s = card && find(card.dataset.id);
   if (!s || !document.body.contains(card)) { peekHide(); return; }
-  const bg = d.bg || [];
-  if (!d.prompt && !bg.length) return;  // nothing to show: the card stays as it is
-  const key = JSON.stringify([d.prompt, bg]), fresh = !xp;
+  const gs = d.groups || [];
+  if (!gs.length) return;  // nothing to show: the card stays as it is
+  const key = JSON.stringify(gs), fresh = !xp;
   if (fresh) {
     xp = document.createElement("div");
     xp.setAttribute("aria-hidden", "true");  // a mouse-only view of the prompts; the card's label stays its own
@@ -1067,25 +1075,29 @@ function peekDraw() {
   }
   if (key !== peekKey) {
     peekKey = key;
-    xp.innerHTML = '<div class="xi">' + (d.prompt ? row("Last Prompt", d.prompt) : "") + bg.map(agentRow).join("") + "</div>";
+    xp.innerHTML = '<div class="xi">' + gs.map(groupHtml).join("") + "</div>";
     if (!grows(card)) peekPlace();
-    peekFit(bg.length);
+    peekFit(workOf(gs));
   }
   if (!grows(card)) peekPlace();
   else if (fresh && !still.matches) xp.animate([{height: "0px"}, {height: xp.offsetHeight + "px"}], OPEN);
   if (colOpen) colFill();
 }
-// rows are dropped from the end until it fits PEEK_MAX (and, in a list, the room left under the card in view),
-// and the last row says how many are left out
+// rows are dropped from the end until it fits PEEK_MAX (and, in a list, the room left under the card in view), a
+// prompt left without rows with them (never the first), and the last row says how many pieces are left out
 function peekFit(total) {
   const inner = xp.firstChild, top = xp.getBoundingClientRect().top;
   const room = grows(peekCard) ? peekCard.closest("#list, #drop").getBoundingClientRect().bottom - top - 12
                                : innerHeight - top - 8;
   const cap = Math.min(PEEK_MAX, Math.max(PEEK_MIN, room));
-  const rows = [...inner.querySelectorAll(".xq")].slice(peekData.prompt ? 1 : 0);
-  let shown = rows.length;
+  const kept = () => [...inner.children].filter(e => !e.classList.contains("xmore"));
+  let shown = total;
   while (shown > 0 && xp.offsetHeight > cap) {
-    rows[--shown].remove();
+    const els = kept(), cut = els[els.length - 1];
+    if (cut === els[0]) break;
+    cut.remove();
+    if (cut.classList.contains("xq")) shown--;
+    for (let e = kept(); e.length > 1 && e[e.length - 1].classList.contains("xh"); e = kept()) e[e.length - 1].remove();
     let m = inner.querySelector(".xmore");
     if (!m) {
       m = inner.appendChild(document.createElement("div"));
@@ -1108,7 +1120,7 @@ function peekTick() {
 }
 // the column of every piece of work, opened and closed by "and n more"
 function colFill() {
-  const bg = (peekData && peekData.bg) || [];
+  const gs = ((peekData && peekData.groups) || []).filter(g => g.bg.length);
   if (!onTop()) {  // left of the panel: a window of its own, its top at the card's
     api().column(peekCard.dataset.id, peekCard.getBoundingClientRect().top);
     return;
@@ -1119,7 +1131,7 @@ function colFill() {
     xcol.setAttribute("aria-hidden", "true");
     document.body.append(xcol);
   }
-  xcol.innerHTML = '<div class="xi">' + bg.map(agentRow).join("") + "</div>";
+  xcol.innerHTML = '<div class="xi">' + gs.map(groupHtml).join("") + "</div>";
   const a = (grows(peekCard) ? peekCard : xp).getBoundingClientRect();
   const x = a.left - 6 - COL_W >= 8 ? a.left - 6 - COL_W : Math.min(a.right + 6, innerWidth - COL_W - 8);
   xcol.style.left = x + "px";

@@ -50,7 +50,7 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 - **Turning badge**: work the session started in the background (a subagent or a `claude -p` run), with the number of runs.
 - **Purple**: open and waiting for you. **Grey**: closed.
 - The hero on each card shows what its session is doing: it waves when the session asks you something, conducts while background work runs, runs while the session works, stands while it is open and sleeps when it is closed. Now and then it glances at you.
-- **Rest the pointer on a card** and it opens downward to show what its session is working on: its last prompt and, for each subagent, `claude -p` run or background command still running, what it works on now (a subagent's latest message from the session, else its task) and how long it has run. When they do not all fit, click *and n more* for a column of them all beside the panel.
+- **Rest the pointer on a card** and it opens downward to show what its session is working on: every subagent, Workflow agent, `claude -p` run and background command still running, grouped under the prompt you typed that set it off, newest prompt first, each with how long it has run. Your last prompt comes first, alone when it started nothing still running. When they do not all fit, click *and n more* for a column of them all beside the panel.
 - Each card shows how full that session's context is. The bottom shows your 5-hour and weekly usage.
 
 Using it:
