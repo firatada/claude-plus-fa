@@ -275,7 +275,7 @@ class Layout(unittest.TestCase):
 
 # The reply page's markdown (blocks(), cells(), inline(), blockHtml()), run in node when it is installed: the part of
 # agent-reply.html between its markdown and drawing headings, with esc and the chevron it uses; that part also holds
-# clickAction() and paraTip(), the answer box's click rule and the paragraph's hint.
+# clickAction(), paraTip() and tabTarget(), the answer box's click rule, the paragraph's hint and Tab's next block.
 JS = r"""
 const out = {};
 const tbl = blocks("Spend:\n\n| Job | Calls | Tokens |\n|---|--:|:-:|\n| News **scoring** | 63 | 1,55 m |\n| Trend `cut` | 23 | 485 k |\n\nAfter.");
@@ -293,7 +293,9 @@ const C = (o) => clickAction(Object.assign({own: false, moved: false, selected: 
 out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}), drag: C({moved: true}),
   dragShut: C({moved: true, box: true}), selected: C({selected: true}), dbl: C({detail: 2}), own: C({own: true}),
   ownOpen: C({own: true, box: true})};
-out.tips = [paraTip("p", false), paraTip("li", false), paraTip("table", false), paraTip("table", true)];
+out.tips = [paraTip("p"), paraTip("li"), paraTip("table")];
+out.tab = [tabTarget(5, 0, false), tabTarget(5, 3, false), tabTarget(5, 4, false), tabTarget(5, 4, true), tabTarget(5, 0, true),
+  tabTarget(1, 0, false), tabTarget(5, -1, false)];
 const run = (evs) => { let st = null; const acts = []; for (const e of evs) { const r = spaceRule(st, e); st = r.st; acts.push(r.act); } return [st, acts]; };
 const D = {type: "down", repeat: false}, R = {type: "down", repeat: true}, U = {type: "up"}, T = {type: "timer"},
   K = {type: "key"}, B = {type: "blur"};
@@ -382,7 +384,10 @@ class Markdown(unittest.TestCase):
 
     def test_the_hint_says_what_a_click_does(self):
         self.assertEqual(self.md["tips"], ["Click to answer this paragraph", "Click to answer this item",
-                                           "Click to answer this table", "Click to close the answer box"])
+                                           "Click to answer this table"])
+
+    def test_tab_goes_to_the_next_block_and_shift_tab_back_ending_at_either_end(self):
+        self.assertEqual(self.md["tab"], [1, 4, -1, 3, -1, -1, -1])
 
 
     def test_space_tap_types_one_space_and_a_hold_starts_and_stops_voice_typing(self):

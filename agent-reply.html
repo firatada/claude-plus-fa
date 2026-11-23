@@ -327,7 +327,7 @@ function inline(t) {
 }
 
 function blockHtml(b, key) {
-  const k = `data-key="${esc(key)}" data-tip="${paraTip(b.kind, false)}"`;
+  const k = `data-key="${esc(key)}" data-tip="${paraTip(b.kind)}"`;
   if (b.kind === "code") {
     const first = b.lines.find(l => l.trim()) || "";
     const n = b.lines.length;
@@ -356,9 +356,14 @@ function clickAction(c) {
   if (!c.box) return "open";
   return c.text ? "focus" : "close";
 }
-function paraTip(kind, open) {
-  const what = kind === "table" ? "table" : kind === "li" ? "item" : "paragraph";
-  return open ? "Click to close the answer box" : `Click to answer this ${what}`;
+function paraTip(kind) {  // the hint of a block whose box is shut (an open box's block has none)
+  return `Click to answer this ${kind === "table" ? "table" : kind === "li" ? "item" : "paragraph"}`;
+}
+// Tab and Shift+Tab in an answer box: the block whose box opens next, in reading order across the replies shown.
+// n blocks, i the box's own block; answers the index to go to, or -1 at either end (the box is then only left).
+function tabTarget(n, i, back) {
+  const j = i + (back ? -1 : 1);
+  return i >= 0 && j >= 0 && j < n ? j : -1;
 }
 
 // Space in an answer box: a tap types a space; held HOLD ms it starts Windows voice typing (Win+H, sent by the panel)
@@ -516,10 +521,10 @@ function closeBox(row) {  // only an empty box closes
   if (p) tipFor(p);
   size();
 }
-function tipFor(p) {  // the paragraph's tooltip says what a click does; none while its box holds text
-  const row = p.nextElementSibling, box = row && row.classList.contains("ansrow") ? row.firstChild : null;
-  if (box && box.value.trim()) delete p.dataset.tip;
-  else p.dataset.tip = paraTip(kindOf(p), !!box);
+function tipFor(p) {  // the paragraph's tooltip says what a click does; none while its box is open
+  const row = p.nextElementSibling;
+  if (row && row.classList.contains("ansrow")) delete p.dataset.tip;
+  else p.dataset.tip = paraTip(kindOf(p));
 }
 // ---------- Windows voice typing: Space held in a box (spaceRule() decides, the panel sends Win+H) ----------
 let voiceBox = null, voiceSt = null, voiceTimer = 0, voiceQueue = Promise.resolve();
@@ -590,9 +595,23 @@ document.addEventListener("focusout", e => {
   vline(e.target, "");
   setTimeout(() => { if (pending) { pending = false; apply(); } }, 0);
 });
-// Keys typed in an answer box stay in it: Enter, Tab, Shift+Tab and Esc finish the answer and leave the box (its text
-// and draft kept, the focus goes nowhere, so no tab, chip or button is reached or pressed); Shift+Enter is a new line;
-// a plain Space goes to the voice typing rule. stopPropagation: no other handler sees them.
+// Tab and Shift+Tab keep the box's text and open the next (previous) block's box with the caret in it, scrolled into
+// view; a box left empty closes, so tabbing past blocks leaves no trail; at the last (first) block the box is only left.
+function tabMove(t, back) {
+  const row = t.parentElement, all = [...$("replies").querySelectorAll(".para")];
+  const j = tabTarget(all.length, all.indexOf(row.previousElementSibling), back);
+  if (j < 0) { t.blur(); closeBox(row); return; }
+  const q = all[j], nt = openBox(q, undefined, true);
+  nt.focus();
+  nt.setSelectionRange(nt.value.length, nt.value.length);
+  closeBox(row);
+  q.scrollIntoView({block: "nearest"});
+  nt.parentElement.scrollIntoView({block: "nearest"});
+}
+// Keys typed in an answer box stay in it: Enter and Esc finish the answer and leave the box (its text and draft kept,
+// the focus goes nowhere, so no tab, chip or button is reached or pressed); Tab and Shift+Tab move between the blocks'
+// boxes (tabMove()), never to another control; Shift+Enter is a new line; a plain Space goes to the voice typing rule.
+// stopPropagation: no other handler sees them.
 document.addEventListener("keydown", e => {
   sayClear();
   if (!e.target.classList.contains("ans")) return;
@@ -602,7 +621,8 @@ document.addEventListener("keydown", e => {
   if (voiceBox === e.target && e.code !== "Space") voiceStep(e.target, {type: "key"});
   else if (!voiceBox) vline(e.target, "");  // a note from an earlier hold goes with the next key
   if (e.isComposing) return;  // an IME's Enter confirms its own text
-  if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab" || e.key === "Escape") { e.preventDefault(); e.target.blur(); }
+  if (e.key === "Tab") { e.preventDefault(); tabMove(e.target, e.shiftKey); }
+  else if ((e.key === "Enter" && !e.shiftKey) || e.key === "Escape") { e.preventDefault(); e.target.blur(); }
 }, true);
 
 // a click (not a drag) on a paragraph opens its box or closes an empty one; where the press went down tells a drag
@@ -733,9 +753,11 @@ $("send").addEventListener("click", () => {
 
 // ---------- tooltip: as the panel's (mindmap tooltip.md) ----------
 let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
+function typing() { return !!document.activeElement && document.activeElement.classList.contains("ans"); }
 function tipShow(el) {
   tipJob = null;
   if (!document.body.contains(el) || !el.dataset.tip) return;
+  if (typing() && el.classList.contains("para")) return;  // no "Click to answer" hint while an answer box has the keyboard
   tip = document.createElement("div");
   tip.className = "tip";
   tip.textContent = el.dataset.tip;
@@ -764,6 +786,7 @@ addEventListener("pointermove", e => {
 });
 addEventListener("pointerdown", e => { tipDone = tipTarget || e.target.closest("[data-tip]"); tipHide(); }, true);
 $("body").addEventListener("scroll", tipHide);
+document.addEventListener("focusin", e => { if (e.target.classList.contains("ans") && tipTarget && tipTarget.classList.contains("para")) tipHide(); });
 document.documentElement.addEventListener("mouseleave", tipHide);
 addEventListener("blur", tipHide);
 
