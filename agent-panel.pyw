@@ -676,6 +676,22 @@ def copied_in(owner, title, before, sessions, window):
     return tab_session(owner, title, sessions, window)
 
 
+def front_session(front, before, sessions, window, mine):
+    """The open session whose terminal has just come to the front, for the reply window to follow, else None.
+    front: (window, title) in front at this poll turn; before: (window, shown name) at the previous turn, so only a
+    change counts (another window, or another tab of the same terminal); mine(hwnd): a window of this process (the
+    panel, the strip, the reply window), which never switches the tab. A terminal holding one session counts while
+    its title is a Claude Code title; one holding several, through tab_session() (the tab in view shows the name).
+    Not a session's terminal, a shell tab, a headless run: None."""
+    if not front or not front[0] or (front[0], shown_name(front[1])) == before or mine(front[0]):
+        return None
+    hwnd, title = front
+    here = [o for o in sessions if o.get("status") and o.get("pid") and not o.get("headless") and window(o) == hwnd]
+    if len(here) == 1:
+        return here[0] if CLAUDE_TITLE.match(title or "") else None
+    return tab_session(hwnd, title, here, window)
+
+
 def bring_front(hwnd):
     """Put a window in front where it was: restored only if minimised (never maximised), the foreground (a lone
     Alt lets this process take it when Windows refuses), and the top of the ordinary windows. True when it is the
@@ -2312,6 +2328,13 @@ class ReplyApi:
         except Exception as e:
             return err("Could not type it: %s. Use Copy and paste it yourself." % e)
 
+    def pin(self, sid, rid, text, mode):
+        # Pin on a reply (mode "pin"), the x on its chip ("unpin"), or the answer to "8 pins is the most" ("swap")
+        try:
+            return self._p.reply_pin(str(sid), str(rid), str(text or ""), str(mode))
+        except Exception as e:
+            return err("Could not pin it: %s." % e)
+
     def copy(self, answers):
         mod = self._p.reply_mod
         try:
@@ -2522,6 +2545,13 @@ class Panel:
             except Exception:
                 self.drafts = None
         self.reads, self.tabs, self.reply_sid, self.reply_pick = {}, [], None, None
+        self.front_key = None  # (window, shown name) in front at the last poll turn (follow_terminal)
+        self.pinned = None  # the replies pinned per session (agent-reply.py Pins)
+        if self.reply_mod:
+            try:
+                self.pinned = self.reply_mod.Pins()
+            except Exception:
+                self.pinned = None
         self.reply_open = local("reply_open") is not False
         self.reply_hwnd, self.reply_ready, self.reply_shown, self.reply_h = None, False, False, 0
         self.reply_key, self.head_key, self.reply_box, self.reply_now = None, None, None, None
@@ -2611,6 +2641,8 @@ class Panel:
                         self.set_reply_open(not self.reply_open)
                     elif ev == "reply":
                         self.place_reply()
+                    elif ev == "reply-state":
+                        self.update_reply()
                     elif ev.startswith("dock:"):
                         self.set_dock(ev[5:])
                     elif ev.startswith("opt:"):
@@ -2660,8 +2692,13 @@ class Panel:
             if self.shots and self.shots.version != self.strip_seen:  # a screenshot saved or moved: at once
                 self.strip_seen = self.shots.version
                 self.update_strip()
-            if self.quote_poll():  # a passage selected, or a ":" prompt used it: marked in the reply window
-                self.update_reply()
+            # the window in front, read once a turn: the reply window follows a session's terminal coming to the
+            # front, and a copy is tied to the tab it was made in
+            fg = user32.GetForegroundWindow()
+            title = window_title(fg) if fg else ""
+            front = (fg, shown_name(title)) if fg else None
+            if self.follow_terminal((fg, title), front) | self.quote_poll(front):
+                self.update_reply()  # a passage selected, or a ":" prompt used it: marked in the reply window
             time.sleep(0.2)
 
     # ----- placement -----
@@ -3833,6 +3870,20 @@ class Panel:
         tabs.sort(key=lambda x: (x["typed"], x["s"]["mtime"]), reverse=True)
         return tabs
 
+    def follow_terminal(self, raw, front):
+        """Each poll turn: when a session's terminal has come to the front (a click on it, Alt+Tab, a card click,
+        or another tab of a shared terminal), the reply window shows that session, as a tab press does, so it holds
+        until a prompt is typed after it. The panel's own windows (the panel, the strip, the reply window) and
+        windows that are no session's terminal leave the tab alone; nothing is focused. True when the tab changed."""
+        before, self.front_key = self.front_key, front
+        if not self.reply_mod or not self.tabs:
+            return False
+        s = front_session(raw, before, self.sessions, lambda o: self.wins.get(o.get("pid")), own)
+        if not s or s["id"] not in {x["s"]["id"] for x in self.tabs}:
+            return False
+        self.reply_pick = (s["id"], time.time())
+        return s["id"] != self.reply_sid
+
     def update_reply(self):
         """Every live pass, scan and list change: the tabs and the session shown, and what the reply window shows
         (its head goes with update_strip()). The tab followed is the session the user last typed a
@@ -3904,7 +3955,7 @@ class Panel:
         else:
             note = "No reply since your prompt%s yet." % (" of " + pt if pt else "")
         state = {"sid": s["id"], "name": name, "replies": reps, "selections": sels, "note": note,
-                 "answers": self.drafts.get(s["id"]) if self.drafts else {}}
+                 "answers": self.drafts.get(s["id"]) if self.drafts else {}, "pins": self.pins_of(s["id"])}
         key = json.dumps(state, sort_keys=True)
         if key == self.reply_key:
             return
@@ -3915,6 +3966,40 @@ class Panel:
         except Exception:
             pass
         self.place_reply()
+
+    def pins_of(self, sid):
+        """The session's pinned replies for its chips, in the order they were pinned: id, the chip's words, the
+        reply's time (with the day when it is not today) and its text."""
+        mod, out = self.reply_mod, []
+        today = time.strftime("%Y-%m-%d")
+        for p in (self.pinned.get(sid) if self.pinned else []):
+            at = p.get("at")
+            when = ""
+            if at:
+                lt = time.localtime(at)
+                when = time.strftime("%H:%M" if time.strftime("%Y-%m-%d", lt) == today else "%d %b %H:%M", lt)
+            out.append({"id": p["id"], "label": mod.pin_label(p["text"]), "when": when, "text": p["text"]})
+        return out
+
+    def reply_pin(self, sid, rid, text, mode):
+        """Pin, unpin, or unpin the oldest and pin (the page's answer to the limit). A reply is pinned with its text
+        and time as the transcript has them (the page's copy when the transcript no longer holds it). Returns the
+        session's pins; "full" with the oldest one's words when PIN_MAX are pinned already."""
+        if not self.pinned:
+            return err("Pins are not available (the reply rules did not load).")
+        if mode == "unpin":
+            self.pinned.remove(sid, rid)
+        else:
+            x = next((x for x in self.tabs if x["s"]["id"] == sid), None)
+            r = next((r for r in (x["t"].replies() if x else []) if r["id"] == rid), None)
+            at, text = (r["at"], r["text"]) if r else (None, text)
+            res = (self.pinned.swap if mode == "swap" else self.pinned.add)(sid, rid, at, text)
+            if res == "full":
+                pins = self.pins_of(sid)
+                return {"full": pins[0] if pins else None, "pins": pins}
+        self.reply_key = None
+        self.events.put("reply-state")  # the poll loop sends the page its state again
+        return {"pins": self.pins_of(sid)}
 
     def place_reply(self):
         """The reply window at self.reply_box (strip_rect(): the screen's left edge, its top on the strip's), as tall
@@ -4007,9 +4092,9 @@ class Panel:
                 got = r.value
         if got != 1:
             return undo("The terminal did not take the line. Use Copy.")
-        if self.drafts:
+        if self.drafts:  # only the answers sent: those under another chip stay
             try:
-                self.drafts.clear(sid)
+                self.drafts.clear(sid, [str(a.get("key")) for a in answers if a.get("key")])
             except OSError:
                 pass
         self.reply_key = None
@@ -4033,7 +4118,7 @@ class Panel:
                 pass
         return lists
 
-    def quote_poll(self):
+    def quote_poll(self, front):
         """Keeps the ":" reply's numbered lists, one per session (quote-reply.py, the UserPromptSubmit hook, reads its
         own session's from LIST), while the strip is switched on, the keeper is on and the panel shows (else they are
         empty and "off", and a ":" prompt quotes the clipboard itself). Every new text clipboard joins the list of the
@@ -4049,9 +4134,9 @@ class Panel:
         if not q:
             return False
         with self.qlock:
-            return self.quote_turn(q)
+            return self.quote_turn(q, front)
 
-    def quote_turn(self, q):
+    def quote_turn(self, q, front):
         lists, now, changed = self.qlists, time.time(), False
         for sid in list(lists):  # a prompt submitted in that session: its hook wrote a reset record
             path = q.reset_path(sid)
@@ -4074,8 +4159,6 @@ class Panel:
             if not self.quote_on:
                 self.quote_on, changed = True, True
                 self.quote_seq = q.seq()  # on the clipboard before the lists went live: no telling where it was made
-            fg = user32.GetForegroundWindow()
-            front = (fg, shown_name(window_title(fg))) if fg else None
             n = q.seq()
             if n != self.quote_seq and user32.IsClipboardFormatAvailable(PASTE_MARK):
                 self.quote_seq = n  # the paste key's own clipboard (a path, or the user's put back): no passage

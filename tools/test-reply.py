@@ -1,7 +1,8 @@
 # Unit tests for agent-reply.py, the reply window's rules: which transcript lines are a reply (end_turn text of the
 # main thread; not tool_use narration, thinking, a subagent, <synthetic> or an API error), every reply since the
 # last typed prompt, two text blocks of one message joined, reading on from where the last read stopped; the
-# drafts kept per session; the line Send to Session types and the text Copy puts on the clipboard.
+# drafts kept per session; the pinned replies; the line Send to Session types and the text Copy puts on the
+# clipboard; which session's terminal came to the front (front_session, taken from agent-panel.pyw by ast).
 # Run: python -I tools/test-reply.py
 # Every transcript here is made up, in a temporary folder; the drafts file too. The prompt rule is the panel's own
 # typed_prompt(), taken out of agent-panel.pyw by ast (importing it would trip its one-instance mutex).
@@ -356,6 +357,151 @@ class Markdown(unittest.TestCase):
         self.assertEqual(self.md["heads"], ['<div class="para h h1" data-key="k">H1</div>',
                                             '<div class="para h h2" data-key="k">H2</div>',
                                             '<div class="para h" data-key="k">H3</div>'])
+
+
+class Pins(unittest.TestCase):
+    """The pinned replies: per session, in pin order, PIN_MAX at most, kept with their own text."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.file = os.path.join(self.dir, "sub", "reply-pins.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def test_add_in_pin_order_and_already(self):
+        p = ar.Pins(self.file)
+        self.assertEqual(p.add("A", "m1", 10, "First reply.", now=100), "added")
+        self.assertEqual(p.add("A", "m2", 20, "Second reply.", now=200), "added")
+        self.assertEqual(p.add("A", "m1", 10, "First reply.", now=300), "already")
+        self.assertEqual(p.add("A", "m3", 30, "   ", now=300), "empty")
+        self.assertEqual([x["id"] for x in p.get("A")], ["m1", "m2"])
+        self.assertEqual(p.get("B"), [])
+
+    def test_the_limit_refuses_then_swap_drops_the_oldest(self):
+        p = ar.Pins(self.file)
+        for k in range(ar.PIN_MAX):
+            self.assertEqual(p.add("A", "m%d" % k, k, "Reply %d." % k, now=k), "added")
+        self.assertEqual(p.add("A", "m9", 9, "The ninth.", now=50), "full")
+        self.assertEqual(len(p.get("A")), ar.PIN_MAX)  # refused: nothing changed
+        self.assertNotIn("m9", [x["id"] for x in ar.Pins(self.file).get("A")])
+        self.assertEqual(p.swap("A", "m9", 9, "The ninth.", now=60), "added")
+        ids = [x["id"] for x in ar.Pins(self.file).get("A")]
+        self.assertEqual(len(ids), ar.PIN_MAX)
+        self.assertEqual(ids[0], "m1")  # m0, pinned first, went
+        self.assertEqual(ids[-1], "m9")
+        self.assertEqual(p.add("B", "x", 1, "Another session's.", now=1), "added")  # the limit is per session
+
+    def test_swap_of_a_pinned_reply_drops_nothing(self):
+        p = ar.Pins(self.file)
+        for k in range(ar.PIN_MAX):
+            p.add("A", "m%d" % k, k, "Reply %d." % k, now=k)
+        self.assertEqual(p.swap("A", "m3", 3, "Reply 3.", now=99), "already")
+        self.assertEqual(len(p.get("A")), ar.PIN_MAX)
+
+    def test_kept_across_restarts_and_removed(self):
+        p = ar.Pins(self.file)
+        p.add("A", "m1", 10, "Kept **reply**.", now=100)
+        p.add("closed", "m5", 50, "A closed session's pin.", now=100)
+        again = ar.Pins(self.file)
+        self.assertEqual(again.get("A"), [{"id": "m1", "at": 10, "text": "Kept **reply**.", "pinned": 100}])
+        self.assertEqual(len(again.get("closed")), 1)  # kept for when it opens again
+        self.assertTrue(again.remove("A", "m1"))
+        self.assertFalse(again.remove("A", "m1"))
+        self.assertEqual(ar.Pins(self.file).get("A"), [])
+        self.assertEqual(len(ar.Pins(self.file).get("closed")), 1)
+
+    def test_a_broken_file_starts_empty(self):
+        os.makedirs(os.path.dirname(self.file))
+        with open(self.file, "w") as f:
+            f.write('{"A": [{"id": "m1"}, "x", {"id": "m2", "text": "ok"}], "B": "nope"')
+        self.assertEqual(ar.Pins(self.file).data, {})
+        with open(self.file, "w") as f:
+            f.write('{"A": [{"id": "m1"}, "x", {"id": "m2", "text": "ok"}], "B": "nope"}')
+        self.assertEqual([x["id"] for x in ar.Pins(self.file).get("A")], ["m2"])
+
+    def test_survives_the_transcript_growing_and_shrinking(self):
+        path = os.path.join(self.dir, "t.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for o in (user("one", 1), part("m1", text("## Plan\nShip on **Thursday**."), "end_turn", 2)):
+                f.write(json.dumps(o) + "\n")
+        t = ar.Transcript(path, typed)
+        t.read()
+        r = t.replies()[0]
+        p = ar.Pins(self.file)
+        p.add("A", r["id"], r["at"], r["text"])
+        with open(path, "a", encoding="utf-8") as f:  # a newer prompt and reply: m1 is no longer a current reply
+            for o in (user("two", 3), part("m2", text("Something else."), "end_turn", 4)):
+                f.write(json.dumps(o) + "\n")
+        t.read()
+        self.assertEqual([x["id"] for x in t.replies()], ["m2"])
+        with open(path, "w", encoding="utf-8") as f:  # compacted: the file is shorter and read again
+            f.write(json.dumps(user("summary", 5)) + "\n")
+        t.read()
+        self.assertEqual(t.replies(), [])
+        kept = ar.Pins(self.file).get("A")
+        self.assertEqual([(x["id"], x["text"]) for x in kept], [("m1", "## Plan\nShip on **Thursday**.")])
+
+    def test_label(self):
+        self.assertEqual(ar.pin_label("## Plan for the **yearly** plan release next week\nmore"), "Plan for the yearly plan…")
+        self.assertEqual(ar.pin_label("\n\n- `cut` it"), "cut it")
+        self.assertEqual(ar.pin_label("See [the docs](https://x.y) now."), "See the docs now.")
+        self.assertEqual(ar.pin_label("Averyveryveryveryveryverylongwordthatgoesonandon"), "Averyveryveryveryveryverylongwor…")
+        self.assertEqual(ar.pin_label("  "), "Reply")
+
+
+def follow():
+    """front_session() and what it reads (shown_name, tab_session, CLAUDE_TITLE), taken out of agent-panel.pyw by ast."""
+    with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("shown_name", "tab_session", "front_session")]
+    keep += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "CLAUDE_TITLE" for t in n.targets)]
+    ns = {"re": re}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+    return ns["front_session"]
+
+
+class Follow(unittest.TestCase):
+    """Which session's terminal came to the front, for the reply window to show. Windows are made-up numbers:
+    10 holds session a alone, 20 holds b and c as two tabs, 30 is the panel's own (the reply window), 40 is any
+    other program."""
+
+    def setUp(self):
+        self.f = follow()
+        self.s = [{"id": "a", "status": "idle", "pid": 1, "name": "alpha"},
+                  {"id": "b", "status": "busy", "pid": 2, "name": "beta"},
+                  {"id": "c", "status": "idle", "pid": 3, "name": "gamma"},
+                  {"id": "h", "status": "idle", "pid": 4, "name": "headless", "headless": True},
+                  {"id": "z", "status": None, "pid": 5, "name": "closed"}]
+        self.win = {1: 10, 2: 20, 3: 20, 4: 50, 5: 60}
+
+    def go(self, front, before=None):
+        s = self.f(front, before, self.s, lambda o: self.win.get(o.get("pid")), lambda h: h == 30)
+        return s and s["id"]
+
+    def test_a_lone_session_terminal(self):
+        self.assertEqual(self.go((10, "✳ alpha")), "a")
+        self.assertEqual(self.go((10, "⠂ some other title")), "a")  # its only session, whatever it is titled
+
+    def test_a_shell_tab_in_its_window_is_not_followed(self):
+        self.assertIsNone(self.go((10, "Windows PowerShell")))
+
+    def test_a_shared_terminal_follows_the_tab_in_view(self):
+        self.assertEqual(self.go((20, "✳ beta")), "b")
+        self.assertEqual(self.go((20, "✳ gamma"), (20, "beta")), "c")  # another tab of the same window
+        self.assertIsNone(self.go((20, "✳ delta")))  # no listed session shows there: never a guess
+
+    def test_only_a_change_counts(self):
+        self.assertIsNone(self.go((10, "⠐ alpha"), (10, "alpha")))  # the spinner glyph turned
+        self.assertEqual(self.go((10, "✳ alpha"), (30, "Field Agents Reply")), "a")  # back from the reply window
+
+    def test_own_windows_and_other_programs_leave_it(self):
+        self.assertIsNone(self.go((30, "✳ alpha")))  # the panel, the strip, the reply window
+        self.assertIsNone(self.go((40, "✳ alpha")))  # not a session's terminal
+        self.assertIsNone(self.go((50, "✳ headless")))  # a headless run
+        self.assertIsNone(self.go((60, "✳ closed")))  # a closed session
+        self.assertIsNone(self.go(None))
+        self.assertIsNone(self.go((0, "")))
 
 
 if __name__ == "__main__":

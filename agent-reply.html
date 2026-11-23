@@ -22,7 +22,13 @@
      answers as one line plus the paragraphs they answer on the clipboard; Send to Session puts those paragraphs in
      the session's numbered list and types the one line ":N answer :N answer" into its prompt, without Enter.
      The window grows with its content; taller than the screen allows, the replies scroll inside. agent-panel.pyw
-     sizes it from what api.size() reports. Spark tokens as in agent-panel.html. -->
+     sizes it from what api.size() reports. Spark tokens as in agent-panel.html.
+     Pins (2026-11-23): every reply carries Pin at the right of its top line (the strip's Pin: blue when on).
+     A session with pinned replies shows a row of chips under its tabs: Latest first (the replies since the last
+     prompt), then one chip per pin in the order pinned (its first words, its time, an x that unpins it). A chip
+     shows its reply in place of the latest ones, answer boxes and Send to Session as on them; Latest, a tab press or
+     another session coming up shows the latest replies again. agent-panel.pyw keeps the pins with their text, 8 per
+     session at most: a 9th asks, in a line under the head, to unpin the oldest first. -->
 <style>
 :root {
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
@@ -40,7 +46,7 @@ button { cursor: pointer; }
    head, the replies, the bottom bar and its text share one left edge (--edge) */
 #head { flex: none; padding: 8px 8px 8px var(--edge); border-bottom: 1px solid var(--line); user-select: none; cursor: default; }
 body.folded #head { border-bottom: 0; }
-body.folded #body, body.folded #miss, body.folded #foot { display: none; }
+body.folded #body, body.folded #miss, body.folded #foot, body.folded #ask { display: none; }
 body.moving, body.moving * { cursor: grabbing !important; }
 .tabrow { display: flex; gap: 6px; align-items: center; min-width: 0; }
 .tabs { flex: 1 1 auto; display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; }
@@ -65,15 +71,49 @@ body.moving, body.moving * { cursor: grabbing !important; }
 #fold svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
   stroke-linejoin: round; transition: transform .16s ease-out; }
 #fold.shut svg { transform: rotate(180deg); }
+/* the pinned replies: Latest, then a chip per pin (its words, its time, an x); shown while the session has pins */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; animation: drop .16s var(--snap); }
+.chips:empty { display: none; }
+.chip { flex: 0 1 auto; min-width: 0; max-width: 250px; height: 28px; display: flex; align-items: center;
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel); color: var(--muted);
+  font: 400 12px "Segoe UI", system-ui, sans-serif; transition: transform .16s ease-out; }
+.chip:hover { border-color: var(--blue); }
+.chip:active { transform: scale(.97); }
+.chip.on { border-color: var(--blue); color: var(--text); box-shadow: 0 0 0 .5px var(--blue), 0 0 0 3px rgba(27, 77, 245, .12); }
+.chip button { height: 100%; border: 0; background: none; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chip .go { padding: 0 10px; min-width: 0; color: inherit; }
+.chip .go svg { width: 11px; height: 11px; fill: var(--blue); flex: none; }
+.chip .w { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.on .w { font-weight: 600; }
+.chip .at { flex: none; color: var(--faint); font-size: 11px; }
+.chip .x { flex: none; width: 24px; margin-left: -6px; justify-content: center; color: var(--faint); border-radius: 0 var(--r-ctl) var(--r-ctl) 0; }
+.chip .x:hover { color: var(--red-deep); }
+.chip .x svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+/* "8 pins is the most": asked in place, under the head */
+#ask { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px 8px var(--edge); background: #fffbeb;
+  border-bottom: 1px solid #fde68a; font: 400 12px/16px "Segoe UI", system-ui, sans-serif; color: var(--text);
+  animation: drop .16s var(--snap); }
+#ask[hidden] { display: none; }
+#ask .q { flex: 1; min-width: 0; }
+#ask .b { min-height: 28px; }
 .meta { margin-top: 6px; color: var(--muted); font: 400 12px/16px "Segoe UI", system-ui, sans-serif;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta b { font-weight: 600; color: var(--text); }
 .meta:empty { display: none; }
 #body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 28px 10px var(--edge);
   scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+#replies { display: flow-root; }  /* holds its children's margins, so its height is the content's (natural()) */
 /* one reply; several are parted by a hairline and the time each came */
 .reply + .reply { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
-.when { color: var(--faint); font: 400 11px/16px "Segoe UI", system-ui, sans-serif; margin-bottom: 2px; }
+/* a reply's top line: its time, and Pin at the right (the strip's Pin: blue when on) */
+.rtop { display: flex; align-items: center; gap: 8px; min-height: 20px; margin-bottom: 2px; }
+.when { color: var(--faint); font: 400 11px/16px "Segoe UI", system-ui, sans-serif; }
+.rpin { margin-left: auto; height: 20px; padding: 0 7px; border: 1px solid var(--line); border-radius: var(--r-small);
+  background: var(--panel); color: var(--muted); font: 600 11px/1 "Segoe UI", system-ui, sans-serif;
+  transition: transform .16s ease-out; }
+.rpin:hover { color: var(--blue); border-color: var(--blue); }
+.rpin:active { transform: scale(.97); }
+.rpin.on { background: var(--blue); border-color: var(--blue); color: #fff; }
 .para { position: relative; padding: 4px 0; border-radius: 6px; overflow-wrap: anywhere; }
 .para.h { font-weight: 600; padding-top: 8px; }
 .para.h1 { font-size: 17px; line-height: 24px; }
@@ -154,7 +194,8 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 </style>
 </head>
 <body>
-<div id="head"><div class="tabrow"><div class="tabs" id="tabs"></div><button type="button" id="fold"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4"/></svg></button></div><div class="meta" id="meta"></div></div>
+<div id="head"><div class="tabrow"><div class="tabs" id="tabs"></div><button type="button" id="fold"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4"/></svg></button></div><div class="chips" id="chips"></div><div class="meta" id="meta"></div></div>
+<div id="ask" role="alert" hidden></div>
 <div id="body"><div id="empty" hidden></div><div id="replies"></div></div>
 <div id="miss" hidden></div>
 <div id="foot"><span id="count"></span><span id="say" role="status"></span>
@@ -166,7 +207,11 @@ const api = () => window.pywebview.api;
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
 const CHEV = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5L6.5 5 3 8.5"/></svg>';
-let S = null;          // what agent-panel.pyw sent last: {sid, name, replies, answers, selections, note}
+const PIN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3H8v2h1v6l-3 3v2h5v6l1 1 1-1v-6h5v-2l-3-3V5h1z"/></svg>';
+const X = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 2.5l5 5M7.5 2.5l-5 5"/></svg>';
+let S = null;          // what agent-panel.pyw sent last: {sid, name, replies, answers, selections, note, pins}
+let view = null;       // the pin shown in place of the latest replies (its id); null: the latest
+let shownSid = null;   // the session drawn now
 let answers = {};      // paragraph key -> {text, passage}, the page's own copy of the session's draft
 let shownKey = null;   // the replies drawn now (session and text), so an update with the same ones keeps the page
 let ready = false;
@@ -295,11 +340,12 @@ const sources = {};  // key -> the paragraph's source text (what goes into the l
 function draw() {
   const list = $("replies");
   for (const k of Object.keys(sources)) delete sources[k];
-  const reps = S.replies || [];
+  const reps = shownReplies(), pinned = new Set((S.pins || []).map(p => p.id));
   list.innerHTML = reps.map(r => {
-    const bs = blocks(r.text);
+    const bs = blocks(r.text), on = pinned.has(r.id);
     bs.forEach((b, n) => { if (b.src !== undefined) sources[r.id + "#" + n] = b.src; });
-    return `<div class="reply">${reps.length > 1 ? `<div class="when">${esc(r.when)}</div>` : ""}${bs.map((b, n) => blockHtml(b, r.id + "#" + n)).join("")}</div>`;
+    const tip = on ? "Unpins this reply: its chip under the tabs goes" : "Keeps this reply as a chip under the tabs, after newer prompts and restarts";
+    return `<div class="reply" data-id="${esc(r.id)}"><div class="rtop"><span class="when">${esc(r.when || "")}</span><button type="button" class="rpin${on ? " on" : ""}" aria-pressed="${on}" aria-label="Pin this reply" data-tip="${tip}">Pin</button></div>${bs.map((b, n) => blockHtml(b, r.id + "#" + n)).join("")}</div>`;
   }).join("");
   $("empty").hidden = !!reps.length;
   $("empty").textContent = reps.length ? "" : (S.note || "");
@@ -317,7 +363,7 @@ function draw() {
 function textNodes() {
   const out = [];
   const walk = document.createTreeWalker($("replies"), NodeFilter.SHOW_TEXT, {acceptNode: n =>
-    n.parentElement.closest("pre, .code, .ansrow, .when, .qb") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
+    n.parentElement.closest("pre, .code, .ansrow, .rtop, .qb") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
   for (let n = walk.nextNode(); n; n = walk.nextNode()) out.push(n);
   return out;
 }
@@ -384,10 +430,13 @@ function mark() {
 }
 
 function count() {
-  const n = Object.values(answers).filter(a => a.text.trim()).length, s = (S && S.selections || []).length;
+  // the answers under what is shown now are the ones Copy and Send to Session take; those under another chip wait
+  const all = Object.entries(answers).filter(([, a]) => a.text.trim()), s = (S && S.selections || []).length;
+  const n = all.filter(([k]) => k in sources).length, other = all.length - n;
   const parts = [n ? `<b>${n} answer${n === 1 ? "" : "s"}</b>` : "No answer yet"];
+  if (other) parts.push(`${other} more under another chip`);
   if (s) parts.push(`${s} selection${s === 1 ? "" : "s"}`);
-  if (n) parts.push("draft kept");
+  if (all.length) parts.push("draft kept");
   $("count").innerHTML = parts.join(" · ");
   $("copy").disabled = $("send").disabled = !n;
   $("send").dataset.tip = S ? `Types the answers into the prompt of ${S.name} as one line (:1 answer :2 answer). Nothing is sent until you press Enter there.` : "";
@@ -470,6 +519,11 @@ document.getElementById("body").addEventListener("pointerleave", () => {
   }, 400);
 });
 document.addEventListener("click", e => {
+  const pb = e.target.closest(".rpin");
+  if (pb) { pinDo(pb.classList.contains("on") ? "unpin" : "pin", pb.closest(".reply").dataset.id); return; }
+  const sw = e.target.closest("#ask [data-swap]");
+  if (sw) { pinDo("swap", sw.dataset.swap); return; }
+  if (e.target.closest("#ask [data-cancel]")) { askHide(); return; }
   const a = e.target.closest("a.lnk");
   if (a) { e.preventDefault(); tipHide(); api().link(a.dataset.url); return; }
   const row = e.target.closest(".ansrow");
@@ -483,6 +537,53 @@ document.addEventListener("click", e => {
     size();
   }
 });
+
+// ---------- pins ----------
+function shownReplies() {  // a pin's reply when its chip is chosen, else the replies since the last prompt
+  const p = view && (S.pins || []).find(p => p.id === view);
+  return p ? [{id: p.id, when: p.when, text: p.text}] : (S.replies || []);
+}
+function drawChips() {
+  const pins = S.pins || [];
+  $("chips").innerHTML = !pins.length ? "" : `<span class="chip${view ? "" : " on"}"><button type="button" class="go" data-view="" aria-pressed="${!view}" data-tip="Shows the replies since your last prompt"><span class="w">Latest</span></button></span>` +
+    pins.map(p => {
+      const on = view === p.id, first = p.text.trim().split("\n")[0];
+      return `<span class="chip${on ? " on" : ""}"><button type="button" class="go" data-view="${esc(p.id)}" aria-pressed="${on}" data-tip="${esc("Shows this pinned reply: " + (first.length > 120 ? first.slice(0, 120) + "…" : first))}">${PIN}<span class="w">${esc(p.label)}</span>${p.when ? `<span class="at">${esc(p.when)}</span>` : ""}</button><button type="button" class="x" data-unpin="${esc(p.id)}" aria-label="Unpin ${esc(p.label)}" data-tip="Unpins this reply. Its chip and the text kept with it go">${X}</button></span>`;
+    }).join("");
+}
+function showView(id) {
+  if (view === (id || null)) return;
+  view = id || null;
+  tipHide();
+  apply();
+  $("body").scrollTop = 0;
+}
+function pinDo(mode, id) {
+  const sid = S.sid, r = shownReplies().find(r => r.id === id);
+  tipHide();
+  api().pin(sid, id, r ? r.text : "", mode).then(res => {
+    if (!res || !S || S.sid !== sid) return;
+    if (res.err) { say(res.t, true); return; }
+    S.pins = res.pins || [];
+    if (res.full) askFull(id, res.full, S.pins.length);
+    else askHide();
+    apply();
+  });
+}
+function askFull(id, oldest, n) {
+  const words = `“${esc(oldest ? oldest.label : "")}”${oldest && oldest.when ? ` (${esc(oldest.when)})` : ""}`;
+  $("ask").innerHTML = `<span class="q">A session keeps ${n} pins at most. Unpin the oldest, ${words}, and pin this one?</span>` +
+    `<button type="button" class="b primary" data-swap="${esc(id)}" data-tip="Unpins ${words} and pins this reply in its place">Unpin Oldest and Pin</button>` +
+    `<button type="button" class="b" data-cancel data-tip="Keeps the ${n} pins as they are">Cancel</button>`;
+  $("ask").hidden = false;
+  size();
+}
+function askHide() {
+  if ($("ask").hidden) return;
+  $("ask").hidden = true;
+  $("ask").innerHTML = "";
+  size();
+}
 
 // ---------- Copy and Send to Session ----------
 function ordered() {  // the answers in the order their paragraphs stand
@@ -509,9 +610,9 @@ $("send").addEventListener("click", () => {
   b.disabled = true;
   say("Typing into " + S.name + "…");
   api().send(sid, list).then(r => {
-    if (r && !r.err && S.sid === sid) {
-      answers = {};
-      document.querySelectorAll("#replies .ansrow").forEach(row => row.remove());
+    if (r && !r.err && S.sid === sid) {  // the answers sent go; those under another chip stay
+      for (const a of list) { delete answers[a.key]; if (S.answers) delete S.answers[a.key]; }
+      document.querySelectorAll("#replies .ansrow").forEach(row => { if (list.some(a => a.key === row.dataset.for)) row.remove(); });
     }
     say(r ? r.t : "", !r || r.err);
     count();
@@ -558,7 +659,12 @@ addEventListener("blur", tipHide);
 let sizeJob = null, sent = 0;
 function natural() {
   if (document.body.classList.contains("folded")) return Math.ceil($("head").offsetHeight);
-  return Math.ceil($("head").offsetHeight + $("body").scrollHeight + ($("miss").hidden ? 0 : $("miss").offsetHeight) + $("foot").offsetHeight);
+  // the replies' own height, not #body's scrollHeight: that is never less than the window gives it, so a shorter
+  // content (another session, a pinned reply) would leave the window as tall as before
+  const cs = getComputedStyle($("body"));
+  const body = $("replies").offsetHeight + ($("empty").hidden ? 0 : $("empty").offsetHeight) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  return Math.ceil($("head").offsetHeight + ($("ask").hidden ? 0 : $("ask").offsetHeight) + body +
+    ($("miss").hidden ? 0 : $("miss").offsetHeight) + $("foot").offsetHeight);
 }
 function size() {
   if (sizeJob) return;
@@ -572,11 +678,15 @@ function size() {
 // ---------- from agent-panel.pyw ----------
 let pending = false;
 function apply() {
-  const key = JSON.stringify([S.sid, (S.replies || []).map(r => [r.id, r.text])]);
+  if (document.activeElement && document.activeElement.classList.contains("ans")) { pending = true; return; }
+  const same = S.sid === shownSid;
+  if (!same) { view = null; askHide(); }  // another session: its latest replies
+  if (view && !(S.pins || []).some(p => p.id === view)) view = null;  // the pin shown was unpinned
+  drawChips();
+  const key = JSON.stringify([S.sid, view, shownReplies().map(r => [r.id, r.text]), (S.pins || []).map(p => p.id)]);
   if (key !== shownKey) {
-    if (document.activeElement && document.activeElement.classList.contains("ans")) { pending = true; return; }
-    const same = shownKey && JSON.parse(shownKey)[0] === S.sid;
     shownKey = key;
+    shownSid = S.sid;
     if (!same) { answers = {}; tipHide(); say(""); $("body").scrollTop = 0; hover = null; }
     for (const [k, a] of Object.entries(S.answers || {})) if (!answers[k]) answers[k] = {text: a.text, passage: a.passage};
     draw();
@@ -586,7 +696,8 @@ function apply() {
   }
 }
 window.reply = {
-  // state: {sid, name, replies: [{id, when, text}], answers: {key: {text, passage}}, selections: [{n, text}], note}
+  // state: {sid, name, replies: [{id, when, text}], answers: {key: {text, passage}}, selections: [{n, text}], note,
+  // pins: [{id, label, when, text}] in the order pinned}
   show(state) { S = state; apply(); return natural(); },
   // h: {tabs: [{sid, name, dot: "ask"/"work"/"open", when, on, full}], meta: {name, where, line}, open}; null: no
   // session is open (agent-panel.pyw hides the window then)
@@ -624,8 +735,16 @@ $("head").addEventListener("pointerup", e => {
   n.then(id => api().release(id)).then(moved => {
     document.body.classList.remove("moving");
     if (moved || !b) return;
-    if (b.classList.contains("tab")) api().tab(b.dataset.sid);  // agent-panel.pyw shows it and sends the head again
+    // the head's press is cancelled, so the keyboard stays in an answer box being typed in: it is left first, so
+    // what the press shows is drawn now (its draft is kept)
+    if (b.id !== "fold" && document.activeElement && document.activeElement.classList.contains("ans")) document.activeElement.blur();
+    if (b.classList.contains("tab")) {  // agent-panel.pyw shows it and sends the head again; its latest replies
+      if (S && b.dataset.sid === S.sid) showView(null);
+      api().tab(b.dataset.sid);
+    }
     else if (b.id === "fold") api().fold();
+    else if (b.classList.contains("go")) showView(b.dataset.view || null);
+    else if (b.classList.contains("x")) pinDo("unpin", b.dataset.unpin);
   });
 });
 $("head").addEventListener("lostpointercapture", () => { pressed = null; document.body.classList.remove("moving"); });

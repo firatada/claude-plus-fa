@@ -1,7 +1,8 @@
 # The Field Agents reply window's rules, loaded by agent-panel.pyw (importlib): Claude's replies in a session since
 # the prompt the user last typed there, read from its transcript a piece at a time; the answers drafted under them,
-# kept per session until they are sent; the one line Send to Session types into the session's prompt, and the text
-# Copy puts on the clipboard. Nothing here touches a window: tools/test-reply.py tests it on made-up transcripts.
+# kept per session until they are sent; the replies pinned per session; the one line Send to Session types into the
+# session's prompt, and the text Copy puts on the clipboard. Nothing here touches a window: tools/test-reply.py
+# tests it on made-up transcripts.
 #
 # A reply is the text of one main-thread assistant message that ended its turn (stop_reason "end_turn"): its text
 # blocks, joined. Not a reply: thinking, tool calls and their results, the text Claude writes between tool calls
@@ -10,11 +11,13 @@
 # of its own); every one since the prompt is kept, in order. A prompt the user types starts the list afresh.
 #
 # Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
-import ctypes, datetime, json, os, re, time
+import ctypes, datetime, json, os, re, threading, time
 
 TAIL = 4 * 1048576     # bytes read from a transcript's end at the first read; MORE when no prompt is in them
 MORE = 32 * 1048576
 DRAFTS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-drafts.json")
+PINS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-pins.json")
+PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
 
 
@@ -178,11 +181,89 @@ class Drafts:
         return self.clear(sid, old) if old else False
 
     def save(self):
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        tmp = "%s.%d.tmp" % (self.path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, ensure_ascii=False)
-        os.replace(tmp, self.path)
+        save_json(self.path, self.data)
+
+
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+# ---------- pinned replies ----------
+class Pins:
+    """The replies pinned per session, kept in PINS across restarts and after the session closes: {session id:
+    [{"id", "at", "text", "pinned"}]}, in the order they were pinned. A pin holds the reply's own text, so it stays
+    whatever the transcript does afterwards (newer prompts, compaction). At most PIN_MAX per session: a pin past it
+    is refused ("full") until one goes; swap() unpins the oldest and pins the new one in one step. The page's API
+    thread changes it while the poll loop reads it: a lock."""
+
+    def __init__(self, path=None):
+        self.path = path or PINS
+        self.lock = threading.Lock()
+        self.data = {}
+        for sid, lst in load_json(self.path).items():
+            keep = [{"id": str(p["id"]), "at": p.get("at"), "text": str(p["text"]), "pinned": p.get("pinned") or 0}
+                    for p in lst or [] if isinstance(p, dict) and p.get("id") and p.get("text")]
+            if keep:
+                self.data[str(sid)] = keep[-PIN_MAX:]
+
+    def get(self, sid):
+        with self.lock:
+            return [dict(p) for p in self.data.get(sid) or []]
+
+    def add(self, sid, rid, at, text, now=None):
+        """"added", "already" (that reply is pinned), "full" (PIN_MAX pinned: nothing changed) or "empty" (no text)."""
+        if not (text or "").strip():
+            return "empty"
+        with self.lock:
+            lst = self.data.setdefault(sid, [])
+            if any(p["id"] == rid for p in lst):
+                return "already"
+            if len(lst) >= PIN_MAX:
+                return "full"
+            lst.append({"id": rid, "at": at, "text": text, "pinned": now or time.time()})
+            self.save()
+        return "added"
+
+    def swap(self, sid, rid, at, text, now=None):
+        """The oldest pin goes and this reply is pinned in its place (the answer to "full")."""
+        with self.lock:
+            lst = self.data.get(sid) or []
+            if lst and len(lst) >= PIN_MAX and not any(p["id"] == rid for p in lst):
+                lst.pop(0)
+        return self.add(sid, rid, at, text, now)
+
+    def remove(self, sid, rid):
+        with self.lock:
+            lst = self.data.get(sid) or []
+            keep = [p for p in lst if p["id"] != rid]
+            if len(keep) == len(lst):
+                return False
+            if keep:
+                self.data[sid] = keep
+            else:
+                self.data.pop(sid, None)
+            self.save()
+        return True
+
+    def save(self):
+        save_json(self.path, self.data)
+
+
+def pin_label(text, words=5, cap=32):
+    """A pin's chip: the first words of the reply's first line with text, markdown's marks left out."""
+    for line in (text or "").splitlines():
+        line = re.sub(r"^\s*(#{1,6}\s+|>\s?|[-*+]\s+|\d{1,3}[.)]\s+|\|)", "", line)
+        line = " ".join(re.sub(r"[`*_~|]|\[([^\]]*)\]\([^)]*\)", lambda m: m.group(1) or "", line).split())
+        if line:
+            cut = " ".join(line.split(" ")[:words])
+            if len(cut) > cap:
+                cut = cut[:cap].rstrip()
+            return cut + ("…" if cut != line else "")
+    return "Reply"
 
 
 # ---------- the line sent, the text copied ----------

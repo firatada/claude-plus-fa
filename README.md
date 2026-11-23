@@ -74,14 +74,15 @@ When a session starts waiting for your answer, this alert drops in at the top of
 
 Answer Claude's reply where you read it, paragraph by paragraph.
 
-<img src="docs/img/reply-window.png" alt="The reply window beside the screenshot strip: session tabs on top with the line naming the session under them, Claude's reply with one passage marked :1, a table, an answer in blue under the first question, and the Copy and Send to Session buttons" width="880">
+<img src="docs/img/reply-window.png" alt="The reply window beside the screenshot strip: session tabs on top, a row of pinned replies under them led by Latest, the line naming the session, Claude's reply with one passage marked :1, a table, an answer in blue under the first question, and the Copy and Send to Session buttons" width="880">
 
-1. While a Claude Code session is open, the reply window opens at the top left of the screen, beside the screenshot strip, with a tab for each open session. It shows every reply Claude gave since your last prompt in that session, formatted as in the terminal (tables included). It follows the session you last typed in; click a tab to see another.
+1. While a Claude Code session is open, the reply window opens at the top left of the screen, beside the screenshot strip, with a tab for each open session. It shows every reply Claude gave since your last prompt in that session, formatted as in the terminal (tables included). It follows the session you last typed in, and the session whose terminal you click or switch to; click a tab to see another.
 2. Rest the pointer on a paragraph, a list item or a table. A box opens under it: type your answer. Code blocks show as one line; click one to open it.
 3. Click **Send to Session**. The session's terminal comes to the front with one line in its prompt, such as `:1 Monthly price :3 Wait for Thursday`. Read it, then press Enter.
 
 - Claude gets each paragraph you answered, with your answer.
 - Your answers are kept until you send them, even if you fold the window or restart.
+- Click **Pin** at the top right of a reply to keep it: it becomes a chip under the tabs, still there after newer prompts and restarts. Click the chip to read and answer it again, **Latest** to go back, its x to unpin it. A session keeps 8 pins.
 - **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.
 - The arrow at the top right folds the window to its tabs; click it or a tab to open it again. Drag the tabs' row to move the window and the strip together.
 - Send to Session types only into the session's own terminal window, at the cursor. Text already in the prompt stays as it is.
