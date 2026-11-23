@@ -2322,6 +2322,17 @@ class ReplyApi:
             except OSError:
                 pass  # kept in the page; written with the next change
 
+    def voice(self, on):
+        # Space held in an answer box (on) and let go (off): Windows voice typing started and stopped (agent-reply.py
+        # Voice); answers {on} or {note} when it cannot start, {off}
+        v = self._p.voice
+        if not v:
+            return {"note": "Windows voice typing is not available here."} if on else {"off": False}
+        try:
+            return v.start() if on else v.stop()
+        except Exception:
+            return {"note": "Windows voice typing did not start."} if on else {"off": False}
+
     def send(self, sid, answers):
         try:
             return self._p.reply_send(str(sid), answers)
@@ -2552,6 +2563,14 @@ class Panel:
                 self.pinned = self.reply_mod.Pins()
             except Exception:
                 self.pinned = None
+        # Windows voice typing for an answer box (Space held): keys go only while the reply window is the foreground
+        self.voice = None
+        if self.reply_mod:
+            try:
+                self.voice = self.reply_mod.Voice(
+                    lambda: bool(self.reply_hwnd) and user32.GetForegroundWindow() == self.reply_hwnd)
+            except Exception:
+                self.voice = None
         self.reply_open = local("reply_open") is not False
         self.reply_hwnd, self.reply_ready, self.reply_shown, self.reply_h = None, False, False, 0
         self.reply_key, self.head_key, self.reply_box, self.reply_now = None, None, None, None

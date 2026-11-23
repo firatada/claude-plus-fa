@@ -167,6 +167,12 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .ans:focus, .ans.has { border: 0; border-left: 2px solid var(--blue); border-radius: 0 var(--r-small) var(--r-small) 0;
   background: var(--ans-bg); padding-left: 10px; }
 .ans:focus { box-shadow: 0 0 0 3px rgba(27, 77, 245, .12); }
+/* Space held in a box: Windows voice typing types into it; the line under the box says what is happening */
+.ans.listening { border-left-color: var(--red); box-shadow: 0 0 0 3px rgba(225, 29, 72, .12); }
+.vline { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--muted);
+  font: 400 12px/16px "Segoe UI", system-ui, sans-serif; }
+.vline.on::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.vline.note { color: #92400e; }
 #empty { color: var(--muted); padding: 6px 0; }
 #empty[hidden], #miss[hidden] { display: none; }
 /* selections that are not in the reply text */
@@ -355,6 +361,25 @@ function paraTip(kind, open) {
   return open ? "Click to close the answer box" : `Click to answer this ${what}`;
 }
 
+// Space in an answer box: a tap types a space; held HOLD ms it starts Windows voice typing (Win+H, sent by the panel)
+// until it comes up. st: null (Space up), "wait" (down, not yet a hold), "start" (asked the panel), "on" (listening),
+// "note" (could not start; the note shows). ev: {type: "down" (plain Space; repeat: key repeat), "up", "timer" (HOLD
+// passed), "key" (another key went down), "blur" (the box lost the keyboard)}. Answers {st, act}: act "timer" (start
+// the HOLD timer), "space" (type one space), "start", "stop" or "". A Space key never types by itself: the space of a
+// tap goes in when Space comes up, or at once when another key goes down first (fast typing rolls over), and key
+// repeat never types.
+const HOLD = 400;
+function spaceRule(st, ev) {
+  switch (ev.type) {
+    case "down": return st === null && !ev.repeat ? {st: "wait", act: "timer"} : {st, act: ""};
+    case "timer": return st === "wait" ? {st: "start", act: "start"} : {st, act: ""};
+    case "key": return st === "wait" ? {st: null, act: "space"} : {st, act: ""};
+    case "up": return {st: null, act: st === "wait" ? "space" : st === "start" || st === "on" ? "stop" : ""};
+    case "blur": return {st: null, act: st === "start" || st === "on" ? "stop" : ""};
+  }
+  return {st, act: ""};
+}
+
 // ---------- drawing ----------
 const sources = {};  // key -> the paragraph's source text (what goes into the list when answered)
 function draw() {
@@ -473,7 +498,7 @@ function openBox(p, text, animate) {
     row = document.createElement("div");
     row.className = "ansrow" + (animate ? " new" : "");
     row.dataset.for = p.dataset.key;
-    row.innerHTML = '<textarea class="ans" rows="1" placeholder="Type your answer…" aria-label="Your answer to this paragraph"></textarea>';
+    row.innerHTML = '<textarea class="ans" rows="1" placeholder="Type your answer, or hold Space to speak…" aria-label="Your answer to this paragraph. Hold Space to speak it."></textarea>';
     p.after(row);
   }
   const t = row.firstChild;
@@ -496,6 +521,38 @@ function tipFor(p) {  // the paragraph's tooltip says what a click does; none wh
   if (box && box.value.trim()) delete p.dataset.tip;
   else p.dataset.tip = paraTip(kindOf(p), !!box);
 }
+// ---------- Windows voice typing: Space held in a box (spaceRule() decides, the panel sends Win+H) ----------
+let voiceBox = null, voiceSt = null, voiceTimer = 0, voiceQueue = Promise.resolve();
+function vline(t, kind, text) {  // the line under a box: "" (none), "start", "on" or "note"
+  const row = t.parentElement;
+  let l = row.querySelector(".vline");
+  t.classList.toggle("listening", kind === "on");
+  if (!kind) { if (l) { l.remove(); size(); } return; }
+  if (!l) { l = document.createElement("div"); l.setAttribute("role", "status"); row.append(l); }
+  l.className = "vline " + kind;
+  l.textContent = text;
+  size();
+}
+function voiceStep(t, ev) {
+  const r = spaceRule(voiceSt, ev);
+  voiceSt = r.st;
+  voiceBox = r.st === null ? null : t;
+  if (r.act === "timer") { clearTimeout(voiceTimer); voiceTimer = setTimeout(() => voiceStep(t, {type: "timer"}), HOLD); }
+  else if (r.st !== "wait") clearTimeout(voiceTimer);  // key repeat while waiting keeps the timer
+  if (r.act === "space") { t.focus(); document.execCommand("insertText", false, " "); }  // as typed: undo and input
+  if (r.act === "start") {
+    vline(t, "start", "Starting Windows voice typing…");
+    voiceQueue = voiceQueue.then(() => api().voice(true)).then(a => {
+      if (voiceBox !== t || voiceSt !== "start") return;  // let go meanwhile: the stop queued behind this ends it
+      if (a && a.on) { voiceSt = "on"; vline(t, "on", "Listening… release Space to stop."); }
+      else { voiceSt = "note"; vline(t, "note", (a && a.note) || "Windows voice typing did not start."); }
+    }).catch(() => {});
+  }
+  if (r.act === "stop") {
+    vline(t, "");
+    voiceQueue = voiceQueue.then(() => api().voice(false)).catch(() => {});
+  }
+}
 let saveJob = {};
 function changed(t) {
   const key = t.parentElement.dataset.for;
@@ -512,13 +569,23 @@ function changed(t) {
 document.addEventListener("input", e => { if (e.target.classList.contains("ans")) changed(e.target); });
 let before = "";
 document.addEventListener("focusin", e => { if (e.target.classList.contains("ans")) before = e.target.value; });
+document.addEventListener("keyup", e => {
+  if (e.code === "Space" && voiceBox) voiceStep(voiceBox, {type: "up"});
+});
+addEventListener("blur", () => { if (voiceBox) voiceStep(voiceBox, {type: "blur"}); });  // the window lost the keyboard
 document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
+  if (voiceBox === e.target) voiceStep(e.target, {type: "blur"});
+  vline(e.target, "");
   setTimeout(() => { if (pending) { pending = false; apply(); } }, 0);
 });
 document.addEventListener("keydown", e => {
   sayClear();
   if (!e.target.classList.contains("ans")) return;
+  const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
+  if (e.code === "Space" && plain && !e.isComposing) { e.preventDefault(); voiceStep(e.target, {type: "down", repeat: e.repeat}); return; }
+  if (voiceBox === e.target && e.code !== "Space") voiceStep(e.target, {type: "key"});
+  else if (!voiceBox) vline(e.target, "");  // a note from an earlier hold goes with the next key
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.target.blur(); }  // Enter keeps it; Shift+Enter: a new line
   else if (e.key === "Escape") { e.preventDefault(); e.target.value = before; changed(e.target); e.target.blur(); }
 });

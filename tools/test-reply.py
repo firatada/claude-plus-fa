@@ -294,6 +294,12 @@ out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}
   dragShut: C({moved: true, box: true}), selected: C({selected: true}), dbl: C({detail: 2}), own: C({own: true}),
   ownOpen: C({own: true, box: true})};
 out.tips = [paraTip("p", false), paraTip("li", false), paraTip("table", false), paraTip("table", true)];
+const run = (evs) => { let st = null; const acts = []; for (const e of evs) { const r = spaceRule(st, e); st = r.st; acts.push(r.act); } return [st, acts]; };
+const D = {type: "down", repeat: false}, R = {type: "down", repeat: true}, U = {type: "up"}, T = {type: "timer"},
+  K = {type: "key"}, B = {type: "blur"};
+out.space = {hold: HOLD, tap: run([D, R, U]), hold2: run([D, R, T, R, R, U]), roll: run([D, K, R, U]),
+  lateTimer: run([D, U, T]), blurWait: run([D, B]), blurOn: run([D, T, B]), noteUp: (() => { let r = spaceRule("note", U); return [r.st, r.act]; })(),
+  onKey: (() => { const r = spaceRule("on", K); return [r.st, r.act]; })(), upEarly: run([D, T, U])};
 console.log(JSON.stringify(out));
 """
 
@@ -377,6 +383,48 @@ class Markdown(unittest.TestCase):
     def test_the_hint_says_what_a_click_does(self):
         self.assertEqual(self.md["tips"], ["Click to answer this paragraph", "Click to answer this item",
                                            "Click to answer this table", "Click to close the answer box"])
+
+
+    def test_space_tap_types_one_space_and_a_hold_starts_and_stops_voice_typing(self):
+        sp = self.md["space"]
+        self.assertEqual(sp["hold"], 400)
+        self.assertEqual(sp["tap"], [None, ["timer", "", "space"]])  # key repeat never types; the space at key up
+        self.assertEqual(sp["hold2"], [None, ["timer", "", "start", "", "", "stop"]])  # no space from the repeats
+        self.assertEqual(sp["upEarly"], [None, ["timer", "start", "stop"]])  # let go while the panel was asked
+
+    def test_space_rolled_over_by_the_next_key_goes_in_first(self):
+        self.assertEqual(self.md["space"]["roll"], [None, ["timer", "space", "", ""]])
+
+    def test_space_timer_after_release_and_leaving_the_box(self):
+        sp = self.md["space"]
+        self.assertEqual(sp["lateTimer"], [None, ["timer", "space", ""]])
+        self.assertEqual(sp["blurWait"], [None, ["timer", ""]])
+        self.assertEqual(sp["blurOn"], [None, ["timer", "start", "stop"]])
+        self.assertEqual(sp["noteUp"], [None, ""])  # could not start: nothing to stop, nothing typed
+        self.assertEqual(sp["onKey"], ["on", ""])  # keys typed while listening go in as typed
+
+
+class Voice(unittest.TestCase):
+    """voice_block() on made-up registry values; nothing here sends a key."""
+
+    def block(self, speech=1, policy=None, mic_hklm="Allow", mic_hkcu="Allow", mics=2):
+        import winreg
+        vals = {(winreg.HKEY_CURRENT_USER, ar.SPEECH_KEY, "HasAccepted"): speech,
+                (winreg.HKEY_LOCAL_MACHINE, ar.SPEECH_POLICY, "AllowInputPersonalization"): policy,
+                (winreg.HKEY_LOCAL_MACHINE, ar.MIC_KEY, "Value"): mic_hklm,
+                (winreg.HKEY_CURRENT_USER, ar.MIC_KEY, "Value"): mic_hkcu}
+        return ar.voice_block(read=lambda root, path, name: vals.get((root, path, name)), mics=mics)
+
+    def test_ready(self):
+        self.assertIsNone(self.block())
+
+    def test_each_reason(self):
+        self.assertEqual(self.block(speech=None), ar.VOICE_OFF)  # never turned on (this PC on 2026-11-23)
+        self.assertEqual(self.block(speech=0), ar.VOICE_OFF)
+        self.assertEqual(self.block(policy=0), ar.VOICE_POLICY)
+        self.assertEqual(self.block(mic_hklm="Deny"), ar.VOICE_MIC_DENIED)
+        self.assertEqual(self.block(mic_hkcu="Deny"), ar.VOICE_MIC_DENIED)
+        self.assertEqual(self.block(mics=0), ar.VOICE_NO_MIC)
 
 
 class Pins(unittest.TestCase):
