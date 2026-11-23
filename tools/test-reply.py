@@ -206,6 +206,24 @@ class Drafts(unittest.TestCase):
         self.assertEqual(list(d.get("A")), ["new"])
         self.assertFalse(d.expire("A", 200))
 
+    def test_page_calls_on_threads_of_their_own_lose_nothing(self):
+        # pywebview runs each api.draft() on a thread of its own, beside the panel's loop
+        import threading
+        d = ar.Drafts(self.file)
+
+        def typing(t):
+            for k in range(40):
+                d.put("A", "m#%d-%d" % (t, k), "p", "answer %d" % k)
+                d.expire("A", 1)  # the loop's pass meanwhile (an old prompt: nothing goes)
+        threads = [threading.Thread(target=typing, args=(t,)) for t in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(d.get("A")), 240)
+        self.assertEqual(len(ar.Drafts(self.file).get("A")), 240)  # the file as well
+        self.assertEqual([f for f in os.listdir(os.path.dirname(self.file)) if f.endswith(".tmp")], [])
+
     def test_a_broken_file_starts_empty(self):
         os.makedirs(os.path.dirname(self.file))
         with open(self.file, "w") as f:
@@ -213,28 +231,140 @@ class Drafts(unittest.TestCase):
         self.assertEqual(ar.Drafts(self.file).data, {})
 
 
-class Line(unittest.TestCase):
-    def test_send_line(self):
-        self.assertEqual(ar.send_line([(1, "Monthly price,\n  billed yearly."), (4, "Wait for Thursday.")]),
-                         ":1 Monthly price, billed yearly. :4 Wait for Thursday.")
+PLAN = ("Here is the plan for the release.\n\n1. **Pricing:** monthly or yearly?\n2. Ship it on Thursday?\n"
+        "   It depends on QA.\n3. Tell the team.\n\n| Item | Owner |\n|---|---|\n| Docs | Ada |\n| Tests | Deniz |\n\n"
+        "Reply with :1 yes or :2 no if you like.")
+PLAN_ENDS = [0, 2, 4, 5, 10, 12]  # the last line of each block of PLAN, as the page's blocks() counts them (Markdown)
+PLAN_SENT = (
+    'My answers inside your reply of 17:42 (your reply is quoted with "> ", my answers are marked "My answer:"):\n'
+    "\n"
+    "> Here is the plan for the release.\n"
+    "\n"
+    "My answer: Both, monthly first.\n"
+    "\n"
+    "> 1. **Pricing:** monthly or yearly?\n"
+    "> 2. Ship it on Thursday?\n"
+    ">    It depends on QA.\n"
+    "\n"
+    "My answer: Yes,\n"
+    "if QA passes `:3` cases\n"
+    "\n"
+    "> 3. Tell the team.\n"
+    ">\n"
+    "> | Item | Owner |\n"
+    "> |---|---|\n"
+    "> | Docs | Ada |\n"
+    "> | Tests | Deniz |\n"
+    "\n"
+    "My answer: Add a row for Release notes.\n"
+    "\n"
+    "> Reply with :1 yes or :2 no if you like.")
+PLAN_ANSWERS = [(0, "Here is the plan for the release.", "Both, monthly first."),
+                (4, "2. Ship it on Thursday?\n   It depends on QA.", "  Yes,\nif QA passes :3 cases\n\n"),
+                (10, "| Item | Owner |\n|---|---|\n| Docs | Ada |\n| Tests | Deniz |", "Add a row for Release notes.")]
 
-    def test_empty_answers_left_out(self):
-        self.assertEqual(ar.send_line([(1, "  "), (2, "ok")]), ":2 ok")
 
-    def test_a_typed_marker_inside_an_answer_goes_in_code(self):
-        line = ar.send_line([(1, "as in :3 before"), (2, "ok :x fine 10:30")])
-        self.assertEqual(line, ":1 as in `:3` before :2 ok :x fine 10:30")
-        spec = importlib.util.spec_from_file_location("qr", os.path.join(ROOT, "quote-reply.py"))
-        qr = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(qr)
-        self.assertEqual(qr.parse(line, {1, 2, 3})[0], [(1, "as in `:3` before"), (2, "ok :x fine 10:30")])
+def panel_methods(*names):
+    """Methods of agent-panel.pyw's Panel, in a class of their own (importing it would trip its one-instance mutex)."""
+    with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    panel = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Panel")
+    keep = [n for n in panel.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    ns = {"SEEN_MAX": 400}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+    return type("P", (), {n: ns[n] for n in names})
 
-    def test_copy_text(self):
-        self.assertEqual(ar.copy_text([("1. Should the yearly plan\n   show monthly?", "Monthly."), ("Skip", "  "),
-                                       ("Ship it today?", "Yes,\nbehind the flag.")]),
-                         ":1 Monthly. :2 Yes, behind the flag.\n\n:1\n> 1. Should the yearly plan\n>    show monthly?\n\n"
-                         ":2\n> Ship it today?\n")
-        self.assertEqual(ar.copy_text([("p", " ")]), "")
+
+class Sent(unittest.TestCase):
+    """What Send to Session pastes and Copy copies: each reply answered, whole, quoted, with the answers inside."""
+
+    def test_one_reply_three_answers_in_a_paragraph_a_list_item_and_a_table(self):
+        self.assertEqual(ar.format_answered_replies([(PLAN, "17:42", PLAN_ANSWERS)]), PLAN_SENT)
+
+    def test_the_hook_takes_no_marker_from_the_pasted_reply(self):
+        # a live list holding :1 :2 :3 (terminal selections): the ":1" and ":2" of Claude's quoted text and the ":3"
+        # inside the answer are no markers, so the prompt goes untouched; a ":2" typed after the paste still is one
+        qr = load_quote_reply()
+        self.assertEqual(qr.parse(PLAN_SENT, {1, 2, 3}), ([], [], False))
+        answers, unknown, _ = qr.parse(PLAN_SENT + "\n\n:2 and this selection is fine", {1, 2, 3})
+        self.assertEqual((answers, unknown), ([(2, "and this selection is fine")], []))
+
+    def test_two_replies_each_its_own_block_in_order_unanswered_left_out(self):
+        text = ar.format_answered_replies([("First reply.\n\nSecond paragraph.", "09:05", [(2, "Second paragraph.", "ok")]),
+                               ("Not answered.", "09:10", [(0, "Not answered.", "   ")]),
+                               ("Last one.", "", [(0, "Last one.", "fine")])])
+        self.assertEqual(text, 'My answers inside your reply of 09:05 (your reply is quoted with "> ", my answers are '
+                               'marked "My answer:"):\n\n> First reply.\n>\n> Second paragraph.\n\nMy answer: ok\n\n'
+                               'My answers inside your reply (your reply is quoted with "> ", my answers are marked '
+                               '"My answer:"):\n\n> Last one.\n\nMy answer: fine')
+        self.assertEqual(ar.format_answered_replies([("x", "1", [(0, "x", " ")])]), "")
+
+    def test_a_block_found_by_its_text_when_the_line_does_not_match_and_one_not_found_goes_last(self):
+        text = ar.answer_block("A\n\nB\n\nC", "", [(0, "B", "b!"), (9, "Gone", "g!")])
+        self.assertEqual(text.split("\n")[2:], ["> A", ">", "> B", "", "My answer: b!", "", "> C", "", "> Gone", "",
+                                                "My answer: g!"])
+
+    def test_a_quoted_line_typed_in_an_answer_stays_the_users(self):
+        self.assertEqual(ar.mine("> not Claude's\nmine"), "\\> not Claude's\nmine")
+
+    def test_time_today_and_another_day(self):
+        import time as t
+        now = t.mktime((2026, 11, 23, 18, 0, 0, 0, 0, -1))
+        self.assertEqual(ar.when_of(t.mktime((2026, 11, 23, 17, 42, 0, 0, 0, -1)), now), "17:42")
+        self.assertEqual(ar.when_of(t.mktime((2026, 11, 22, 9, 5, 0, 0, 0, -1)), now), "22 Nov 09:05")
+        self.assertEqual(ar.when_of(None, now), "")
+
+    def test_the_panel_uses_the_text_the_window_was_handed_pinned_replies_too(self):
+        P = panel_methods("seen", "reply_text")
+        p = P()
+        p.reply_mod, p.reply_seen = ar, {}
+        p.seen("s1", "m1", PLAN, None)
+        p.seen("s1", "pin", "An old pinned reply.\n\nIts question?", None)
+        p.seen("s2", "m1", "another session's text", None)
+        answers = [{"key": "m1#%d" % [0, 2, 4][k], "passage": a[1], "text": a[2], "line": a[0]}
+                   for k, a in enumerate(PLAN_ANSWERS)]
+        answers.append({"key": "pin#1", "passage": "Its question?", "text": "Yes.", "line": 2})
+        text = p.reply_text("s1", answers)
+        self.assertTrue(text.startswith(PLAN_SENT.replace("reply of 17:42", "reply")))
+        self.assertTrue(text.endswith("> An old pinned reply.\n>\n> Its question?\n\nMy answer: Yes."))
+        self.assertNotIn("another session", text)
+
+    def test_the_store_keeps_the_newest(self):
+        P = panel_methods("seen")
+        p = P()
+        p.reply_seen = {}
+        for k in range(405):
+            p.seen("s", "m%d" % k, "t", None)
+        self.assertEqual(len(p.reply_seen), 400)
+        self.assertNotIn(("s", "m4"), p.reply_seen)
+        p.seen("s", "m5", "t", None)  # seen again: the newest, so the next to go is m6
+        p.seen("s", "m405", "t", None)
+        self.assertIn(("s", "m5"), p.reply_seen)
+        self.assertNotIn(("s", "m6"), p.reply_seen)
+
+    def test_a_300_line_reply(self):
+        lines = []
+        for k in range(100):
+            lines += ["Paragraph %d says :%d here." % (k, k % 7), "and goes on.", ""]
+        text = "\n".join(lines[:-1])  # 299 lines
+        text += "\n" + "Last line."   # 300
+        self.assertEqual(len(text.split("\n")), 300)
+        out = ar.format_answered_replies([(text, "12:00", [(1, "Paragraph 0 says :0 here.\nand goes on.", "first"),
+                                               (151, "Paragraph 50 says :1 here.\nand goes on.", "middle"),
+                                               (299, "Last line.", "last")])])
+        quoted = [l[2:] if l.startswith("> ") else "" for l in out.split("\n") if l.startswith(">")]
+        self.assertEqual([l for l in quoted if l], [l for l in text.split("\n") if l])
+        self.assertEqual(out.count("My answer: "), 3)
+        self.assertTrue(out.endswith("> Last line.\n\nMy answer: last"))
+        self.assertIn("> and goes on.\n\nMy answer: middle\n\n> Paragraph 51", out)
+        self.assertEqual(load_quote_reply().parse(out, set(range(10))), ([], [], False))
+
+
+def load_quote_reply():
+    spec = importlib.util.spec_from_file_location("qr", os.path.join(ROOT, "quote-reply.py"))
+    qr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qr)
+    return qr
 
 
 def layout():
@@ -305,6 +435,14 @@ out.space = {consts: [WARM, START, HOLD_MS], tap: run([D, U]), tapRepeat: run([D
   blurRec: run([D, T, B]), fail: run([D, T, F, R, U]), recKey: run([D, T, K]), stray: run([R])};
 out.join = [joinDictation("", "", "merhaba"), joinDictation("abc", "", "x"), joinDictation("abc ", "def", "x"),
   joinDictation("abc", " def", "x"), joinDictation("abc\n", "", "x")];
+// the answers Send to Session takes: paragraphs, list items, a table, two replies; one under another chip and an
+// emptied one stay out; in the order the blocks stand, whatever order they were typed in
+const ans = {"m2#0": {text: "six"}, "m1#9": {text: "table"}, "m1#0": {text: "intro"}, "pin#1": {text: "other chip"},
+  "m1#6": {text: "item two"}, "m1#5": {text: "item one"}, "m1#7": {text: "  "}};
+const src = {"m1#0": "Intro.", "m1#5": "1. one", "m1#6": "2. two", "m1#7": "3. three", "m1#9": "| a |\n|---|\n| 1 |", "m2#0": "Second."};
+out.send = sendList(ans, src, ["m1#0", "m1#5", "m1#6", "m1#7", "m1#9", "m2#0"], {"m1#0": 0, "m1#5": 7, "m1#9": 12});
+out.planEnds = blocks(PLAN).map(b => b.last);
+out.sendUnordered = sendList(ans, src, []).length;
 console.log(JSON.stringify(out));
 """
 
@@ -319,6 +457,7 @@ def node_markdown():
     a = page.index("// ---------- Claude's markdown")
     b = page.index("// ---------- drawing ----------")
     import subprocess
+    keep.append("const PLAN = %s;" % json.dumps(PLAN))
     r = subprocess.run([node, "-e", "\n".join(keep) + "\n" + page[a:b] + JS], capture_output=True, text=True,
                        encoding="utf-8", timeout=30)
     if r.returncode:
@@ -388,6 +527,16 @@ class Markdown(unittest.TestCase):
     def test_the_hint_says_what_a_click_does(self):
         self.assertEqual(self.md["tips"], ["Click to answer this paragraph", "Click to answer this item",
                                            "Click to answer this table"])
+
+    def test_send_takes_every_answer_shown_in_block_order(self):
+        self.assertEqual([(a["key"], a["text"], a["passage"]) for a in self.md["send"]],
+                         [("m1#0", "intro", "Intro."), ("m1#5", "item one", "1. one"), ("m1#6", "item two", "2. two"),
+                          ("m1#9", "table", "| a |\n|---|\n| 1 |"), ("m2#0", "six", "Second.")])
+        self.assertEqual(self.md["sendUnordered"], 5)  # the bar's count: the same answers
+        self.assertEqual([a["line"] for a in self.md["send"]], [0, 7, -1, 12, -1])  # -1: no line known
+
+    def test_each_block_names_its_last_line_where_its_answer_goes(self):
+        self.assertEqual(self.md["planEnds"], PLAN_ENDS)
 
     def test_tab_goes_to_the_next_block_and_shift_tab_back_ending_at_either_end(self):
         self.assertEqual(self.md["tab"], [1, 4, -1, 3, -1, -1, -1])
@@ -692,6 +841,35 @@ class Follow(unittest.TestCase):
         self.assertIsNone(self.go((60, "✳ closed")))  # a closed session
         self.assertIsNone(self.go(None))
         self.assertIsNone(self.go((0, "")))
+
+
+class SendFront(unittest.TestCase):
+    """front_state(): whether Send to Session may type into the session's terminal (10) and the user sees it come
+    up: the window in front, nothing over it, a Claude Code tab, its own tab when the window holds several."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "front_state"]
+        keep += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "CLAUDE_TITLE" for t in n.targets)]
+        ns = {"re": re}
+        exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+        self.f = ns["front_state"]
+
+    def test_in_front_and_on_top(self):
+        self.assertEqual(self.f(10, 10, 10, "✳ alpha", "alpha", False), "")
+        self.assertEqual(self.f(10, 10, 10, "✳ alpha", "alpha", True), "")
+
+    def test_the_foreground_covered_by_another_window_is_not_enough(self):
+        self.assertEqual(self.f(10, 10, 40, "✳ alpha", "alpha", False), "another window covers it")
+
+    def test_not_in_front(self):
+        self.assertEqual(self.f(10, 30, 10, "✳ alpha", "alpha", False), "it is not the window in front")
+
+    def test_tabs(self):
+        self.assertEqual(self.f(10, 10, 10, "✳ beta", "alpha", True), "another tab is showing")
+        self.assertEqual(self.f(10, 10, 10, "✳ beta", "alpha", False), "")  # its only session, whatever its title
+        self.assertEqual(self.f(10, 10, 10, "Windows PowerShell", "alpha", False), "it shows no Claude Code tab")
 
 
 if __name__ == "__main__":

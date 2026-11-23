@@ -242,6 +242,11 @@ REPLY_W = 820          # logical pixels: the reply window's width, left of the s
 REPLY_MIN = REPLY_W    # logical pixels the reply window keeps beside the screenshots (they wrap into rows first)
 REPLY_BELOW = 8        # logical pixels the reply window keeps from the work area's bottom; taller, it scrolls inside
 SEND_WAIT = 4          # seconds Send to Session waits for the terminal to read the line it pastes
+SEND_FRONT = 1.5       # seconds it gives the terminal to be in front, on top and showing the session's tab
+SEEN_MAX = 400         # replies kept by message id for Send to Session and Copy (Panel.reply_seen)
+SEND_SETTLE = 0.25     # seconds between the terminal coming in front and the paste: the terminal reports the focus to
+                       # Claude Code (a focus-in sequence) on its own, not in the same read as the pasted line
+SEND_LOG = os.path.join(STATE_DIR, "reply-send.log")  # one line per step of every Send to Session (no text sent)
 QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
          os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
 VIEW_TITLE = "Field Agents Screenshot"
@@ -730,14 +735,22 @@ def link_raise(flash, shown, fg, wins, pid_of, click, now, used, wait=LINK_WAIT)
 
 
 def links_log(*a):
-    """A line in LINKS_LOG, cut back to its last 32 KB past 64 KB."""
+    append_log(LINKS_LOG, *a)
+
+
+def send_log(*a):
+    append_log(SEND_LOG, *a)
+
+
+def append_log(path, *a):
+    """A line in a log, cut back to its last 32 KB past 64 KB."""
     try:
-        if os.path.exists(LINKS_LOG) and os.path.getsize(LINKS_LOG) > 65536:
-            with open(LINKS_LOG, encoding="utf-8", errors="replace") as f:
+        if os.path.exists(path) and os.path.getsize(path) > 65536:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 tail = f.read()[-32768:]
-            with open(LINKS_LOG, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(tail)
-        with open(LINKS_LOG, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), " ".join(str(x) for x in a)))
     except OSError:
         pass
@@ -763,6 +776,22 @@ def focus_session(s, others=()):
             if name in window_title(hwnd):
                 break
     return True
+
+
+def front_state(hwnd, fg, top, title, name, shared):
+    """Where a session's terminal (hwnd) stands for Send to Session to type into it, given the foreground window
+    (fg), the top ordinary window (top, top_window()), its title and whether the window holds other sessions' tabs
+    (shared): "" when the line can go in and the user sees it, else what is missing. The foreground alone is not
+    enough: another window can cover the foreground one, and then the user sees nothing come up."""
+    if fg != hwnd:
+        return "it is not the window in front"
+    if top != hwnd:
+        return "another window covers it"
+    if not CLAUDE_TITLE.match(title or ""):
+        return "it shows no Claude Code tab"
+    if shared and name and name not in title:
+        return "another tab is showing"
+    return ""
 
 
 def own(hwnd):
@@ -2401,11 +2430,11 @@ class ReplyApi:
         except Exception as e:
             return err("Could not pin it: %s." % e)
 
-    def copy(self, answers):
-        mod = self._p.reply_mod
+    def copy(self, sid, answers):
+        # Copy: the same text Send to Session pastes (Panel.reply_text)
         try:
-            text = mod.copy_text([(str(a.get("passage") or ""), str(a.get("text") or "")) for a in answers])
-            return bool(text) and mod.set_clipboard_text(text)
+            text = self._p.reply_text(str(sid), answers)
+            return bool(text) and self._p.reply_mod.set_clipboard_text(text)
         except Exception:
             return False
 
@@ -2612,6 +2641,9 @@ class Panel:
                 self.drafts = None
         self.reads, self.tabs, self.reply_sid, self.reply_pick = {}, [], None, None
         self.front_key = None  # (window, shown name) in front at the last poll turn (follow_terminal)
+        # every reply the page was handed, {(session id, message id): (text, at)}, newest last, SEEN_MAX at most: Send
+        # to Session and Copy put in exactly the text the window showed, even one held while an answer box was typed in
+        self.reply_seen = {}
         self.pinned = None  # the replies pinned per session (agent-reply.py Pins)
         if self.reply_mod:
             try:
@@ -4031,6 +4063,10 @@ class Panel:
             note = "No reply since your prompt%s yet." % (" of " + pt if pt else "")
         state = {"sid": s["id"], "name": name, "replies": reps, "selections": sels, "note": note,
                  "answers": self.drafts.get(s["id"]) if self.drafts else {}, "pins": self.pins_of(s["id"])}
+        for r in t.replies():
+            self.seen(s["id"], r["id"], r["text"], r["at"])
+        for p in (self.pinned.get(s["id"]) if self.pinned else []):
+            self.seen(s["id"], p["id"], p["text"], p.get("at"))
         key = json.dumps(state, sort_keys=True)
         if key == self.reply_key:
             return
@@ -4102,55 +4138,78 @@ class Panel:
             self.reply_now = place
             user32.SetWindowPos(self.reply_hwnd, 0, x, y, w, h, 0x0004 | 0x0010 | 0x0040)
 
+    def seen(self, sid, rid, text, at):
+        k = (sid, rid)
+        self.reply_seen.pop(k, None)
+        self.reply_seen[k] = (text, at)
+        while len(self.reply_seen) > SEEN_MAX:
+            self.reply_seen.pop(next(iter(self.reply_seen)))
+
+    def reply_text(self, sid, answers):
+        """What Send to Session pastes and Copy copies: each reply answered, in the order its answers come
+        ([{key "<message id>#<block>", passage, text, line}], as the page's sendList() gives them), its text as the
+        window was handed it (reply_seen, by message id) with the answers inside it (agent-reply.py format_answered_replies())."""
+        mod, order, by = self.reply_mod, [], {}
+        for a in answers:
+            rid = str(a.get("key") or "").rpartition("#")[0]
+            if rid not in by:
+                order.append(rid)
+                by[rid] = []
+            try:
+                line = int(a.get("line"))
+            except (TypeError, ValueError):
+                line = -1
+            by[rid].append((line, str(a.get("passage") or ""), str(a.get("text") or "")))
+        groups = []
+        for rid in order:
+            text, at = self.reply_seen.get((sid, rid)) or (None, None)
+            groups.append((text, mod.when_of(at), by[rid]))
+        return mod.format_answered_replies(groups)
+
     def reply_send(self, sid, answers):
-        """Send to Session: the answered paragraphs join the session's numbered ":N" list (as selections do, so
-        quote-reply.py sends each with its answer), its terminal comes to the front, and the one line ":N answer
-        :N answer" is typed into its prompt through the paste key's process, at the cursor, without Enter. The
-        draft goes once the terminal has read the line; a failure takes the new entries out of the list again."""
-        q, mod = self.quote_mod, self.reply_mod
+        """Send to Session: each reply answered, whole, with the answers inside it (reply_text()), pasted into the
+        session's prompt through the paste key's process, at the cursor, without Enter, with its terminal in front.
+        Claude Code shows a paste of several lines folded ("[Pasted text #1 +N lines]") and sends it whole. The
+        sent answers' drafts go once the terminal has read the paste."""
         s = next((o for o in self.sessions if o["id"] == sid and o.get("status") and o.get("pid")), None)
         if not s:
             return err("That session is closed. Use Copy and paste it where you need it.")
-        pairs = [(str(a.get("passage") or ""), str(a.get("text") or "")) for a in answers
-                 if str(a.get("text") or "").strip()]
-        if not pairs:
+        if not self.reply_mod:
+            return err("The reply rules did not load. Use Copy.")
+        text = self.reply_text(sid, answers)
+        if not text:
             return err("Type an answer under a paragraph first.")
-        if not q or not self.quote_on:
-            return err("The numbered list is off (the screenshot strip or the keeper is off). Use Copy.")
         h = paste_window()
         if not h:
-            return err('The paste key is not running ("paste_keys" is off), so nothing can be typed. Use Copy.')
+            return err('The paste key is not running ("paste_keys" is off), so nothing can be pasted. Use Copy.')
         hwnd = self.window_for(s)
         if not hwnd:
             return err("Its terminal window was not found. Use Copy.")
         name = s.get("name") or s.get("title") or "the session"
-        added, nums = [], []
-        with self.qlock:
-            for passage, _ in pairs:
-                p = q.passage(passage) or (" ", 0)
-                if q.add(self.qlists, sid, name, None, p[0], p[1], time.time()):
-                    added.append(self.qlists[sid]["items"][-1]["n"])
-                nums.append(self.qlists[sid]["items"][-1]["n"])
-            self.quote_save()
-        line = mod.send_line(list(zip(nums, [a for _, a in pairs])))
 
-        def undo(msg):
-            with self.qlock:
-                for n in added:
-                    q.drop(self.qlists, sid, n)
-                self.quote_save()
-            return err(msg)
+        def where():
+            return front_state(hwnd, user32.GetForegroundWindow(), top_window(), window_title(hwnd), s.get("name"),
+                               self.shared(s, hwnd))
+        sent = [a for a in answers if str(a.get("text") or "").strip()]
+        send_log("send", sid[:8], "answers %d" % len(sent), "characters %d" % len(text),
+                 "lines %d" % (text.count("\n") + 1))
         focus_session(s, self.other_names(s))
-        for _ in range(20):  # the terminal in front with the session's own tab showing
-            title = window_title(hwnd)
-            if user32.GetForegroundWindow() == hwnd and CLAUDE_TITLE.match(title) and \
-                    (not self.shared(s, hwnd) or not s.get("name") or s["name"] in title):
+        start = time.time()
+        again = True
+        while True:  # in front, nothing over it, the session's own tab showing
+            why = where()
+            if not why or time.time() - start > SEND_FRONT:
                 break
+            if again and time.time() - start > SEND_FRONT / 2:
+                again = False
+                bring_front(hwnd)  # once more: a window that came up over it meanwhile, a foreground refused
             time.sleep(0.05)
-        else:
-            return undo("Could not bring the terminal of %s to the front with its tab showing. Use Copy." % name)
+        send_log("front", why or "ok", "%.2f s" % (time.time() - start))
+        if why:
+            return err("Could not bring the terminal of %s to the front: %s. Use Copy." % (name, why))
+        time.sleep(SEND_SETTLE)
         rid = int(time.time() * 1000) % 2000000000
-        data = json.dumps({"id": rid, "hwnd": int(hwnd), "text": line}).encode("utf-8")
+        data = json.dumps({"id": rid, "hwnd": int(hwnd), "text": text}).encode("utf-8")
         buf = ctypes.create_string_buffer(data, len(data))
         cds = COPYDATASTRUCT(TYPE_TEXT, len(data), ctypes.cast(buf, ctypes.c_void_p))
         res = ctypes.c_size_t()
@@ -4158,22 +4217,31 @@ class Panel:
                 or res.value != 1:  # WM_COPYDATA, SMTO_ABORTIFHUNG
             why = {2: "the paste key is busy", 3: "the terminal left the front",
                    4: "its window shows no Claude Code tab"}.get(res.value, "the paste key did not answer")
-            return undo("Could not type it: %s. Use Copy." % why)
+            send_log("paste key", why)
+            return err("Could not paste it: %s. Use Copy." % why)
         got, end = 0, time.time() + SEND_WAIT
         while time.time() < end and not got:
             time.sleep(0.05)
             r = ctypes.c_size_t()
             if user32.SendMessageTimeoutW(h, 0x8002, rid, 0, 0x0002, 500, ctypes.byref(r)):  # WM_TYPED
                 got = r.value
+        send_log("typed", {1: "read"}.get(got, "not read (%d)" % got))
         if got != 1:
-            return undo("The terminal did not take the line. Use Copy.")
+            return err("The terminal did not take the paste. Use Copy.")
+        # the paste is in its prompt: the terminal stays where the user sees it, raised again if anything came over it
+        after = where()
+        if after:
+            bring_front(hwnd)
+            send_log("after", after, "raised again:", where() or "ok")
         if self.drafts:  # only the answers sent: those under another chip stay
             try:
-                self.drafts.clear(sid, [str(a.get("key")) for a in answers if a.get("key")])
+                self.drafts.clear(sid, [str(a.get("key")) for a in sent if a.get("key")])
             except OSError:
                 pass
         self.reply_key = None
-        return ok("Typed into %s as %s. Press Enter there to send it." % (name, " ".join(":%d" % n for n in nums)))
+        n = len(sent)
+        return ok("Pasted into %s: %d answer%s inside the reply. Press Enter there to send it."
+                  % (name, n, "" if n == 1 else "s"))
 
     def quote_load(self):
         """The ":" reply's lists as the last run left them (LIST: {session id: list}), so a restart (a reinstall)

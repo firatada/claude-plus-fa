@@ -1,9 +1,8 @@
 # The Field Agents reply window's rules, loaded by agent-panel.pyw (importlib): Claude's replies in a session since
 # the prompt the user last typed there, read from its transcript a piece at a time; the answers drafted under them,
-# kept per session until they are sent; the replies pinned per session; the one line Send to Session types into the
-# session's prompt, and the text Copy puts on the clipboard; dictation for an answer box held with Space (Dictation:
-# the recording to a local speech-to-text server, its text back). tools/test-reply.py tests them on made-up
-# transcripts and a stand-in server.
+# kept per session until they are sent; the replies pinned per session; the text Send to Session pastes into the
+# session's prompt (each reply answered, whole, with the answers inside it), which Copy puts on the clipboard;
+# Holding Space dictates through a local speech-to-text server (Dictation).
 #
 # A reply is the text of one main-thread assistant message that ended its turn (stop_reason "end_turn"): its text
 # blocks, joined. Not a reply: thinking, tool calls and their results, the text Claude writes between tool calls
@@ -20,6 +19,8 @@ DRAFTS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel"
 PINS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-pins.json")
 PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
+HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers are marked "My answer:"):'
+ANSWER = "My answer:"  # leads each answer inside the quoted reply
 
 
 def stamp(ts):
@@ -130,6 +131,15 @@ def load_json(path):
         return {}
 
 
+def locked(f):
+    """A store's method, run under its lock."""
+    def run(self, *a, **k):
+        with self.lock:
+            return f(self, *a, **k)
+    run.__doc__ = f.__doc__
+    return run
+
+
 class Drafts:
     """The answers typed under a session's paragraphs, kept in DRAFTS across closes and restarts until they are
     sent: {session id: {paragraph key: {"text", "passage", "at"}}}. A key is "<message id>#<block>". An answer goes
@@ -137,12 +147,16 @@ class Drafts:
 
     def __init__(self, path=DRAFTS):
         self.path = path
+        # pywebview runs every page call on a thread of its own, beside the panel's loop (expire, get): one at a time
+        self.lock = threading.RLock()
         self.data = {sid: {k: a for k, a in (d or {}).items() if isinstance(a, dict) and a.get("text")}
                      for sid, d in load_json(path).items() if isinstance(d, dict)}
 
+    @locked
     def get(self, sid):
         return dict(self.data.get(sid) or {})
 
+    @locked
     def put(self, sid, key, passage, text, now=None):
         """One answer typed, changed or emptied (empty: gone). True when the store changed."""
         d = self.data.setdefault(sid, {})
@@ -161,6 +175,7 @@ class Drafts:
         self.save()
         return True
 
+    @locked
     def clear(self, sid, keys=None):
         """Sent: the session's answers go (only those keys, when given)."""
         d = self.data.get(sid)
@@ -173,6 +188,7 @@ class Drafts:
         self.save()
         return True
 
+    @locked
     def expire(self, sid, prompt_at):
         """A prompt typed at prompt_at: the answers written before it go."""
         d = self.data.get(sid)
@@ -187,7 +203,7 @@ class Drafts:
 
 def save_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = "%s.%d.tmp" % (path, os.getpid())
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())  # two threads never share one
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -267,28 +283,86 @@ def pin_label(text, words=5, cap=32):
     return "Reply"
 
 
-# ---------- the line sent, the text copied ----------
-def one_line(text):
-    """An answer as one line: lines joined with a space, whitespace collapsed. A ":N" the user typed inside it goes
-    in backticks, so quote-reply.py never takes it for a marker of its own (code is never a marker)."""
-    return MARKER.sub(lambda m: "`%s`" % m.group(0), " ".join((text or "").split()))
-
-
-def send_line(pairs):
-    """The one line typed into the session's prompt: ":N answer" for each (number in the session's list, answer)."""
-    return " ".join(":%d %s" % (n, one_line(a)) for n, a in pairs if one_line(a))
-
-
-def copy_text(answers):
-    """Copy: the same line, numbered 1, 2, ... in the window's order, then each passage under its number, for a
-    prompt or a message anywhere else. answers: [(passage, answer)]."""
-    answers = [(p, a) for p, a in answers if one_line(a)]
-    if not answers:
+# ---------- the text sent, the text copied ----------
+def when_of(at, now=None):
+    """A reply's time as its heading names it: "17:42" today, "22 Nov 17:42" another day; "" when unknown."""
+    if not at:
         return ""
-    out = [send_line((k + 1, a) for k, (_, a) in enumerate(answers)), ""]
-    for k, (p, _) in enumerate(answers):
-        out += [":%d" % (k + 1)] + ["> " + line if line.strip() else ">" for line in p.strip().splitlines()] + [""]
-    return "\n".join(out).rstrip() + "\n"
+    lt, now = time.localtime(at), time.localtime(now if now is not None else time.time())
+    return time.strftime("%H:%M" if lt[:3] == now[:3] else "%d %b %H:%M", lt)
+
+
+def mine(text):
+    """An answer as it goes inside the reply: its lines as typed (trailing spaces and blank lines at either end
+    left out). A ":N" in it goes in backticks and a line starting with ">" gets a backslash, so quote-reply.py
+    never takes it for a marker and nobody takes it for a quoted line of the reply."""
+    lines = [l.rstrip() for l in (text or "").replace("\r\n", "\n").split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        lines[0] = lines[0].lstrip()  # it follows "My answer: "
+    lines =["\\" + l if l.lstrip().startswith(">") else l for l in lines]
+    return MARKER.sub(lambda m: "`%s`" % m.group(0), "\n".join(lines))
+
+
+def place(lines, line, passage):
+    """Where an answer goes: after line (the index of its block's last line, as the page's blocks() counted it)
+    when that line is the passage's last; else after the first line that is; None when no line is."""
+    want = [l for l in (passage or "").split("\n") if l.strip()]
+    if not want:
+        return None
+    key = lambda l: l.strip().lstrip(">").strip()
+    if isinstance(line, int) and 0 <= line < len(lines) and key(lines[line]) == key(want[-1]):
+        return line
+    return next((k for k, l in enumerate(lines) if l.strip() and key(l) == key(want[-1])), None)
+
+
+def quote(lines):
+    return ["> " + l if l.strip() else ">" for l in lines]
+
+
+def answer_block(text, when, answers):
+    """One reply with the user's answers inside it, as Send to Session pastes it: a heading line, then the reply's
+    lines exactly as stored, each quoted with "> ", and each answer unquoted right after the line that ends the block
+    it answers, led by "My answer:" and parted from the quoted lines by a blank line (the quoted blank lines that
+    stood there are left out). answers: [(line, passage, answer)]. An answer whose block is not found in text (a
+    reply no longer stored) goes at the end after its own passage, quoted. "" when no answer has text."""
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    at, loose = {}, []
+    for line, passage, a in answers:
+        a = mine(a)
+        if not a:
+            continue
+        k = place(lines, line, passage)
+        if k is None:
+            loose.append((passage, a))
+        else:
+            at.setdefault(k, []).append(a)
+    if not at and not loose:
+        return ""
+    out = [HEAD % ("your reply of " + when if when else "your reply"), ""]
+    gap = True  # after the heading or an answer: the reply's blank lines there are left out
+    for k, l in enumerate(lines if text else []):
+        if gap and not l.strip():
+            continue
+        gap = False
+        out += quote([l])
+        for a in at.get(k, []):
+            out += ["", ANSWER + " " + a, ""]
+            gap = True
+    for passage, a in loose:
+        out += [""] + quote(passage.strip("\n").split("\n")) + ["", ANSWER + " " + a, ""]
+    while out and out[-1] in ("", ">"):
+        out.pop()
+    return "\n".join(out)
+
+
+def format_answered_replies(replies):
+    """Send to Session's paste and Copy's text: answer_block() of each reply answered, in order, a blank line
+    between them. replies: [(text, when, answers)]."""
+    return "\n\n".join(b for b in (answer_block(*r) for r in replies) if b)
 
 
 def set_clipboard_text(text):

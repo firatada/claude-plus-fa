@@ -22,9 +22,10 @@
      until it is sent; a box with a kept answer is open when the reply is shown.
      Code blocks show shut, as one line (language, lines, first line), and open on a click. The passages selected
      in the terminal for the ":N" reply show marked where they stand, led by their ":N"; one that is not in the
-     reply text is listed at the bottom. The bar at the bottom counts the answers and selections; Copy puts the
-     answers as one line plus the paragraphs they answer on the clipboard; Send to Session puts those paragraphs in
-     the session's numbered list and types the one line ":N answer :N answer" into its prompt, without Enter.
+     reply text is listed at the bottom. The bar at the bottom counts the answers and selections; Send to Session pastes
+     into the session's prompt, without Enter, each reply answered, whole, with the answers inside it (agent-reply.py
+     answer_text(): the reply quoted with "> ", each answer unquoted after the block it answers, led by "My answer:");
+     Copy puts the same text on the clipboard.
      The window grows with its content; taller than the screen allows, the replies scroll inside. agent-panel.pyw
      sizes it from what api.size() reports. Spark tokens as in agent-panel.html.
      Pins (2026-11-23): every reply carries Pin at the right of its top line (the strip's Pin: blue when on).
@@ -218,7 +219,7 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 <div id="body"><div id="empty" hidden></div><div id="replies"></div></div>
 <div id="miss" hidden></div>
 <div id="foot"><span id="count"></span><span id="say" role="status"></span>
-  <button type="button" class="b" id="copy" data-tip="Copies the answers as one line, then the paragraphs they answer, to paste anywhere."><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
+  <button type="button" class="b" id="copy" data-tip="Copies the replies you answered, each with your answers inside it, to paste anywhere."><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
   <button type="button" class="b primary" id="send"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7h9M7.5 3.5L11 7l-3.5 3.5"/></svg>Send to Session</button>
 </div>
 <script>
@@ -239,8 +240,10 @@ const opened = new Set();  // paragraph keys whose answer box is open while empt
 // ---------- Claude's markdown, as blocks; each answerable block keeps its own source text ----------
 function blocks(text) {
   const lines = text.replace(/\r\n/g, "\n").split("\n"), out = [];
-  let i = 0, para = null;
-  const flush = () => { if (para) { out.push({kind: "p", src: para.join("\n")}); para = null; } };
+  // every block a box can answer carries last: the index of its last line in text's lines, where Send to Session
+  // puts its answer (agent-reply.py answer_block())
+  let i = 0, para = null, paraAt = 0;
+  const flush = () => { if (para) { out.push({kind: "p", src: para.join("\n"), last: paraAt + para.length - 1}); para = null; } };
   while (i < lines.length) {
     const line = lines[i];
     const fence = line.match(/^ {0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/);
@@ -255,7 +258,7 @@ function blocks(text) {
     }
     if (!line.trim()) { flush(); i++; continue; }
     let m;
-    if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flush(); out.push({kind: "h", level: m[1].length, src: line, text: m[2]}); i++; continue; }
+    if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flush(); out.push({kind: "h", level: m[1].length, src: line, text: m[2], last: i}); i++; continue; }
     if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); out.push({kind: "hr"}); i++; continue; }
     if (line.includes("|") && i + 1 < lines.length && SEP.test(lines[i + 1]) && lines[i + 1].includes("|")) {
       // a table (GFM): a header row, the row of dashes (colons set each column's alignment), then every
@@ -265,21 +268,21 @@ function blocks(text) {
       const src = [line, lines[i + 1]], rows = [];
       i += 2;
       while (i < lines.length && lines[i].trim() && lines[i].includes("|")) { src.push(lines[i]); rows.push(cells(lines[i])); i++; }
-      out.push({kind: "table", src: src.join("\n"), head, align, rows});
+      out.push({kind: "table", src: src.join("\n"), head, align, rows, last: i - 1});
       continue;
     }
     if (/^\s*\|/.test(line)) {  // lines that start with "|" but are no table: kept as written, in monospace
       flush();
       const rows = [];
       while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
-      out.push({kind: "pre", src: rows.join("\n")});
+      out.push({kind: "pre", src: rows.join("\n"), last: i - 1});
       continue;
     }
     if ((m = line.match(/^\s*>\s?(.*)$/))) {
       flush();
       const rows = [];
       while (i < lines.length && (m = lines[i].match(/^\s*>\s?(.*)$/))) { rows.push(m[1]); i++; }
-      out.push({kind: "quote", src: rows.map(r => "> " + r).join("\n"), text: rows.join("\n")});
+      out.push({kind: "quote", src: rows.map(r => "> " + r).join("\n"), text: rows.join("\n"), last: i - 1});
       continue;
     }
     if ((m = line.match(/^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/))) {
@@ -288,10 +291,11 @@ function blocks(text) {
       i++;
       while (i < lines.length && lines[i].trim() && !/^(\s*)([-*+]|\d{1,3}[.)])\s+/.test(lines[i]) &&
              !/^ {0,3}(`{3,}|~{3,})/.test(lines[i]) && /^\s+/.test(lines[i])) { src.push(lines[i]); text.push(lines[i].trim()); i++; }
-      out.push({kind: "li", src: src.join("\n"), marker: /\d/.test(m[2]) ? m[2] : "•", indent, text: text.join(" ")});
+      out.push({kind: "li", src: src.join("\n"), marker: /\d/.test(m[2]) ? m[2] : "•", indent, text: text.join(" "), last: i - 1});
       continue;
     }
-    (para = para || []).push(line);
+    if (!para) { para = []; paraAt = i; }
+    para.push(line);
     i++;
   }
   flush();
@@ -412,15 +416,29 @@ function joinDictation(before, after, text) {
   return {s: pre + text + post, caret: pre.length + text.length};
 }
 
+// Copy and Send to Session take every answer under what is shown, the same ones the bar counts, in the order their
+// blocks stand: the page's answers, not the boxes in the page (one answered and not drawn open still goes).
+// answers {key: {text}}, sources {key: passage} of the blocks shown, order [key, ...] as they stand, ends {key: the
+// index of the block's last line in its reply} (agent-reply.py puts the answer after that line). Pure, so
+// tools/test-reply.py runs it in node.
+function sendList(answers, sources, order, ends) {
+  const at = k => { const i = order.indexOf(k); return i < 0 ? order.length : i; };
+  return Object.keys(answers).filter(k => k in sources && String(answers[k].text || "").trim())
+    .sort((a, b) => at(a) - at(b))
+    .map(key => ({key, passage: sources[key], text: answers[key].text, line: ends && key in ends ? ends[key] : -1}));
+}
+
 // ---------- drawing ----------
-const sources = {};  // key -> the paragraph's source text (what goes into the list when answered)
+const sources = {};  // key -> the paragraph's source text
+const ends = {};     // key -> the index of its last line in the reply's text (where Send to Session puts the answer)
 function draw() {
   const list = $("replies");
   for (const k of Object.keys(sources)) delete sources[k];
+  for (const k of Object.keys(ends)) delete ends[k];
   const reps = shownReplies(), pinned = new Set((S.pins || []).map(p => p.id));
   list.innerHTML = reps.map(r => {
     const bs = blocks(r.text), on = pinned.has(r.id);
-    bs.forEach((b, n) => { if (b.src !== undefined) sources[r.id + "#" + n] = b.src; });
+    bs.forEach((b, n) => { if (b.src !== undefined) { sources[r.id + "#" + n] = b.src; ends[r.id + "#" + n] = b.last; } });
     const tip = on ? "Unpins this reply: its chip under the tabs goes" : "Keeps this reply as a chip under the tabs, after newer prompts and restarts";
     return `<div class="reply" data-id="${esc(r.id)}"><div class="rtop"><span class="when">${esc(r.when || "")}</span><button type="button" class="rpin${on ? " on" : ""}" aria-pressed="${on}" aria-label="Pin this reply" data-tip="${tip}">Pin</button></div>${bs.map((b, n) => blockHtml(b, r.id + "#" + n)).join("")}</div>`;
   }).join("");
@@ -509,14 +527,14 @@ function mark() {
 function count() {
   // the answers under what is shown now are the ones Copy and Send to Session take; those under another chip wait
   const all = Object.entries(answers).filter(([, a]) => a.text.trim()), s = (S && S.selections || []).length;
-  const n = all.filter(([k]) => k in sources).length, other = all.length - n;
+  const n = sendList(answers, sources, []).length, other = all.length - n;
   const parts = [n ? `<b>${n} answer${n === 1 ? "" : "s"}</b>` : "No answer yet"];
   if (other) parts.push(`${other} more under another chip`);
   if (s) parts.push(`${s} selection${s === 1 ? "" : "s"}`);
   if (all.length) parts.push("draft kept");
   $("count").innerHTML = parts.join(" · ");
   $("copy").disabled = $("send").disabled = !n;
-  $("send").dataset.tip = S ? `Types the answers into the prompt of ${S.name} as one line (:1 answer :2 answer). Nothing is sent until you press Enter there.` : "";
+  $("send").dataset.tip = S ? `Pastes the replies you answered, with your answers inside them, into the prompt of ${S.name}. Nothing is sent until you press Enter there.` : "";
   size();
 }
 
@@ -733,8 +751,10 @@ function changed(t) {
   grow(t);
   count();
   clearTimeout(saveJob[key]);
-  const sid = S.sid;
-  saveJob[key] = setTimeout(() => api().draft(sid, key, sources[key] || "", t.value), 300);
+  // the session, the passage and the text as typed now: a redraw before the save fires must not change where the
+  // draft goes (S and sources belong to what is drawn when it fires)
+  const sid = S.sid, passage = sources[key] || "", text = t.value;
+  saveJob[key] = setTimeout(() => api().draft(sid, key, passage, text), 300);
 }
 document.addEventListener("input", e => { if (e.target.classList.contains("ans")) changed(e.target); });
 document.addEventListener("keyup", e => {
@@ -745,7 +765,7 @@ document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
   if (spaceBox === e.target) spaceStep(e.target, {type: "blur"});
   if (!busy.has(e.target)) vline(e.target, "");  // "Transcribing…" stays: its text still comes
-  setTimeout(() => { if (pending) { pending = false; apply(); } }, 0);
+  setTimeout(() => { if (pending && !typing()) { pending = false; flush(); } }, 0);  // Tab to the next box: still held
 });
 // Tab and Shift+Tab keep the box's text and open the next (previous) block's box with the caret in it, scrolled into
 // view; a box left empty closes, so tabbing past blocks leaves no trail; at the last (first) block the box is only left.
@@ -864,9 +884,8 @@ function askHide() {
 }
 
 // ---------- Copy and Send to Session ----------
-function ordered() {  // the answers in the order their paragraphs stand
-  return [...document.querySelectorAll("#replies .ansrow")].map(r => ({key: r.dataset.for, passage: sources[r.dataset.for] || "", text: r.firstChild.value}))
-    .filter(a => a.text.trim());
+function ordered() {
+  return sendList(answers, sources, [...document.querySelectorAll("#replies .para")].map(p => p.dataset.key), ends);
 }
 let sayJob = null;
 function say(t, err) {
@@ -878,7 +897,7 @@ function say(t, err) {
 function sayClear() { if ($("say").classList.contains("err")) say(""); }
 document.addEventListener("pointerdown", sayClear, true);
 $("copy").addEventListener("click", () => {
-  api().copy(ordered()).then(ok => say(ok ? "Copied" : "Could not copy: another program holds the clipboard. Try again.", !ok));
+  api().copy(S.sid, ordered()).then(ok => say(ok ? "Copied" : "Could not copy: another program holds the clipboard. Try again.", !ok));
 });
 $("send").addEventListener("click", () => {
   const sid = S.sid, list = ordered();
@@ -963,9 +982,19 @@ function size() {
 }
 
 // ---------- from agent-panel.pyw ----------
-let pending = false;
+// While an answer box has the keyboard nothing is redrawn, and what agent-panel.pyw sends meanwhile (another session
+// shown: a prompt typed in another tab, another terminal brought forward) is held whole, S and the tabs included, until
+// the box is left: the page goes on being the session drawn, so the answers typed meanwhile are saved, counted and
+// sent as that session's. (Before 2026-11-23 S was swapped at once while only the redraw waited, so those answers were
+// saved under the other session and were gone when this one was shown again.)
+let pending = false, held = null, heldHead = null;
+function flush() {
+  if (heldHead) { const h = heldHead; heldHead = null; drawHead(h); }
+  if (held) { S = held; held = null; }
+  if (S) apply();
+}
 function apply() {
-  if (document.activeElement && document.activeElement.classList.contains("ans")) { pending = true; return; }
+  if (typing()) { pending = true; return; }
   const same = S.sid === shownSid;
   if (!same) { view = null; askHide(); }  // another session: its latest replies
   if (view && !(S.pins || []).some(p => p.id === view)) view = null;  // the pin shown was unpinned
@@ -985,23 +1014,36 @@ function apply() {
 window.reply = {
   // state: {sid, name, replies: [{id, when, text}], answers: {key: {text, passage}}, selections: [{n, text}], note,
   // pins: [{id, label, when, text}] in the order pinned}
-  show(state) { S = state; apply(); return natural(); },
+  show(state) {
+    if (typing() && S) { held = state; pending = true; return natural(); }
+    S = state;
+    apply();
+    return natural();
+  },
   // h: {tabs: [{sid, name, dot: "ask"/"work"/"open", when, on, full}], meta: {name, where, line}, open}; null: no
   // session is open (agent-panel.pyw hides the window then)
   head(h) {
     if (!h) return natural();
-    $("tabs").innerHTML = h.tabs.map(t => `<button type="button" class="tab${t.on ? " on" : ""}" tabindex="-1" data-sid="${esc(t.sid)}" data-tip="${esc(t.full)}" aria-pressed="${t.on}"><span class="dot ${t.dot}" aria-hidden="true"></span><span class="nm">${esc(t.name)}</span>${t.when ? `<span class="at">${esc(t.when)}</span>` : ""}</button>`).join("");
-    const f = $("fold");
-    f.classList.toggle("shut", !h.open);
-    f.dataset.tip = h.open ? "Folds the reply window to its tabs" : "Opens the reply window";
-    f.setAttribute("aria-label", h.open ? "Fold the reply window" : "Open the reply window");
-    $("meta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · ${esc(h.meta.where)}${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
-    document.body.classList.toggle("folded", !h.open);
-    tipHide();
-    size();
-    return natural();
+    // a head that shows another session waits with the state that goes with it (above); any other (the fold, the
+    // dots, the times) is drawn at once
+    const on = (h.tabs.find(t => t.on) || {}).sid;
+    if (typing() && S && on && on !== S.sid) { heldHead = h; pending = true; return natural(); }
+    heldHead = null;
+    return drawHead(h);
   },
 };
+function drawHead(h) {
+  $("tabs").innerHTML = h.tabs.map(t => `<button type="button" class="tab${t.on ? " on" : ""}" tabindex="-1" data-sid="${esc(t.sid)}" data-tip="${esc(t.full)}" aria-pressed="${t.on}"><span class="dot ${t.dot}" aria-hidden="true"></span><span class="nm">${esc(t.name)}</span>${t.when ? `<span class="at">${esc(t.when)}</span>` : ""}</button>`).join("");
+  const f = $("fold");
+  f.classList.toggle("shut", !h.open);
+  f.dataset.tip = h.open ? "Folds the reply window to its tabs" : "Opens the reply window";
+  f.setAttribute("aria-label", h.open ? "Fold the reply window" : "Open the reply window");
+  $("meta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · ${esc(h.meta.where)}${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
+  document.body.classList.toggle("folded", !h.open);
+  tipHide();
+  size();
+  return natural();
+}
 
 // The head's buttons work by pointer alone, so they are out of the keyboard's order (tabindex -1): Tab never lands on
 // a session tab, the fold button or a chip.

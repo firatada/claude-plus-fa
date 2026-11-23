@@ -171,9 +171,11 @@ class Hook(unittest.TestCase):
         out = qr.reply(":1 yes, fix it :3 no :4 your call", A)
         self.assertEqual(out["systemMessage"], "Quoted: :1 :3 :4")
         c = self.ctx(out)
-        self.assertIn('<quote n="1">\n<passage>\nQuestion one?\n</passage>\n<reply>\nyes, fix it\n</reply>\n</quote>', c)
+        self.assertIn('<quote n="1">\n<passage>\nQuestion one?\n</passage>\n<user_answer>\nyes, fix it\n</user_answer>\n</quote>', c)
         self.assertIn('<quote n="3">', c)
-        self.assertIn("<reply>\nyour call\n</reply>", c)
+        self.assertIn("<user_answer>\nyour call\n</user_answer>", c)
+        self.assertIn("the user's own answer to it, written by the user", c)
+        self.assertNotIn("<reply>", c)
         self.assertNotIn("Question two?", c)  # unanswered: not sent
         self.assertEqual(self.reset_of(), {"gen": 7, "upto": 4})
 
@@ -194,11 +196,31 @@ class Hook(unittest.TestCase):
         self.assertEqual(qr.reply(": hi", A), {"systemMessage": "Reply: nothing to quote (no selection is listed)"})
         self.assertFalse(os.path.exists(qr.reset_path(A)))
 
+    def test_the_reply_send_to_session_pastes(self):
+        # agent-reply.answer_text(): Claude's whole reply quoted with "> ", the answers unquoted inside it, as the
+        # reply window pastes it. With terminal selections listed as :1 :2 :3, the ":N" in Claude's quoted text (a
+        # pinned reply too old for said()) and the one typed inside an answer are no markers: the prompt goes
+        # untouched. A ":N" typed after the paste for a selection keeps the passage form.
+        self.write({1: "first selection", 2: "second selection", 3: "third selection"})
+        spec = importlib.util.spec_from_file_location("ar", os.path.join(HERE, "..", "agent-reply.py"))
+        ar = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ar)
+        reply = "Pick one:\n\n- :1 keep it\n- :2 drop it\n\n| a | b |\n|---|---|\n| :3 | x |\n\nThen reply."
+        text = ar.format_answered_replies([(reply, "10:00", [(2, "- :1 keep it", "keep, as in :2"), (8, "| :3 | x |", "fine")])])
+        self.assertIn("> - :1 keep it\n\nMy answer: keep, as in `:2`\n\n> - :2 drop it", text)
+        self.assertIsNone(qr.reply(text, A))
+        self.assertEqual(self.reset_of(), {"gen": 7, "upto": 3})
+        self.write({1: "first selection", 2: "second selection", 3: "third selection"})
+        out = qr.reply(text + "\n\n:3 and this one too", A)
+        self.assertEqual(out["systemMessage"], "Quoted: :3")
+        self.assertIn("<passage>\nthird selection\n</passage>\n<user_answer>\nand this one too\n</user_answer>",
+                      self.ctx(out))
+
     def test_numbered_with_unknown(self):
         self.write({1: "Q1", 2: "Q2"})
         out = qr.reply(":1 yes :5 no", A)
         self.assertEqual(out["systemMessage"], "Quoted: :1 (:5 matched nothing)")
-        self.assertIn("<reply>\nyes :5 no\n</reply>", self.ctx(out))
+        self.assertIn("<user_answer>\nyes :5 no\n</user_answer>", self.ctx(out))
 
     def test_unknown_only(self):
         self.write({1: "Q1"})
@@ -238,7 +260,7 @@ class Hook(unittest.TestCase):
         self.assertIn("ask the user which item they mean", c)
         for n in (1, 2, 4):
             self.assertIn('<quote n="%d">\n<passage>\nQ%d\n</passage>\n</quote>' % (n, n), c)
-        self.assertNotIn("<reply>", c)
+        self.assertNotIn("<user_answer>", c)
 
     def test_bare_plus_marker_is_numbered(self):
         self.write({1: "Q1", 2: "Q2"})

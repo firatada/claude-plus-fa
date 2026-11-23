@@ -40,6 +40,7 @@ SAID_MAX = 40   # ... of which the last 40 text blocks are compared
 QUOTED = re.compile('"[^"\n]*"|“[^”\n]*”|«[^»\n]*»')  # "...", curly, guillemets: one line
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")    # a line opening (or closing) a fenced code block
 TICKS = re.compile(r"`+")                       # a run of backticks: opens or closes inline code
+QUOTE_LINE = re.compile(r"^ {0,3}>.*$", re.M)  # a quoted line ("> ..."), as Send to Session pastes Claude's reply
 BARE = re.compile(r"\s*:(?!\d)")           # a prompt starting with ":" that is not a ":N" marker
 # Formats a password manager (or any app) sets to keep a copy out of clipboard history, cloud sync and monitors:
 # the first by being there at all, the other two when their DWORD is 0.
@@ -343,11 +344,13 @@ def parse(prompt, known, sources=()):
     prompt starts with a ":" that is not a marker. A reply runs from its marker to the next known marker or the
     end; a marker with nothing after it before the next one shares that one's reply (":1 :3 no").
     Not a marker, but text the user quotes: a ":N" inside code (inline or fenced), inside quotation marks on one
-    line ("...", curly or guillemets), or inside a passage pasted from the conversation (echoed(): it and its
-    neighbours stand word for word in one of sources, the texts the user could have copied it from)."""
+    line ("...", curly or guillemets), on a quoted line ("> ...", as Send to Session pastes Claude's reply), or
+    inside a passage pasted from the conversation (echoed(): it and its neighbours stand word for word in one of
+    sources, the texts the user could have copied it from)."""
     hits, unknown = [], []
     code = code_spans(prompt) if "`" in prompt or "~~~" in prompt else []
     code += [m.span() for m in QUOTED.finditer(prompt)]
+    code += [m.span() for m in QUOTE_LINE.finditer(prompt)] if ">" in prompt else []
     seen = [norm(s)[0] for s in sources if s]
     shown = norm(prompt) if seen else None
     for m in MARK.finditer(prompt):
@@ -374,12 +377,13 @@ def parse(prompt, known, sources=()):
 
 
 def block(n, item, reply_text=None):
-    """One <quote>: passage n as sent (and how much CAP cut off), with the user's reply when there is one."""
+    """One <quote>: passage n as sent (and how much CAP cut off), with the user's answer when there is one, named
+    <user_answer> so the model reads it as the user's own words (a bare <reply> could read as its own)."""
     out = '<quote n="%d">\n<passage>\n%s\n</passage>' % (n, item["text"])
     if item.get("more"):
         out += "\n<note>The passage was cut to its first %d of %d characters.</note>" % (CAP, CAP + item["more"])
     if reply_text is not None:
-        out += "\n<reply>\n%s\n</reply>" % (reply_text or "(no text after the marker)")
+        out += "\n<user_answer>\n%s\n</user_answer>" % (reply_text or "(no text after the marker)")
     return out + "\n</quote>"
 
 
@@ -459,12 +463,13 @@ def answer_for(prompt, lst, transcript=None):
         return None  # its only ":N" sat in code
     nothing = " ".join(":" + u for u in unknown) + " matched nothing" if unknown else ""
     if answers:  # numbered: each answered passage with its reply; the list is used up
-        context = ("The user selected passages from the conversation and replied to some of them in this prompt. "
-                   "In the prompt, \":N\" starts the reply to passage N and the reply runs to the next such marker "
-                   "or the end. Each <quote> below holds passage N and the user's reply to it; act on each reply "
-                   "with its own passage.")
+        context = ("The user answered passages from earlier in this conversation in this prompt. In the prompt, "
+                   "\":N\" starts the user's answer to passage N and the answer runs to the next such marker or the "
+                   "end. Each <quote> below holds passage N and, in <user_answer>, the user's own answer to it, "
+                   "written by the user: take each <user_answer> as what the user says about its passage, and act on "
+                   "each with its own passage.")
         if unknown:
-            context += (" Markers that match no passage (%s) are ordinary text of the reply around them."
+            context += (" Markers that match no passage (%s) are ordinary text of the answer around them."
                         % " ".join(":" + u for u in unknown))
         context += "\n" + "\n".join(block(n, items[n], a) for n, a in answers)
         sent = " ".join(":%d" % n for n, _ in answers)
