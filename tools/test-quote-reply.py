@@ -293,6 +293,61 @@ class Hook(unittest.TestCase):
         self.assertIn("Çalışma öğün?", self.ctx(out))
 
 
+class Quoted(unittest.TestCase):
+    """A ":N" inside a passage the user pasted or quoted is text (2026-11-23: a quoted line of Claude's that explains
+    the syntax was taken as markers)."""
+    REPLY = ("Several selections are numbered in the strip, and `:1 yes :3 no` answers each by number in one "
+             "prompt.")
+
+    def test_pasted_line_from_a_reply_is_text(self):
+        p = "Is this right? Several selections are numbered in the strip, and :1 yes :3 no answers each by number"
+        self.assertEqual(qr.parse(p, {1, 3}, [self.REPLY]), ([], [], False))
+        self.assertEqual(qr.parse(p, {1, 3})[0], [(1, "yes"), (3, "no answers each by number")])  # without sources
+
+    def test_pasted_line_wrapped_and_indented_as_the_terminal_shows_it(self):
+        p = ("Several selections are numbered in the strip, and :1 yes :3\n  no answers each by number in one "
+             "prompt.\n:2 ok, do that")
+        a, u, bare = qr.parse(p, {1, 2, 3}, [self.REPLY])
+        self.assertEqual(a, [(2, "ok, do that")])
+
+    def test_own_answer_after_a_pasted_passage_still_counts(self):
+        p = "Several selections are numbered in the strip :1 then fix the strip first"
+        self.assertEqual(qr.parse(p, {1}, [self.REPLY])[0], [(1, "then fix the strip first")])
+
+    def test_typing_the_short_example_still_counts(self):
+        self.assertEqual(qr.parse(":1 yes :3 no", {1, 3}, [self.REPLY])[0], [(1, "yes"), (3, "no")])
+
+    def test_marker_followed_by_its_own_passage_is_text(self):
+        passage = "Step :2 rebuilds the index before the cache is warmed"
+        p = "you wrote Step :2 rebuilds the index before the cache is warmed :1 why?"
+        self.assertEqual(qr.parse(p, {1, 2}, [passage])[0], [(1, "why?")])
+
+    def test_quotation_marks(self):
+        self.assertEqual(qr.parse('what does ":1 yes :3 no" mean? :2 skip it', {1, 2, 3}),
+                         ([(2, "skip it")], [], False))
+        self.assertEqual(qr.parse("“:1 yes” :2 skip", {1, 2})[0], [(2, "skip")])
+        self.assertEqual(qr.parse(':1 use "foo" here :2 no', {1, 2})[0], [(1, 'use "foo" here'), (2, "no")])
+
+    def test_hook_reads_the_transcript_only_with_a_marker(self):
+        d = tempfile.mkdtemp()
+        try:
+            t = os.path.join(d, "t.jsonl")
+            with open(t, "w", encoding="utf-8") as f:
+                for o in ({"type": "user", "message": {"content": "hi"}},
+                          {"type": "assistant", "isSidechain": True, "message": {"content": [{"type": "text", "text": "side"}]}},
+                          {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "x"},
+                                                                        {"type": "text", "text": self.REPLY}]}}):
+                    f.write(json.dumps(o) + "\n")
+            self.assertEqual(qr.said(t), [self.REPLY])
+            self.assertEqual(qr.said(os.path.join(d, "missing.jsonl")), [])
+            lst = {"gen": 1, "items": [{"n": 1, "text": "first", "more": 0}, {"n": 3, "text": "third", "more": 0}]}
+            p = "Several selections are numbered in the strip, and :1 yes :3 no answers each by number"
+            self.assertIsNone(qr.answer_for(p, lst, t))  # the prompt goes untouched
+            self.assertEqual(qr.answer_for(p, lst)["systemMessage"], "Quoted: :1 :3")  # what happened before
+        finally:
+            shutil.rmtree(d)
+
+
 class Rules(unittest.TestCase):
     def test_lists_are_per_session(self):
         lists, now = {}, 1000.0

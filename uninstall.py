@@ -23,6 +23,8 @@ FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "agent-shots.html"),
     os.path.join(CLAUDE_DIR, "agent-column.html"),
     os.path.join(CLAUDE_DIR, "agent-panel-shots.py"),
+    os.path.join(CLAUDE_DIR, "agent-reply.html"),
+    os.path.join(CLAUDE_DIR, "agent-reply.py"),
     os.path.join(CLAUDE_DIR, "agent-panel-paste.py"),
     os.path.join(CLAUDE_DIR, "session-panel.pyw"),
     os.path.join(HOME, ".local", "bin", "glm.cmd"),

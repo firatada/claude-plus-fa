@@ -7,10 +7,14 @@
 #
 # The numbered lists, one per session: while the Agent Panel's screenshot strip is on and shown, the panel adds
 # every new text clipboard to the list of the session whose terminal tab it was selected in (1, 2, 3, ... in the
-# order made; a copy it cannot tie to exactly one session joins no list) and shows the list of the session in front
-# in the strip's band. This hook reads only its own session's list (session_id), and after ANY prompt in that
+# order made; a copy it cannot tie to exactly one session joins no list) and marks them in the reply window, where
+# Send to Session adds the paragraphs answered there to the same list. This hook reads only its own session's list (session_id), and after ANY prompt in that
 # session writes reset_path(session_id), from which the panel empties that list; other sessions' lists are never
 # read or touched. Without a live list (no panel, strip off) a bare ":" quotes the clipboard itself, as before.
+#
+# Not every ":N" is a marker: one inside code, inside quotation marks, or inside a passage the user pasted from the
+# conversation (it and the words round it stand word for word in a listed passage or one of Claude's latest
+# replies, as when a line explaining this very syntax is quoted) is text. See parse().
 #
 # Never quotes a secret: a clipboard a password manager marked private (any of the formats in PRIVATE) is not read.
 # Never quotes the same clipboard twice: what was quoted is kept in USED. The panel loads this file as a module
@@ -30,6 +34,10 @@ MUTEX = "Local\\claude-plus-fa-agent-panel"     # the panel's one-instance mutex
 MAX_ITEMS = 50  # a safety cap only: a list never used keeps its 50 newest selections (numbers are not reused)
 MAX_LISTS = 20  # ... and the panel keeps the lists of the 20 sessions last selected in
 MARK = re.compile(r"(?<!\S):(\d+)(?!\S)")  # ":N" at the start, after whitespace, followed by whitespace or the end
+ECHO = 16       # characters next to a ":N" that, together with it, also stand in a passage or a reply: quoted text
+SAID_TAIL = 524288  # bytes of the transcript's end read for Claude's latest replies (only when a ":N" is typed)
+SAID_MAX = 40   # ... of which the last 40 text blocks are compared
+QUOTED = re.compile('"[^"\n]*"|“[^”\n]*”|«[^»\n]*»')  # "...", curly, guillemets: one line
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")    # a line opening (or closing) a fenced code block
 TICKS = re.compile(r"`+")                       # a run of backticks: opens or closes inline code
 BARE = re.compile(r"\s*:(?!\d)")           # a prompt starting with ":" that is not a ":N" marker
@@ -193,7 +201,8 @@ def apply_reset(lists, sid, record):
 
 
 def drop(lists, sid, n):
-    """A selection's x in the strip's band: out of its session's list; the others keep their numbers."""
+    """One entry out of its session's list (Send to Session taking back what it added); the others keep their
+    numbers."""
     lst = lists.get(sid)
     if not lst or not any(i["n"] == n for i in lst["items"]):
         return False
@@ -254,17 +263,98 @@ def code_spans(prompt):
     return spans
 
 
-def parse(prompt, known):
+def norm(text):
+    """text as a terminal shows it, for comparing: markdown's ` and * left out (the terminal draws code and bold
+    without them) and every run of whitespace one space (it wraps lines and indents them). Returns the string and,
+    for each of its characters, where it stood in text."""
+    out, where, space = [], [], False
+    for i, c in enumerate(text or ""):
+        if c in "`*":
+            continue
+        if c.isspace():
+            if not space:
+                out.append(" ")
+                where.append(i)
+            space = True
+            continue
+        space = False
+        out.append(c)
+        where.append(i)
+    return "".join(out), where
+
+
+def echoed(prompt, at, end, sources):
+    """The ":N" at prompt[at:end] is part of a passage the user pasted or quoted: together with the characters
+    next to it, at least ECHO of them on either side or both, it stands word for word in one of sources (the
+    session's listed passages and Claude's latest replies, each through norm()). A marker the user typed has their
+    own answer after it, which no reply holds; one inside a line copied from a reply that explains the syntax
+    ("`:1 yes :3 no` answers each by number") has that reply's own words round it."""
+    pn, where = prompt
+    try:
+        a = where.index(at)
+    except ValueError:
+        return False
+    b = a + end - at
+    tok = pn[a:b]
+    for s in sources:
+        q = s.find(tok)
+        while q != -1:
+            left = 0
+            while left < a and left < q and pn[a - left - 1] == s[q - left - 1]:
+                left += 1
+            right = 0
+            while b + right < len(pn) and q + len(tok) + right < len(s) and pn[b + right] == s[q + len(tok) + right]:
+                right += 1
+            if left + right >= ECHO:
+                return True
+            q = s.find(tok, q + 1)
+    return False
+
+
+def said(path):
+    """The text blocks of Claude's latest replies in the transcript at path (main thread only), the last SAID_MAX
+    from its last SAID_TAIL bytes; [] when it cannot be read."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, size - SAID_TAIL))
+            tail = f.read()
+    except (OSError, TypeError, ValueError):
+        return []
+    out = []
+    for line in tail.split(b"\n"):
+        if b'"assistant"' not in line or b'"text"' not in line:
+            continue
+        try:
+            o = json.loads(line)
+            if o.get("type") != "assistant" or o.get("isSidechain"):
+                continue
+            c = o["message"]["content"]
+            out += [c] if isinstance(c, str) else [b["text"] for b in c if b.get("type") == "text" and b.get("text")]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return out[-SAID_MAX:]
+
+
+def parse(prompt, known, sources=()):
     """The prompt's ":N" markers against the listed numbers (known). Returns (answers, unknown, bare):
     answers [(n, reply)] in the order first answered, a number answered twice getting both replies; unknown the
     numbers typed that match nothing (they stay plain text, inside the reply around them); bare True when the
     prompt starts with a ":" that is not a marker. A reply runs from its marker to the next known marker or the
-    end; a marker with nothing after it before the next one shares that one's reply (":1 :3 no")."""
+    end; a marker with nothing after it before the next one shares that one's reply (":1 :3 no").
+    Not a marker, but text the user quotes: a ":N" inside code (inline or fenced), inside quotation marks on one
+    line ("...", curly or guillemets), or inside a passage pasted from the conversation (echoed(): it and its
+    neighbours stand word for word in one of sources, the texts the user could have copied it from)."""
     hits, unknown = [], []
     code = code_spans(prompt) if "`" in prompt or "~~~" in prompt else []
+    code += [m.span() for m in QUOTED.finditer(prompt)]
+    seen = [norm(s)[0] for s in sources if s]
+    shown = norm(prompt) if seen else None
     for m in MARK.finditer(prompt):
         if any(a <= m.start() < b for a, b in code):
-            continue  # inside code: text the user quotes, not a marker
+            continue  # inside code or quotation marks: text the user quotes, not a marker
+        if shown and echoed(shown, m.start(), m.end(), seen):
+            continue  # inside a passage pasted from the conversation
         if int(m.group(1)) in known:
             hits.append(m)
         elif m.group(1) not in unknown:
@@ -345,24 +435,26 @@ def from_clipboard():
     return {"systemMessage": "Reply: " + note}
 
 
-def reply(prompt, sid=None):
+def reply(prompt, sid=None, transcript=None):
     """The hook's answer for one prompt in session sid: None (prompt untouched, nothing printed), or the JSON object
-    to print. Any prompt, whatever it holds, resets the session's list (reset())."""
+    to print. Any prompt, whatever it holds, resets the session's list (reset()). transcript: the session's
+    transcript, read for Claude's latest replies only when the prompt holds a ":N"."""
     lst = listed(sid)
     try:
-        return answer_for(prompt, lst)
+        return answer_for(prompt, lst, transcript)
     finally:
         reset(sid, lst)
 
 
-def answer_for(prompt, lst):
+def answer_for(prompt, lst, transcript=None):
     """The answer for one prompt given its session's list (None: no live list)."""
     if ":" not in prompt:
         return None  # the common case
     if not MARK.search(prompt) and not BARE.match(prompt):
         return None
     items = {i["n"]: i for i in (lst["items"] if lst else [])}
-    answers, unknown, bare = parse(prompt, items)
+    sources = [i["text"] for i in items.values()] + (said(transcript) if transcript and MARK.search(prompt) else [])
+    answers, unknown, bare = parse(prompt, items, sources)
     if not (answers or unknown or bare):
         return None  # its only ":N" sat in code
     nothing = " ".join(":" + u for u in unknown) + " matched nothing" if unknown else ""
@@ -403,7 +495,7 @@ def answer_for(prompt, lst):
 if __name__ == "__main__":
     try:
         data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
-        out = reply(data.get("prompt") or "", data.get("session_id"))
+        out = reply(data.get("prompt") or "", data.get("session_id"), data.get("transcript_path"))
         if out:
             sys.stdout.write(json.dumps(out, ensure_ascii=True))  # ASCII: the console code page cannot spoil it
     except Exception:

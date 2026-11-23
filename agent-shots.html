@@ -30,24 +30,20 @@
      Pointing at a card shows the full file name in the panel's tooltip (agent-panel.html .tip: 400 ms, gone after
      3 s or on a press); the strip window is exactly the strip, so it sits inside it, over the card's title, its
      foot just above the time.
-     Reply band (2026-11-19; numbered 2026-11-20; one list per session 2026-11-20): under the cards, the ":" reply's
-     list of one session, the one in front or last in front (quote-reply.py, the UserPromptSubmit hook, reads it;
-     agent-panel.pyw keeps it), under that session's name so it is clear whose selections these are (the name stays
-     at the band's top while it scrolls): one row per selection in the order made, led by a
-     blue badge reading exactly what the user types to answer it (":1", ":2", ...), then the passage as it would be
-     sent, and a small x that drops it (the other numbers never shift). Whole, wrapped, line breaks kept: the band
-     grows with it up to a third of the screen's work area, then scrolls inside on the mouse wheel (the strip still
-     never takes the keyboard); past the hook's 4,000 characters a muted "Cut here, N more characters not sent" line
-     marks where that passage ends, as the band shows only what is sent. Text only, with no box of its own:
-     it sits on the strip's own surface, so no terminal text is ever behind it and it reads the same on light and dark
-     terminals. agent-panel.pyw sends it with shotStrip.quote(items, width, cap, name, sid) and hides it ([]) when
-     the list is empty (no selection yet, or a prompt in that session reset it); the window then loses the band, and
-     with no screenshot left the strip
-     is that band alone. A press on it drags the strip like any; only the x is a button. -->
+     Reply window head (2026-11-23, replacing the reply band of 2026-11-19): while any session is open the strip
+     reaches from its right end to the screen's left edge, the screenshots kept on the right, and its left part
+     holds a tab per open session (the panel's state dot, its name, the time of its last reply), the session the
+     reply window shows outlined, a line naming that session, its folder and the times of its last reply and of the
+     prompt it answers, and a button that folds the reply window into the strip or opens it again. The reply
+     window (agent-reply.html, a window of its own) flows down from this part. A tab press released in place shows
+     that session; any press may still drag the strip. agent-panel.pyw sends the head with shotStrip.head(state)
+     and the screenshots' columns with shotStrip.update(items, cols). The selections for the ":" reply are marked
+     inside the reply window now, not listed here.
+-->
 <style>
 :root {
   --panel: #ffffff; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672; --blue: #1b4df5; --green: #16a34a;
-  --red-deep: #be123c; --r-small: 6px; --tip-bg: rgba(10, 26, 64, .88); --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2);
+  --red-deep: #be123c; --red: #e11d48; --violet: #5c3bcd; --r-small: 6px; --tip-bg: rgba(10, 26, 64, .88); --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
@@ -63,33 +59,38 @@ body.moving, body.moving * { cursor: grabbing !important; }
 /* a card: SHOT_W x SHOT_H (150 x 94; 150 so the top row holds a pinned 2-digit badge, Pin and "Reading…"). The
    whole card is the button that opens the preview; its text starts under the top row (6 + 20 + 4), the title up to
    3 lines of 14 px, the time on the last line, never cut */
-/* the ":" reply's band: a full row under the cards (agent-panel.pyw sets its width and the cap, QUOTE_BELOW under
-   it), one row per selection (badge, passage, x), each passage whole in lines of 14 px, line breaks kept, growing to
-   the cap and scrolling inside past it; a hairline drawn inside the row's top parts the rows without adding height */
-#quote {
-  flex: none; padding: 0 3px; color: var(--text); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
-  white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain;
-  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+/* the reply window's head: the strip's left part, as wide as the screen leaves it; the screenshots keep their place
+   on the right (#shots, as many columns as agent-panel.pyw allows, wrapping into rows) */
+#strip { flex-wrap: nowrap; align-items: stretch; }
+#rhead { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 0 2px; }
+#rhead[hidden] { display: none; }
+#shots { flex: none; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; margin-left: auto; }
+#shots:empty { display: none; }
+.tabs { display: flex; gap: 6px; align-items: center; height: 34px; min-width: 0; }
+.tab {
+  flex: 0 1 auto; min-width: 0; max-width: 220px; height: 34px; padding: 0 12px; display: flex; align-items: center;
+  gap: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text);
+  font: 600 12px "Segoe UI", system-ui, sans-serif; transition: transform .16s ease-out;
 }
-#quote[hidden] { display: none; }
-/* whose list this is: the session's name, one line, kept at the top while the band scrolls */
-#quote .qh {
-  position: sticky; top: 0; z-index: 1; background: var(--panel); color: var(--muted); font-weight: 600;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-#quote .q { display: grid; grid-template-columns: 18px minmax(0, 1fr) 14px; column-gap: 3px; align-items: start; }
-#quote .q { box-shadow: inset 0 1px var(--line); }
-#quote b { color: var(--blue); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* a long passage scrolled: its badge and x stay at the band's top while any of the row shows */
-#quote .q > b, #quote .qx { position: sticky; top: 14px; }
-#quote .qx {
-  width: 14px; height: 14px; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--muted);
-  display: flex; align-items: center; justify-content: center;
-}
-#quote .qx:hover { color: var(--red-deep); background: #fdecef; }
-#quote .qx svg { width: 8px; height: 8px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-#quote .cut { display: block; color: var(--muted); font-style: italic; }  /* where the 4,000 characters end */
-#strip.solo { justify-content: flex-end; }  /* one card under a two-card band: at the strip's anchored right end */
+.tab:hover { border-color: var(--blue); }
+.tab:active, #fold:active { transform: scale(.97); }
+.tab.on { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue), 0 0 0 3px rgba(27, 77, 245, .12); }
+.tab .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab .at { flex: none; font-weight: 400; color: var(--muted); font-size: 11px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.5px var(--violet); }
+.dot.ask { background: var(--red); box-shadow: none; }
+.dot.work { width: 10px; height: 10px; box-shadow: none; border: 1.5px solid var(--green); border-right-color: transparent;
+  animation: turn 1s linear infinite; }
+@keyframes turn { to { transform: rotate(360deg); } }
+#fold { flex: none; margin-left: auto; width: 34px; height: 34px; border: 0; border-radius: 10px; background: none;
+  color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out; }
+#fold:hover { color: var(--blue); background: #eef2fb; }
+#fold svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+  stroke-linejoin: round; transition: transform .16s ease-out; }
+#fold.shut svg { transform: rotate(180deg); }
+.meta { margin-top: auto; padding: 0 4px 4px; color: var(--muted); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta b { font-weight: 600; color: var(--text); }
 .shot { position: relative; flex: none; width: 150px; height: 94px; }
 .pic {
   width: 100%; height: 100%; padding: 30px 8px 6px; border: 1px solid var(--line); border-radius: 8px;
@@ -156,11 +157,13 @@ body.view #view { display: flex; }
 #big { flex: 1; min-height: 0; padding: 0 8px 8px; }
 #big img { display: none; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; }
 #big img.on { display: block; }
-@media (prefers-reduced-motion: reduce) { .pic, .tip { transition: none; animation: none; } .pic:active { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .pic, .tip, .tab, #fold, #fold svg, .dot.work { transition: none; animation: none; } .pic:active, .tab:active { transform: none; }
+}
 </style>
 </head>
 <body>
-<div id="strip"></div>
+<div id="strip"><div id="rhead" hidden><div class="tabs" id="rtabs"></div><div class="meta" id="rmeta"></div></div><div id="shots"></div></div>
 <div id="view"><div id="head"><span id="badge" class="num" aria-hidden="true"></span><span id="name"></span><button type="button" id="del" aria-label="Delete: move it to the Recycle Bin">Delete</button><button type="button" id="copy">Copy as Text</button><button type="button" id="copyimg">Copy as Image</button><button type="button" id="open">Open</button></div><div id="big"></div></div>
 <script>
 /*MODE*/
@@ -170,12 +173,8 @@ const strip = document.getElementById("strip");
 const PIN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3H8v2h1v6l-3 3v2h5v6l1 1 1-1v-6h5v-2l-3-3V5h1z"/></svg>';
 const badge = s => (s.pin ? PIN : "") + s.num;  // the badge's inside: a pin glyph for the pinned sequence
 const label = s => (s.pin ? "pinned " : "") + s.num + ", " + s.name;
-const X = '<svg viewBox="0 0 8 8" aria-hidden="true"><path d="M1 1l6 6M7 1L1 7"/></svg>';  // a selection's drop
-const quoteEl = Object.assign(document.createElement("div"), {id: "quote", hidden: true});
-function band() {  // the band stays the strip's last row, whatever update() drew before it
-  strip.append(quoteEl);
-  strip.classList.toggle("solo", !quoteEl.hidden && strip.querySelectorAll(".shot").length === 1);
-}
+const shots = document.getElementById("shots");
+const UP = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4"/></svg>';
 
 // the strip's Copy and the preview's Copy as Text (how "copy": path and OCR text), the preview's Copy as Image
 // (how "copy_image": the picture itself): one feedback, then the button's own label back
@@ -200,41 +199,33 @@ function pin(btn, at) {  // shown at once; agent-panel.pyw stores it and redraws
 // items: [{at, name, pin, num, title, when}] (no picture: the preview alone shows one), the pinned ones first by pin order, then the recent ones newest first; num
 // counts within each group from 1; agent-panel.pyw sizes the window
 window.shotStrip = {
-  update(items) {
-    strip.innerHTML = items.map(s => `<div class="shot" data-full="${esc(s.name)}">
+  update(items, cols) {
+    shots.style.width = cols ? (cols * 156 - 6) + "px" : "";
+    shots.innerHTML = items.map(s => `<div class="shot" data-full="${esc(s.name)}">
       <button type="button" class="pic" data-at="${s.at}" aria-label="Enlarge ${esc(label(s))}"><span class="t">${esc(s.title)}</span><span class="w">${esc(s.when)}</span></button>
       <div class="bar"><span class="num" aria-hidden="true">${badge(s)}</span>
       <button type="button" class="pin${s.pin ? " on" : ""}" data-at="${s.at}" aria-pressed="${s.pin}" aria-label="Pin ${esc(s.name)}: keep it in the strip">Pin</button>
       <button type="button" class="copy" data-at="${s.at}" aria-label="Copy the path and text of ${esc(s.name)}">Copy</button></div>
     </div>`).join("");
-    band();
     tipHide();
   },
-  // one session's ":" reply list: items [{n, text, more}], each passage exactly as the hook sends it, more = the
-  // characters its cap leaves out (shown as a muted line where the cut falls), under name, the session's name; sid
-  // goes back with an x; [] hides the band. Laid out width px wide, at most cap px tall (past that it scrolls, from
-  // the top); returns the height it takes, which agent-panel.pyw sizes the window to. No whitespace between the
-  // tags: the band keeps line breaks (pre-wrap)
-  quote(items, width, cap, name, sid) {
-    quoteEl.hidden = !items.length;
-    quoteEl.dataset.sid = sid || "";
-    quoteEl.innerHTML = `<div class="qh">${esc(name || "")}</div>` + items.map(i => `<div class="q"><b>:${i.n}</b><span>${esc(i.text)}${i.more > 0 ?
-      '<span class="cut">Cut here, ' + i.more.toLocaleString("en-US") + " more characters not sent</span>" : ""
-      }</span><button type="button" class="qx" data-n="${i.n}" aria-label="Drop :${i.n} from the list">${X}</button></div>`).join("");
-    band();
-    if (!items.length) return 0;
-    Object.assign(quoteEl.style, {width: width + "px", maxHeight: "none"});
-    const h = Math.ceil(quoteEl.getBoundingClientRect().height);
-    quoteEl.style.maxHeight = cap + "px";
-    quoteEl.scrollTop = 0;
-    return Math.min(h, cap);
+  // the reply window's head: {tabs: [{sid, name, dot: "ask"/"work"/"open", when, on, full}], meta: html-free
+  // {name, where, line}, open: the reply window shows}; null: no session is open, the strip is screenshots alone
+  head(h) {
+    const head = document.getElementById("rhead");
+    head.hidden = !h;
+    if (!h) return;
+    document.getElementById("rtabs").innerHTML = h.tabs.map(t => `<button type="button" class="tab${t.on ? " on" : ""}" data-sid="${esc(t.sid)}" data-full="${esc(t.full)}" aria-pressed="${t.on}"><span class="dot ${t.dot}" aria-hidden="true"></span><span class="nm">${esc(t.name)}</span>${t.when ? `<span class="at">${esc(t.when)}</span>` : ""}</button>`).join("") +
+      `<button type="button" id="fold" class="${h.open ? "" : "shut"}" data-full="${h.open ? "Folds the reply window into the strip" : "Opens the reply window under the strip"}" aria-label="${h.open ? "Fold the reply window" : "Open the reply window"}">${UP}</button>`;
+    document.getElementById("rmeta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · ${esc(h.meta.where)}${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
+    tipHide();
   },
   open(at) {  // the picture the preview shows is outlined; null: none
     strip.querySelectorAll(".pic").forEach(b => b.classList.toggle("open", Number(b.dataset.at) === at));
   },
 };
 
-// ----- tooltip: the full file name, as the panel's (mindmap tooltip.md: opens on movement after ~400 ms, leaves by
+// ----- tooltip: the full file name (a tab: the session's name and folder), as the panel's (mindmap tooltip.md: opens on movement after ~400 ms, leaves by
 // itself after ~3 s or on any press); Pin and Copy name themselves, so pointing at them opens none -----
 let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
 function tipShow(el) {
@@ -246,10 +237,12 @@ function tipShow(el) {
   document.body.append(tip);
   // the window ends at the strip's edge: centred on the card, over the title it spells out in full, its foot just
   // above the time so that stays readable, kept inside
-  const r = el.getBoundingClientRect(), t = el.querySelector(".w").getBoundingClientRect();
+  // a tab or the fold button: under it, over the line naming the session (nothing opens downward from them)
+  const r = el.getBoundingClientRect(), t = el.querySelector(".w");
   const w = tip.offsetWidth, h = tip.offsetHeight;
   const x = Math.max(4, Math.min((r.left + r.right) / 2 - w / 2, innerWidth - w - 4));
-  const y = Math.max(4, Math.min(t.top - 2 - h, innerHeight - h - 4));
+  const y = t ? Math.max(4, Math.min(t.getBoundingClientRect().top - 2 - h, innerHeight - h - 4))
+    : Math.max(4, Math.min(r.bottom + 4, innerHeight - h - 4));
   tip.style.left = x + "px";
   tip.style.top = y + "px";
   tipEnd = setTimeout(() => { tipDone = tipTarget; tipHide(); }, 3000);
@@ -262,7 +255,7 @@ function tipHide() {
 addEventListener("pointermove", e => {  // only a real mouse that really moved: not a card redrawn under a still pointer
   if (e.pointerType !== "mouse" || (e.clientX === lx && e.clientY === ly) || pressed) return;
   lx = e.clientX; ly = e.clientY;
-  const p = e.target.closest(".pin, .copy") ? null : e.target.closest(".shot");
+  const p = e.target.closest(".pin, .copy") ? null : e.target.closest(".shot, .tab, #fold");
   if (p !== tipDone) tipDone = null;
   if (p && p === tipTarget) return;
   tipHide();
@@ -277,7 +270,7 @@ let pressed = null;
 strip.addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
   e.preventDefault();
-  tipDone = tipTarget || e.target.closest(".shot");  // a press dismisses it, and it does not come back on that card
+  tipDone = tipTarget || e.target.closest(".shot, .tab, #fold");  // a press dismisses it, and it does not come back on that card
   tipHide();
   try { strip.setPointerCapture(e.pointerId); } catch (_) {}  // the release still arrives if the pointer leaves
   // release() waits for press()'s answer, so the two never cross on their way to agent-panel.pyw
@@ -294,7 +287,8 @@ strip.addEventListener("pointerup", e => {
     document.body.classList.remove("moving");
     if (moved || !b) return;
     const at = Number(b.dataset.at);
-    if (b.classList.contains("qx")) api().drop(quoteEl.dataset.sid, Number(b.dataset.n));  // agent-panel.pyw redraws the band
+    if (b.classList.contains("tab")) api().tab(b.dataset.sid);  // agent-panel.pyw shows it and redraws the head
+    else if (b.id === "fold") api().fold();
     else if (b.classList.contains("copy")) copy(b, at);
     else if (b.classList.contains("pin")) pin(b, at);
     else api().enlarge(at);

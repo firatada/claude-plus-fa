@@ -70,23 +70,37 @@ When a session starts waiting for your answer, this alert drops in at the top of
 
 <img src="docs/img/waiting-alert.png" alt="The Waiting for your answer alert listing one session" width="420">
 
+### Reply window
+
+Answer Claude's reply where you read it, paragraph by paragraph.
+
+<img src="docs/img/reply-window.png" alt="The reply window under the screenshot strip: session tabs on top, Claude's reply with one passage marked :1, an answer in blue under the first question, an empty answer box under the third, and the Copy and Send to Session buttons" width="880">
+
+1. While a Claude Code session is open, the screenshot strip stretches to the left edge of the screen with a tab for each open session. The window under it shows every reply Claude gave since your last prompt in that session. It follows the session you last typed in; click a tab to see another.
+2. Rest the pointer on a paragraph or a list item. A box opens under it: type your answer. Code blocks show as one line; click one to open it.
+3. Click **Send to Session**. The session's terminal comes to the front with one line in its prompt, such as `:1 Monthly price :3 Wait for Thursday`. Read it, then press Enter.
+
+- Claude gets each paragraph you answered, with your answer.
+- Your answers are kept until you send them, even if you fold the window or restart.
+- **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.
+- The arrow at the top folds the window into the strip; click it or a tab to open it again.
+- Send to Session types only into the session's own terminal window, at the cursor. Text already in the prompt stays as it is.
+- Codex sessions are not shown.
+
 ### Reply to passages
 
-Answer Claude's questions without retyping them.
+Answer any part of Claude's answer straight from the terminal, without retyping it.
 
 <img src="docs/img/reply-numbered.png" alt="A Claude answer with three questions and the prompt :1 yes, keep it :2 no, only in the app :3 after the release" width="825">
 
 1. Select a question in Claude's answer with the mouse. Do the same for each question you want to answer.
-2. Each selection joins a numbered list under the screenshot strip, under the name of its session:
-
-   <img src="docs/img/screenshot-strip.png" alt="The screenshot strip with four cards and below them a numbered list :1, :2, :3 of selected questions" width="630">
-
+2. Each selection gets a number, shown as `:1`, `:2` where it stands in the reply window (picture above).
 3. Type your answers by number: `:1 yes :3 no`. Press Enter.
 
 - Claude gets each passage you answered, with your answer. Passages you skip are not sent.
 - With one selection, a prompt that starts with `:` is enough: `: yes, do it`.
-- Sending any prompt in that session empties its list. The x on a row drops that selection.
-- `:1` inside backticks or a code block is plain text.
+- Sending any prompt in that session empties its list.
+- `:1` inside backticks, a code block or quotation marks is plain text, and so is `:1` inside a passage you pasted from Claude's reply.
 - A passage is cut at 4,000 characters, and Claude is told so.
 - The numbered list needs Field Agents running with its strip on. Without it, `: your answer` quotes whatever is on the clipboard.
 - The installer turns on Windows Terminal's **Automatically copy selection to clipboard** once. In another terminal, press `Ctrl+C` after selecting.
@@ -95,7 +109,7 @@ Answer Claude's questions without retyping them.
 
 - Every screenshot you take (`Win+Shift+S`, Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named after the window and the time.
 - Paste one into a Claude Code session and it moves into a `screenshots` folder in that project. The panel adds that folder to the project's `.gitignore`, so it never reaches git.
-- The strip at the top (picture above) shows your last three screenshots and the ones you **Pin**. Click a card to see it large. **Copy** on a card, or **Copy as Text** in the large view, puts the file's path and the text read from the picture on the clipboard, which costs Claude far fewer tokens than the picture. **Copy as Image** in the large view puts the picture itself on the clipboard, to paste into Paint, Word, a browser or a chat app.
+- The strip at the top (pictures above) shows, on its right, your last three screenshots and the ones you **Pin**. Click a card to see it large. **Copy** on a card, or **Copy as Text** in the large view, puts the file's path and the text read from the picture on the clipboard, which costs Claude far fewer tokens than the picture. **Copy as Image** in the large view puts the picture itself on the clipboard, to paste into Paint, Word, a browser or a chat app.
 - While the panel runs, `Ctrl+V` or `Alt+V` in a Claude Code session pastes a copied picture at once, where the cursor is:
 
 <img src="docs/img/paste-image.png" alt="A prompt with [Image #1] and [Image #2] between words" width="825">

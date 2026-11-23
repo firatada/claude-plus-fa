@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Field Agents Reply</title>
+<!-- The reply window (the maintainer, 2026-11-23): it flows down from the left part of the screenshot strip, whose
+     tabs pick the session. It shows every reply Claude gave in that session since the prompt the user last typed
+     there, one under the other (agent-reply.py reads them from the transcript; agent-panel.pyw sends them with
+     reply.show()). Claude's text is never changed. Resting the pointer on a paragraph (a list item counts as one)
+     opens a box under it, "Type your answer…"; what the user types there is theirs, in blue on a light blue ground
+     with a blue rule on the left, kept per session (agent-panel.pyw stores it through api.draft) until it is sent.
+     Code blocks show shut, as one line (language, lines, first line), and open on a click. The passages selected
+     in the terminal for the ":N" reply show marked where they stand, led by their ":N"; one that is not in the
+     reply text is listed at the bottom. The bar at the bottom counts the answers and selections; Copy puts the
+     answers as one line plus the paragraphs they answer on the clipboard; Send to Session puts those paragraphs in
+     the session's numbered list and types the one line ":N answer :N answer" into its prompt, without Enter.
+     The window grows with its content; taller than the screen allows, the replies scroll inside. agent-panel.pyw
+     sizes it from what api.size() reports. Spark tokens as in agent-panel.html. -->
+<style>
+:root {
+  --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
+  --faint: #687189; --violet: #5c3bcd; --blue: #1b4df5; --green: #16a34a; --red: #e11d48; --red-deep: #be123c;
+  --hit: #dbe4ff; --ans-bg: #f5f8ff; --r-ctl: 10px; --r-small: 6px; --tip-bg: rgba(10, 26, 64, .88);
+  --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2); --snap: cubic-bezier(0.23, 1, 0.32, 1);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body { background: var(--panel); color: var(--text); font: 400 14px/22px "Segoe UI", system-ui, sans-serif;
+  overflow: hidden; display: flex; flex-direction: column; }
+button, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+#body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 28px 10px 28px;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+/* one reply; several are parted by a hairline and the time each came */
+.reply + .reply { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+.when { color: var(--faint); font: 400 11px/16px "Segoe UI", system-ui, sans-serif; margin-bottom: 2px; }
+.para { position: relative; padding: 4px 0; border-radius: 6px; overflow-wrap: anywhere; }
+.para.h { font-weight: 600; padding-top: 8px; }
+.para.h1 { font-size: 16px; }
+.para.quote { border-left: 2px solid var(--line); padding-left: 10px; color: var(--muted); }
+.para.table { font: 400 12px/18px "Cascadia Mono", Consolas, monospace; white-space: pre; overflow-x: auto; }
+.para.li { display: grid; grid-template-columns: 22px minmax(0, 1fr); }
+.para.li > .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.para.hov { background: rgba(27, 77, 245, .04); }
+.hr { height: 1px; background: var(--line); margin: 10px 0; }
+code { font: 400 12.5px "Cascadia Mono", Consolas, monospace; background: var(--surface2); border-radius: 4px; padding: 1px 4px; }
+/* a code block: shut, one line, opens on a click */
+.code { margin: 6px 0; border: 1px solid var(--line); border-radius: var(--r-small); background: var(--surface2); }
+.code > button { width: 100%; height: 34px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border: 0;
+  background: none; color: var(--muted); font: 400 12px "Segoe UI", system-ui, sans-serif; text-align: left; }
+.code > button:hover { color: var(--blue); }
+.code svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+  stroke-linejoin: round; flex: none; transition: transform .16s var(--snap); }
+.code.open svg { transform: rotate(90deg); }
+.code .k { font-weight: 600; color: var(--text); }
+.code .first { font: 400 12px "Cascadia Mono", Consolas, monospace; color: var(--faint); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.code.open .first { visibility: hidden; }
+.code pre { display: none; margin: 0; padding: 0 12px 10px 34px; font: 400 12px/18px "Cascadia Mono", Consolas, monospace;
+  white-space: pre; overflow-x: auto; color: var(--text); }
+.code.open pre { display: block; animation: drop .18s var(--snap); }
+/* a passage selected in the terminal, listed for the ":N" reply: marked where it stands */
+mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0 0 0 2px var(--hit); }
+.qb { display: inline-flex; align-items: center; height: 18px; padding: 0 5px; margin-right: 4px; border-radius: 4px;
+  background: var(--blue); color: #fff; font: 700 11px/1 "Segoe UI", system-ui, sans-serif; vertical-align: 1px;
+  font-variant-numeric: tabular-nums; }
+/* the user's answer under a paragraph: their text in blue on a light blue ground with a blue rule; Claude's text is
+   never touched. Empty, it is the place an answer goes, shown under the paragraph the pointer rests on */
+.ansrow { margin: 2px 0 6px 22px; }
+.ansrow.new { animation: drop .16s var(--snap); }
+.ans { display: block; width: 100%; resize: none; overflow: hidden; min-height: 34px; padding: 5px 10px;
+  border: 1px dashed #c3cdea; border-radius: var(--r-small); background: var(--panel); color: var(--blue);
+  font: 400 14px/22px "Segoe UI", system-ui, sans-serif; outline: none; }
+.ans::placeholder { color: var(--faint); }
+.ans:focus, .ans.has { border: 0; border-left: 2px solid var(--blue); border-radius: 0 var(--r-small) var(--r-small) 0;
+  background: var(--ans-bg); padding-left: 10px; }
+.ans:focus { box-shadow: 0 0 0 3px rgba(27, 77, 245, .12); }
+#empty { color: var(--muted); padding: 6px 0; }
+#empty[hidden], #miss[hidden] { display: none; }
+/* selections that are not in the reply text */
+#miss { flex: none; padding: 6px 28px; border-top: 1px solid var(--line); color: var(--muted);
+  font: 400 12px/18px "Segoe UI", system-ui, sans-serif; overflow-wrap: anywhere; }
+#miss .qb { height: 16px; font-size: 10px; }
+#foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 16px 12px 28px; border-top: 1px solid var(--line); }
+#count { color: var(--muted); font: 400 12px "Segoe UI", system-ui, sans-serif; white-space: nowrap; }
+#count b { color: var(--text); font-weight: 600; }
+#say { flex: 1; min-width: 0; font: 400 12px/16px "Segoe UI", system-ui, sans-serif; color: var(--green); }
+#say.err { color: var(--red-deep); }
+.b { min-height: 32px; padding: 0 14px; border-radius: var(--r-ctl); font: 600 12px "Segoe UI", system-ui, sans-serif;
+  border: 1px solid var(--line); background: var(--panel); color: var(--muted); display: inline-flex; align-items: center;
+  gap: 6px; flex: none; transition: transform .16s ease-out, background-color .12s, color .12s; }
+.b:hover { color: var(--blue); border-color: var(--blue); }
+.b.primary { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 4px 14px rgba(27, 77, 245, .3); }
+.b.primary:hover { background: #1640d6; color: #fff; }
+.b:active { transform: scale(.97); }
+.b:disabled { opacity: .45; cursor: default; transform: none; box-shadow: none; }
+.b:disabled:hover { color: var(--muted); border-color: var(--line); }
+.b.primary:disabled:hover { background: var(--blue); color: #fff; }
+.b svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tip { position: fixed; z-index: 20; max-width: min(360px, calc(100vw - 8px)); padding: 5px 8px; border-radius: var(--r-small);
+  background: var(--tip-bg); color: #fff; font: 400 11px/1.35 "Segoe UI", system-ui, sans-serif; white-space: pre-wrap;
+  overflow-wrap: anywhere; pointer-events: none; box-shadow: var(--shadow-tip); animation: fade .12s ease-out; }
+@keyframes fade { from { opacity: 0; } }
+@keyframes drop { from { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="body"><div id="empty" hidden></div><div id="replies"></div></div>
+<div id="miss" hidden></div>
+<div id="foot"><span id="count"></span><span id="say" role="status"></span>
+  <button type="button" class="b" id="copy" data-tip="Copies the answers as one line, then the paragraphs they answer, to paste anywhere."><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
+  <button type="button" class="b primary" id="send"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7h9M7.5 3.5L11 7l-3.5 3.5"/></svg>Send to Session</button>
+</div>
+<script>
+const api = () => window.pywebview.api;
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]);
+const CHEV = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5L6.5 5 3 8.5"/></svg>';
+let S = null;          // what agent-panel.pyw sent last: {sid, name, replies, answers, selections, note}
+let answers = {};      // paragraph key -> {text, passage}, the page's own copy of the session's draft
+let shownKey = null;   // the replies drawn now (session and text), so an update with the same ones keeps the page
+let ready = false;
+
+// ---------- Claude's markdown, as blocks; each answerable block keeps its own source text ----------
+function blocks(text) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n"), out = [];
+  let i = 0, para = null;
+  const flush = () => { if (para) { out.push({kind: "p", src: para.join("\n")}); para = null; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/);
+    if (fence) {
+      flush();
+      const body = [];
+      i++;
+      while (i < lines.length && !(lines[i].trim().startsWith(fence[1]) && !lines[i].trim().slice(fence[1].length).trim())) body.push(lines[i++]);
+      i++;
+      out.push({kind: "code", lang: fence[2] || "", lines: body});
+      continue;
+    }
+    if (!line.trim()) { flush(); i++; continue; }
+    let m;
+    if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flush(); out.push({kind: "h", level: m[1].length, src: line, text: m[2]}); i++; continue; }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); out.push({kind: "hr"}); i++; continue; }
+    if (/^\s*\|/.test(line)) {
+      flush();
+      const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
+      out.push({kind: "table", src: rows.join("\n")});
+      continue;
+    }
+    if ((m = line.match(/^\s*>\s?(.*)$/))) {
+      flush();
+      const rows = [];
+      while (i < lines.length && (m = lines[i].match(/^\s*>\s?(.*)$/))) { rows.push(m[1]); i++; }
+      out.push({kind: "quote", src: rows.map(r => "> " + r).join("\n"), text: rows.join("\n")});
+      continue;
+    }
+    if ((m = line.match(/^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/))) {
+      flush();
+      const src = [line], text = [m[3]], indent = m[1].length;
+      i++;
+      while (i < lines.length && lines[i].trim() && !/^(\s*)([-*+]|\d{1,3}[.)])\s+/.test(lines[i]) &&
+             !/^ {0,3}(`{3,}|~{3,})/.test(lines[i]) && /^\s+/.test(lines[i])) { src.push(lines[i]); text.push(lines[i].trim()); i++; }
+      out.push({kind: "li", src: src.join("\n"), marker: /\d/.test(m[2]) ? m[2] : "•", indent, text: text.join(" ")});
+      continue;
+    }
+    (para = para || []).push(line);
+    i++;
+  }
+  flush();
+  return out;
+}
+
+// inline markdown: code, bold, italics, links (their text); everything else stays as Claude wrote it
+function inline(t) {
+  const parts = String(t).split(/(`+)([\s\S]*?)\1/);
+  let html = "";
+  for (let k = 0; k < parts.length; k++) {
+    if (k % 3 === 0) {
+      html += esc(parts[k])
+        .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<b>$1</b>")
+        .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\w)/g, "$1<i>$2</i>")
+        .replace(/\[([^\]\n]+)\]\((?:[^()\s]|\([^()\s]*\))+\)/g, "$1");
+    } else if (k % 3 === 2) {
+      html += "<code>" + esc(parts[k]) + "</code>";
+    }
+  }
+  return html;
+}
+
+function blockHtml(b, key) {
+  const k = `data-key="${esc(key)}"`;
+  if (b.kind === "code") {
+    const first = b.lines.find(l => l.trim()) || "";
+    const n = b.lines.length;
+    return `<div class="code"><button type="button" data-tip="${n === 1 ? "Shows the line" : "Shows the " + n + " lines"}">${CHEV}<span class="k">${esc(b.lang || "code")}</span><span>${n} line${n === 1 ? "" : "s"}</span><span class="first">${esc(first.trim())}</span></button><pre>${esc(b.lines.join("\n"))}</pre></div>`;
+  }
+  if (b.kind === "hr") return '<div class="hr"></div>';
+  if (b.kind === "h") return `<div class="para h${b.level === 1 ? " h1" : ""}" ${k}>${inline(b.text)}</div>`;
+  if (b.kind === "table") return `<div class="para table" ${k}>${esc(b.src)}</div>`;
+  if (b.kind === "quote") return `<div class="para quote" ${k}>${inline(b.text).replace(/\n/g, "<br>")}</div>`;
+  if (b.kind === "li") return `<div class="para li" ${k} style="margin-left:${Math.min(b.indent, 8) * 6}px"><span class="n">${esc(b.marker)}</span><span>${inline(b.text)}</span></div>`;
+  return `<div class="para" ${k}>${inline(b.src).replace(/\n/g, "<br>")}</div>`;
+}
+
+// ---------- drawing ----------
+const sources = {};  // key -> the paragraph's source text (what goes into the list when answered)
+function draw() {
+  const list = $("replies");
+  for (const k of Object.keys(sources)) delete sources[k];
+  const reps = S.replies || [];
+  list.innerHTML = reps.map(r => {
+    const bs = blocks(r.text);
+    bs.forEach((b, n) => { if (b.src !== undefined) sources[r.id + "#" + n] = b.src; });
+    return `<div class="reply">${reps.length > 1 ? `<div class="when">${esc(r.when)}</div>` : ""}${bs.map((b, n) => blockHtml(b, r.id + "#" + n)).join("")}</div>`;
+  }).join("");
+  $("empty").hidden = !!reps.length;
+  $("empty").textContent = reps.length ? "" : (S.note || "");
+  for (const [key, a] of Object.entries(answers)) {
+    const p = list.querySelector(`.para[data-key="${CSS.escape(key)}"]`);
+    if (p) openBox(p, a.text, false);
+  }
+  mark();
+  count();
+}
+
+// The passages listed for the ":N" reply, marked where they stand in the replies; the rest listed at the bottom.
+// The terminal shows the text without markdown's marks and wraps it, so both sides are compared with every run of
+// whitespace as one space; failing that, with no whitespace at all.
+function textNodes() {
+  const out = [];
+  const walk = document.createTreeWalker($("replies"), NodeFilter.SHOW_TEXT, {acceptNode: n =>
+    n.parentElement.closest("pre, .code, .ansrow, .when, .qb") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) out.push(n);
+  return out;
+}
+function flatten(nodes, keepSpace) {
+  let s = "", at = [], space = true, lastPara = null;
+  for (const n of nodes) {
+    const para = n.parentElement.closest(".para");
+    if (para !== lastPara) { if (keepSpace && !space) { s += " "; at.push(null); space = true; } lastPara = para; }
+    const t = n.nodeValue;
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (/\s/.test(c)) {
+        if (keepSpace && !space) { s += " "; at.push([n, i]); space = true; }
+        continue;
+      }
+      s += c; at.push([n, i]); space = false;
+    }
+  }
+  return {s, at};
+}
+const squash = (t, keepSpace) => keepSpace ? t.replace(/[`*]/g, "").replace(/\s+/g, " ").trim()
+  : t.replace(/[`*]/g, "").replace(/\s+/g, "");
+function wrap(at, from, to, n) {
+  // the range's characters, text node by text node, each run wrapped in a <mark>; the badge before the first
+  const runs = [];
+  for (let k = from; k < to; k++) {
+    if (!at[k]) continue;
+    const [node, i] = at[k], last = runs[runs.length - 1];
+    if (last && last.node === node && last.end === i) last.end = i + 1;
+    else runs.push({node, start: i, end: i + 1});
+  }
+  for (let r = runs.length - 1; r >= 0; r--) {
+    const {node, start, end} = runs[r];
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+    const m = document.createElement("mark");
+    range.surroundContents(m);
+    if (r === 0) m.insertAdjacentHTML("beforebegin", `<span class="qb">:${n}</span>`);
+  }
+}
+function mark() {
+  document.querySelectorAll("#replies .qb").forEach(b => b.remove());
+  document.querySelectorAll("#replies mark").forEach(m => m.replaceWith(...m.childNodes));
+  $("replies").normalize();
+  const missing = [];
+  for (const sel of S.selections || []) {
+    let done = false;
+    for (const keep of [true, false]) {
+      const {s, at} = flatten(textNodes(), keep);
+      let want = squash(sel.text, keep).replace(/^[●⎿•\s]+/, "");
+      if (want.length < 2) break;
+      const k = s.indexOf(want);
+      if (k >= 0) { wrap(at, k, k + want.length, sel.n); done = true; break; }
+    }
+    if (!done) missing.push(sel);
+  }
+  const miss = $("miss");
+  miss.hidden = !missing.length;
+  miss.innerHTML = missing.length ? "Not in these replies: " + missing.map(m => {
+    const t = m.text.replace(/\s+/g, " ").trim();
+    return `<span class="qb">:${m.n}</span>${esc(t.length > 60 ? t.slice(0, 60).trimEnd() + "…" : t)}`;
+  }).join(" &nbsp; ") : "";
+}
+
+function count() {
+  const n = Object.values(answers).filter(a => a.text.trim()).length, s = (S && S.selections || []).length;
+  const parts = [n ? `<b>${n} answer${n === 1 ? "" : "s"}</b>` : "No answer yet"];
+  if (s) parts.push(`${s} selection${s === 1 ? "" : "s"}`);
+  if (n) parts.push("draft kept");
+  $("count").innerHTML = parts.join(" · ");
+  $("copy").disabled = $("send").disabled = !n;
+  $("send").dataset.tip = S ? `Types the answers into the prompt of ${S.name} as one line (:1 answer :2 answer). Nothing is sent until you press Enter there.` : "";
+  size();
+}
+
+// ---------- the answer box ----------
+function grow(t) { t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; size(); }
+function openBox(p, text, animate) {
+  let row = p.nextElementSibling;
+  if (!row || !row.classList.contains("ansrow")) {
+    row = document.createElement("div");
+    row.className = "ansrow" + (animate ? " new" : "");
+    row.dataset.for = p.dataset.key;
+    row.innerHTML = '<textarea class="ans" rows="1" placeholder="Type your answer…" aria-label="Your answer to this paragraph"></textarea>';
+    p.after(row);
+  }
+  const t = row.firstChild;
+  if (text !== undefined) t.value = text;
+  t.classList.toggle("has", !!t.value.trim());
+  grow(t);
+  return t;
+}
+function closeBox(row) {
+  if (!row || row.contains(document.activeElement) || row.firstChild.value.trim()) return;
+  row.remove();
+  size();
+}
+let saveJob = {};
+function changed(t) {
+  const key = t.parentElement.dataset.for;
+  t.classList.toggle("has", !!t.value.trim());
+  if (t.value.trim()) answers[key] = {text: t.value, passage: sources[key] || ""};
+  else delete answers[key];
+  grow(t);
+  count();
+  clearTimeout(saveJob[key]);
+  const sid = S.sid;
+  saveJob[key] = setTimeout(() => api().draft(sid, key, sources[key] || "", t.value), 300);
+}
+document.addEventListener("input", e => { if (e.target.classList.contains("ans")) changed(e.target); });
+let before = "";
+document.addEventListener("focusin", e => { if (e.target.classList.contains("ans")) before = e.target.value; });
+document.addEventListener("focusout", e => {
+  if (!e.target.classList.contains("ans")) return;
+  const row = e.target.parentElement;
+  setTimeout(() => { if (hover !== row.previousElementSibling) closeBox(row); if (pending) { pending = false; apply(); } }, 0);
+});
+document.addEventListener("keydown", e => {
+  sayClear();
+  if (!e.target.classList.contains("ans")) return;
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.target.blur(); }  // Enter keeps it; Shift+Enter: a new line
+  else if (e.key === "Escape") { e.preventDefault(); e.target.value = before; changed(e.target); e.target.blur(); }
+});
+
+// the box opens under the paragraph the pointer rests on (200 ms), and an empty one closes when the pointer has
+// rested on another paragraph as long, so moving across the text does not make it jump
+let hover = null, hoverJob = null;
+document.getElementById("body").addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse") return;
+  const row = e.target.closest(".ansrow");
+  const p = row ? row.previousElementSibling : e.target.closest(".para");
+  if (p === hover) return;
+  clearTimeout(hoverJob);
+  hoverJob = setTimeout(() => {
+    const old = hover;
+    if (old) { old.classList.remove("hov"); closeBox(old.nextElementSibling && old.nextElementSibling.classList.contains("ansrow") ? old.nextElementSibling : null); }
+    hover = p;
+    if (p) { p.classList.add("hov"); openBox(p, undefined, true); }
+  }, 200);
+});
+document.getElementById("body").addEventListener("pointerleave", () => {
+  clearTimeout(hoverJob);
+  hoverJob = setTimeout(() => {
+    if (!hover) return;
+    hover.classList.remove("hov");
+    const row = hover.nextElementSibling;
+    hover = null;
+    if (row && row.classList.contains("ansrow")) closeBox(row);
+  }, 400);
+});
+document.addEventListener("click", e => {
+  const row = e.target.closest(".ansrow");
+  if (row) { row.firstChild.focus(); return; }
+  const code = e.target.closest(".code > button");
+  if (code) {
+    const c = code.parentElement, open = c.classList.toggle("open");
+    const n = c.querySelector("pre").textContent.split("\n").length;
+    code.dataset.tip = open ? "Hides the code" : (n === 1 ? "Shows the line" : "Shows the " + n + " lines");
+    tipHide();
+    size();
+  }
+});
+
+// ---------- Copy and Send to Session ----------
+function ordered() {  // the answers in the order their paragraphs stand
+  return [...document.querySelectorAll("#replies .ansrow")].map(r => ({key: r.dataset.for, passage: sources[r.dataset.for] || "", text: r.firstChild.value}))
+    .filter(a => a.text.trim());
+}
+let sayJob = null;
+function say(t, err) {
+  clearTimeout(sayJob);
+  $("say").textContent = t || "";
+  $("say").classList.toggle("err", !!err);
+  if (t && !err) sayJob = setTimeout(() => say(""), 5000);
+}
+function sayClear() { if ($("say").classList.contains("err")) say(""); }
+document.addEventListener("pointerdown", sayClear, true);
+$("copy").addEventListener("click", () => {
+  api().copy(ordered()).then(ok => say(ok ? "Copied" : "Could not copy: another program holds the clipboard. Try again.", !ok));
+});
+$("send").addEventListener("click", () => {
+  const sid = S.sid, list = ordered();
+  if (!list.length) return;
+  for (const k of Object.keys(saveJob)) clearTimeout(saveJob[k]);
+  const b = $("send");
+  b.disabled = true;
+  say("Typing into " + S.name + "…");
+  api().send(sid, list).then(r => {
+    if (r && !r.err && S.sid === sid) {
+      answers = {};
+      document.querySelectorAll("#replies .ansrow").forEach(row => row.remove());
+    }
+    say(r ? r.t : "", !r || r.err);
+    count();
+  });
+});
+
+// ---------- tooltip: as the panel's (mindmap tooltip.md) ----------
+let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
+function tipShow(el) {
+  tipJob = null;
+  if (!document.body.contains(el) || !el.dataset.tip) return;
+  tip = document.createElement("div");
+  tip.className = "tip";
+  tip.textContent = el.dataset.tip;
+  document.body.append(tip);
+  const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
+  const x = Math.max(4, Math.min((r.left + r.right) / 2 - w / 2, innerWidth - w - 4));
+  let y = r.top - 6 - h;  // above: nothing opens upward from these
+  if (y < 4) y = Math.min(r.bottom + 6, innerHeight - h - 4);
+  tip.style.left = x + "px";
+  tip.style.top = y + "px";
+  tipEnd = setTimeout(() => { tipDone = tipTarget; tipHide(); }, 3000);
+}
+function tipHide() {
+  clearTimeout(tipJob); clearTimeout(tipEnd);
+  tipJob = tipEnd = tipTarget = null;
+  if (tip) { tip.remove(); tip = null; }
+}
+addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse" || (e.clientX === lx && e.clientY === ly)) return;
+  lx = e.clientX; ly = e.clientY;
+  const p = e.target.closest("[data-tip]");
+  if (p !== tipDone) tipDone = null;
+  if (p && p === tipTarget) return;
+  tipHide();
+  if (p && p !== tipDone) { tipTarget = p; tipJob = setTimeout(() => tipShow(p), 400); }
+});
+addEventListener("pointerdown", e => { tipDone = tipTarget || e.target.closest("[data-tip]"); tipHide(); }, true);
+$("body").addEventListener("scroll", tipHide);
+document.documentElement.addEventListener("mouseleave", tipHide);
+addEventListener("blur", tipHide);
+
+// ---------- size: the window grows with what it holds; agent-panel.pyw caps it at the screen ----------
+let sizeJob = null, sent = 0;
+function natural() {
+  return Math.ceil($("body").scrollHeight + ($("miss").hidden ? 0 : $("miss").offsetHeight) + $("foot").offsetHeight);
+}
+function size() {
+  if (sizeJob) return;
+  sizeJob = requestAnimationFrame(() => {
+    sizeJob = null;
+    const h = natural();
+    if (ready && h !== sent) { sent = h; api().size(h); }
+  });
+}
+
+// ---------- from agent-panel.pyw ----------
+let pending = false;
+function apply() {
+  const key = JSON.stringify([S.sid, (S.replies || []).map(r => [r.id, r.text])]);
+  if (key !== shownKey) {
+    if (document.activeElement && document.activeElement.classList.contains("ans")) { pending = true; return; }
+    const same = shownKey && JSON.parse(shownKey)[0] === S.sid;
+    shownKey = key;
+    if (!same) { answers = {}; tipHide(); say(""); $("body").scrollTop = 0; hover = null; }
+    for (const [k, a] of Object.entries(S.answers || {})) if (!answers[k]) answers[k] = {text: a.text, passage: a.passage};
+    draw();
+  } else {
+    mark();
+    count();
+  }
+}
+window.reply = {
+  // state: {sid, name, replies: [{id, when, text}], answers: {key: {text, passage}}, selections: [{n, text}], note}
+  show(state) { S = state; apply(); return natural(); },
+};
+addEventListener("pywebviewready", () => { ready = true; api().ready(); });
+addEventListener("resize", size);
+</script>
+</body>
+</html>

@@ -11,6 +11,9 @@
 # A process of its own so a stalled panel can never hold the keys: it lives on with the panel's last list of
 # session windows, the panel ends it (Windows then frees its hotkeys) and starts it again if it stops answering,
 # and it ends when the panel ends. Off: "paste_keys": false in ~/.claude/claude-plus.local.json.
+# The reply window's Send to Session uses the same machinery for a line of text: the panel brings the session's
+# terminal to the front and hands the line over (WM_COPYDATA); it goes on the clipboard the same quiet way, Ctrl+V
+# goes to that terminal, and the clipboard comes back once the terminal has read it. Enter is never pressed.
 import ctypes, ctypes.wintypes as wt, importlib.util, json, os, re, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +42,12 @@ OLE = {"DataObject", "Ole Private Data"}
 WM_CLOSE, WM_DESTROY, WM_TIMER, WM_HOTKEY = 0x0010, 0x0002, 0x0113, 0x0312
 WM_RENDERFORMAT, WM_RENDERALLFORMATS, WM_DESTROYCLIPBOARD = 0x0305, 0x0306, 0x0307
 WM_DONE = 0x8001       # WM_APP + 1: an image paste finished
+WM_TYPED = 0x8002      # WM_APP + 2: the panel asks how typing request wParam went (TYPED_*)
+WM_COPYDATA = 0x004A
+TYPE_TEXT = 0x54595045  # COPYDATASTRUCT.dwData of a typing request: JSON {"id", "hwnd", "text"}
+# answers to a typing request (WM_COPYDATA) and to WM_TYPED
+TYPED_STARTED, TYPED_BUSY, TYPED_NOT_FRONT, TYPED_NOT_CLAUDE, TYPED_BAD = 1, 2, 3, 4, 5
+TYPED_PENDING, TYPED_READ, TYPED_FAILED = 0, 1, 2
 T_CHECK, T_REARM = 1, 2
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)  # own instances: the keeper module sets windll's prototypes
@@ -88,6 +97,10 @@ class WNDCLASSW(ctypes.Structure):
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [("wVk", wt.WORD), ("wScan", wt.WORD), ("dwFlags", wt.DWORD), ("time", wt.DWORD),
                 ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class COPYDATASTRUCT(ctypes.Structure):
+    _fields_ = [("dwData", ctypes.c_size_t), ("cbData", wt.DWORD), ("lpData", ctypes.c_void_p)]
 
 
 class INPUT(ctypes.Structure):
@@ -280,6 +293,7 @@ class Keys:
         self.text, self.target_pid, self.refused = "", 0, []  # the path, the terminal's process, others refused
         self.rendered, self.lost, self.emptying = threading.Event(), False, False
         self.hooks = []
+        self.typed = {}  # typing request id -> TYPED_PENDING / TYPED_READ / TYPED_FAILED
 
     # ----- which window -----
     def session_windows(self):
@@ -393,6 +407,49 @@ class Keys:
                 self.log("paste", how, done)
             user32.PostMessageW(self.hwnd, WM_DONE, 0, 0)
 
+    def request(self, data):
+        """A typing request from the panel (WM_COPYDATA): the line goes into the terminal in front, at its cursor,
+        through the clipboard as a picture's path does. Only into a listed session window that is the foreground
+        window and shows a Claude Code tab. Returns TYPED_STARTED (the paste runs on a thread) or why not."""
+        try:
+            d = json.loads(data.decode("utf-8"))
+            rid, target, text = int(d["id"]), int(d["hwnd"]), str(d["text"])
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            return TYPED_BAD
+        if self.busy or self.closing:
+            return TYPED_BUSY
+        if user32.GetForegroundWindow() != target:
+            return TYPED_NOT_FRONT
+        if not wanted(target, self.session_windows(), self.title(target)):
+            return TYPED_NOT_CLAUDE
+        self.busy = True
+        self.unreg()
+        self.typed = {k: v for k, v in self.typed.items() if k > rid - 20}
+        self.typed[rid] = TYPED_PENDING
+        threading.Thread(target=self.type_text, args=(rid, target, text), daemon=True).start()
+        return TYPED_STARTED
+
+    def type_text(self, rid, target, text):
+        """On a thread of its own: the text pasted into the terminal in front, the clipboard put back."""
+        done = TYPED_FAILED
+        try:
+            saved, lost = save_clip(self.hwnd)
+            if saved is None:
+                self.log("type", "clipboard busy")
+                return
+            if user32.GetForegroundWindow() != target or not self.set_path(text, target):
+                self.log("type", "front changed")
+                return
+            send_keys(keys_for(CTRL_V, held(VK_CONTROL), held(VK_MENU), paste=True))
+            read = self.rendered.wait(READ_WAIT)
+            self.log("type", ("read" if read else "not read") + ", " + self.restore(saved), "%d characters" % len(text))
+            done = TYPED_READ if read else TYPED_FAILED
+        except Exception as e:
+            self.log("type error", repr(e))
+        finally:
+            self.typed[rid] = done
+            user32.PostMessageW(self.hwnd, WM_DONE, 0, 0)
+
     def set_path(self, path, target):
         """The path as the clipboard's text, rendered only when asked for (so the moment the terminal reads it is
         known), with the mark and the quiet formats."""
@@ -454,6 +511,13 @@ class Keys:
             if msg == WM_HOTKEY:
                 self.hotkey(wp)
                 return 0
+            if msg == WM_COPYDATA:
+                cds = ctypes.cast(lp, ctypes.POINTER(COPYDATASTRUCT)).contents
+                if cds.dwData != TYPE_TEXT:
+                    return 0
+                return self.request(ctypes.string_at(cds.lpData, cds.cbData))
+            if msg == WM_TYPED:
+                return self.typed.get(int(wp), TYPED_FAILED)
             if msg == WM_RENDERFORMAT:
                 self.render(wp)
                 return 0
