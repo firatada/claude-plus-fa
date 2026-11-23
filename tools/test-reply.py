@@ -274,7 +274,8 @@ class Layout(unittest.TestCase):
 
 
 # The reply page's markdown (blocks(), cells(), inline(), blockHtml()), run in node when it is installed: the part of
-# agent-reply.html between its markdown and drawing headings, with esc and the chevron it uses.
+# agent-reply.html between its markdown and drawing headings, with esc and the chevron it uses; that part also holds
+# clickAction() and paraTip(), the answer box's click rule and the paragraph's hint.
 JS = r"""
 const out = {};
 const tbl = blocks("Spend:\n\n| Job | Calls | Tokens |\n|---|--:|:-:|\n| News **scoring** | 63 | 1,55 m |\n| Trend `cut` | 23 | 485 k |\n\nAfter.");
@@ -288,6 +289,11 @@ out.inline = inline("**bold** `code` ~~gone~~ *it* [docs](https://ex.com/a?b=1&c
 out.lists = blocks("1. one\n2. two\n   more\n- dot\n  - nested").map(b => [b.kind, b.marker, b.indent, b.text]);
 out.quote = blocks("> a\n> b")[0];
 out.heads = blocks("# H1\n## H2\n### H3").map(b => blockHtml(b, "k"));
+const C = (o) => clickAction(Object.assign({own: false, moved: false, selected: false, detail: 1, box: false, text: false}, o));
+out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}), drag: C({moved: true}),
+  dragShut: C({moved: true, box: true}), selected: C({selected: true}), dbl: C({detail: 2}), own: C({own: true}),
+  ownOpen: C({own: true, box: true})};
+out.tips = [paraTip("p", false), paraTip("li", false), paraTip("table", false), paraTip("table", true)];
 console.log(JSON.stringify(out));
 """
 
@@ -354,9 +360,23 @@ class Markdown(unittest.TestCase):
         self.assertEqual(self.md["lists"], [["li", "1.", 0, "one"], ["li", "2.", 0, "two more"], ["li", "•", 0, "dot"],
                                             ["li", "•", 2, "nested"]])
         self.assertEqual(self.md["quote"]["text"], "a\nb")
-        self.assertEqual(self.md["heads"], ['<div class="para h h1" data-key="k">H1</div>',
-                                            '<div class="para h h2" data-key="k">H2</div>',
-                                            '<div class="para h" data-key="k">H3</div>'])
+        tip = 'data-tip="Click to answer this paragraph"'
+        self.assertEqual(self.md["heads"], [f'<div class="para h h1" data-key="k" {tip}>H1</div>',
+                                            f'<div class="para h h2" data-key="k" {tip}>H2</div>',
+                                            f'<div class="para h" data-key="k" {tip}>H3</div>'])
+
+    def test_a_click_opens_and_a_second_closes_only_an_empty_box(self):
+        c = self.md["click"]
+        self.assertEqual((c["open"], c["close"], c["keep"]), ("open", "close", "focus"))
+
+    def test_drag_double_click_and_own_targets_never_toggle(self):
+        c = self.md["click"]
+        for k in ("drag", "dragShut", "selected", "dbl", "own", "ownOpen"):
+            self.assertEqual(c[k], "", k)
+
+    def test_the_hint_says_what_a_click_does(self):
+        self.assertEqual(self.md["tips"], ["Click to answer this paragraph", "Click to answer this item",
+                                           "Click to answer this table", "Click to close the answer box"])
 
 
 class Pins(unittest.TestCase):

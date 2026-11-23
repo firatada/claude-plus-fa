@@ -13,9 +13,13 @@
      last typed there, one under the other (agent-reply.py reads them from the transcript; agent-panel.pyw sends them with
      reply.show()), its markdown drawn as Claude Code draws it: headings, bold, italics, strikethrough, inline code,
      links (opened in the browser), lists, quotes, tables (a table is one paragraph) and rules. Claude's text is
-     never changed. Resting the pointer on a paragraph (a list item counts as one)
-     opens a box under it, "Type your answer…"; what the user types there is theirs, in blue on a light blue ground
-     with a blue rule on the left, kept per session (agent-panel.pyw stores it through api.draft) until it is sent.
+     never changed. A click on a paragraph (a list item and a table count as one) opens a box under it,
+     "Type your answer…", with the caret in it; another click on that paragraph closes it while it is empty, and a
+     box holding text stays open (2026-11-23: resting the pointer only tints the paragraph and, after a moment, says
+     it can be answered). A drag that selects text, a double click, and clicks on a link, a code block, Pin or a
+     ":N" badge never open or close a box. Several boxes can be open. What the user types there is theirs, in blue on
+     a light blue ground with a blue rule on the left, kept per session (agent-panel.pyw stores it through api.draft)
+     until it is sent; a box with a kept answer is open when the reply is shown.
      Code blocks show shut, as one line (language, lines, first line), and open on a click. The passages selected
      in the terminal for the ":N" reply show marked where they stand, led by their ":N"; one that is not in the
      reply text is listed at the bottom. The bar at the bottom counts the answers and selections; Copy puts the
@@ -129,7 +133,7 @@ a.lnk { color: var(--blue); text-decoration: underline; text-underline-offset: 2
 a.lnk:hover { text-decoration-color: var(--blue); }
 .para.li { display: grid; grid-template-columns: 22px minmax(0, 1fr); }
 .para.li > .n { color: var(--muted); font-variant-numeric: tabular-nums; }
-.para.hov { background: rgba(27, 77, 245, .04); }
+#replies .para:hover { background: rgba(27, 77, 245, .04); }  /* with its tooltip, the hint that a click answers it */
 .hr { height: 1px; background: var(--line); margin: 10px 0; }
 code { font: 400 12.5px "Cascadia Mono", Consolas, monospace; background: var(--surface2); border-radius: 4px; padding: 1px 4px; }
 /* a code block: shut, one line, opens on a click */
@@ -153,7 +157,7 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
   background: var(--blue); color: #fff; font: 700 11px/1 "Segoe UI", system-ui, sans-serif; vertical-align: 1px;
   font-variant-numeric: tabular-nums; }
 /* the user's answer under a paragraph: their text in blue on a light blue ground with a blue rule; Claude's text is
-   never touched. Empty, it is the place an answer goes, shown under the paragraph the pointer rests on */
+   never touched. Empty, it is the place an answer goes, opened under a paragraph by a click on it */
 .ansrow { margin: 2px 0 6px 22px; }
 .ansrow.new { animation: drop .16s var(--snap); }
 .ans { display: block; width: 100%; resize: none; overflow: hidden; min-height: 34px; padding: 5px 10px;
@@ -215,6 +219,7 @@ let shownSid = null;   // the session drawn now
 let answers = {};      // paragraph key -> {text, passage}, the page's own copy of the session's draft
 let shownKey = null;   // the replies drawn now (session and text), so an update with the same ones keeps the page
 let ready = false;
+const opened = new Set();  // paragraph keys whose answer box is open while empty (one with text is open anyway)
 
 // ---------- Claude's markdown, as blocks; each answerable block keeps its own source text ----------
 function blocks(text) {
@@ -316,7 +321,7 @@ function inline(t) {
 }
 
 function blockHtml(b, key) {
-  const k = `data-key="${esc(key)}"`;
+  const k = `data-key="${esc(key)}" data-tip="${paraTip(b.kind, false)}"`;
   if (b.kind === "code") {
     const first = b.lines.find(l => l.trim()) || "";
     const n = b.lines.length;
@@ -335,6 +340,21 @@ function blockHtml(b, key) {
   return `<div class="para" ${k}>${inline(b.src).replace(/\n/g, "<br>")}</div>`;
 }
 
+// ---------- a click on a paragraph and its answer box (pure, so tools/test-reply.py runs it in node) ----------
+// c: own (the click's own target acts: a link, a code block, Pin, a ":N" badge, the box itself, or no paragraph),
+// moved (the pointer went 4 px or more between press and release), selected (text is selected after it), detail
+// (2 and more: part of a double click), box (the paragraph's box is open), text (the box holds text).
+// Answers "open" (and focus it), "close", "focus" (a box holding text never closes on a click) or "" (nothing).
+function clickAction(c) {
+  if (c.own || c.moved || c.selected || c.detail > 1) return "";
+  if (!c.box) return "open";
+  return c.text ? "focus" : "close";
+}
+function paraTip(kind, open) {
+  const what = kind === "table" ? "table" : kind === "li" ? "item" : "paragraph";
+  return open ? "Click to close the answer box" : `Click to answer this ${what}`;
+}
+
 // ---------- drawing ----------
 const sources = {};  // key -> the paragraph's source text (what goes into the list when answered)
 function draw() {
@@ -349,9 +369,9 @@ function draw() {
   }).join("");
   $("empty").hidden = !!reps.length;
   $("empty").textContent = reps.length ? "" : (S.note || "");
-  for (const [key, a] of Object.entries(answers)) {
+  for (const key of new Set([...opened, ...Object.keys(answers)])) {
     const p = list.querySelector(`.para[data-key="${CSS.escape(key)}"]`);
-    if (p) openBox(p, a.text, false);
+    if (p) openBox(p, answers[key] ? answers[key].text : undefined, false);
   }
   mark();
   count();
@@ -445,8 +465,10 @@ function count() {
 
 // ---------- the answer box ----------
 function grow(t) { t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; size(); }
+function kindOf(p) { return p.classList.contains("table") ? "table" : p.classList.contains("li") ? "li" : "para"; }
 function openBox(p, text, animate) {
   let row = p.nextElementSibling;
+  opened.add(p.dataset.key);
   if (!row || !row.classList.contains("ansrow")) {
     row = document.createElement("div");
     row.className = "ansrow" + (animate ? " new" : "");
@@ -457,13 +479,22 @@ function openBox(p, text, animate) {
   const t = row.firstChild;
   if (text !== undefined) t.value = text;
   t.classList.toggle("has", !!t.value.trim());
+  tipFor(p);
   grow(t);
   return t;
 }
-function closeBox(row) {
-  if (!row || row.contains(document.activeElement) || row.firstChild.value.trim()) return;
+function closeBox(row) {  // only an empty box closes
+  if (!row || row.firstChild.value.trim()) return;
+  const p = row.previousElementSibling;
+  opened.delete(row.dataset.for);
   row.remove();
+  if (p) tipFor(p);
   size();
+}
+function tipFor(p) {  // the paragraph's tooltip says what a click does; none while its box holds text
+  const row = p.nextElementSibling, box = row && row.classList.contains("ansrow") ? row.firstChild : null;
+  if (box && box.value.trim()) delete p.dataset.tip;
+  else p.dataset.tip = paraTip(kindOf(p), !!box);
 }
 let saveJob = {};
 function changed(t) {
@@ -471,6 +502,7 @@ function changed(t) {
   t.classList.toggle("has", !!t.value.trim());
   if (t.value.trim()) answers[key] = {text: t.value, passage: sources[key] || ""};
   else delete answers[key];
+  if (t.parentElement.previousElementSibling) tipFor(t.parentElement.previousElementSibling);
   grow(t);
   count();
   clearTimeout(saveJob[key]);
@@ -482,8 +514,7 @@ let before = "";
 document.addEventListener("focusin", e => { if (e.target.classList.contains("ans")) before = e.target.value; });
 document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
-  const row = e.target.parentElement;
-  setTimeout(() => { if (hover !== row.previousElementSibling) closeBox(row); if (pending) { pending = false; apply(); } }, 0);
+  setTimeout(() => { if (pending) { pending = false; apply(); } }, 0);
 });
 document.addEventListener("keydown", e => {
   sayClear();
@@ -492,32 +523,10 @@ document.addEventListener("keydown", e => {
   else if (e.key === "Escape") { e.preventDefault(); e.target.value = before; changed(e.target); e.target.blur(); }
 });
 
-// the box opens under the paragraph the pointer rests on (200 ms), and an empty one closes when the pointer has
-// rested on another paragraph as long, so moving across the text does not make it jump
-let hover = null, hoverJob = null;
-document.getElementById("body").addEventListener("pointermove", e => {
-  if (e.pointerType !== "mouse") return;
-  const row = e.target.closest(".ansrow");
-  const p = row ? row.previousElementSibling : e.target.closest(".para");
-  if (p === hover) return;
-  clearTimeout(hoverJob);
-  hoverJob = setTimeout(() => {
-    const old = hover;
-    if (old) { old.classList.remove("hov"); closeBox(old.nextElementSibling && old.nextElementSibling.classList.contains("ansrow") ? old.nextElementSibling : null); }
-    hover = p;
-    if (p) { p.classList.add("hov"); openBox(p, undefined, true); }
-  }, 200);
-});
-document.getElementById("body").addEventListener("pointerleave", () => {
-  clearTimeout(hoverJob);
-  hoverJob = setTimeout(() => {
-    if (!hover) return;
-    hover.classList.remove("hov");
-    const row = hover.nextElementSibling;
-    hover = null;
-    if (row && row.classList.contains("ansrow")) closeBox(row);
-  }, 400);
-});
+// a click (not a drag) on a paragraph opens its box or closes an empty one; where the press went down tells a drag
+// that selects text (for copying or for the ":N" reply) apart from a click
+let down = null;
+document.getElementById("body").addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY}; }, true);
 document.addEventListener("click", e => {
   const pb = e.target.closest(".rpin");
   if (pb) { pinDo(pb.classList.contains("on") ? "unpin" : "pin", pb.closest(".reply").dataset.id); return; }
@@ -528,6 +537,20 @@ document.addEventListener("click", e => {
   if (a) { e.preventDefault(); tipHide(); api().link(a.dataset.url); return; }
   const row = e.target.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
+  const hit = e.target.closest("#replies .para");
+  if (hit && !e.target.closest(".qb, a.lnk")) {
+    // the paragraph as drawn now: an update held while a box had the keyboard is drawn when the press leaves it
+    const p = $("replies").querySelector(`.para[data-key="${CSS.escape(hit.dataset.key)}"]`);
+    const next = p && p.nextElementSibling, box = next && next.classList.contains("ansrow") ? next : null;
+    const sel = getSelection();
+    const act = !p ? "" : clickAction({own: false, detail: e.detail, box: !!box, text: !!(box && box.firstChild.value.trim()),
+      moved: !!down && Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 4, selected: !!sel && !sel.isCollapsed});
+    tipHide();
+    if (act === "open") openBox(p, undefined, true).focus();
+    else if (act === "close") closeBox(box);
+    else if (act === "focus") box.firstChild.focus();
+    return;
+  }
   const code = e.target.closest(".code > button");
   if (code) {
     const c = code.parentElement, open = c.classList.toggle("open");
@@ -612,7 +635,13 @@ $("send").addEventListener("click", () => {
   api().send(sid, list).then(r => {
     if (r && !r.err && S.sid === sid) {  // the answers sent go; those under another chip stay
       for (const a of list) { delete answers[a.key]; if (S.answers) delete S.answers[a.key]; }
-      document.querySelectorAll("#replies .ansrow").forEach(row => { if (list.some(a => a.key === row.dataset.for)) row.remove(); });
+      document.querySelectorAll("#replies .ansrow").forEach(row => {
+        if (!list.some(a => a.key === row.dataset.for)) return;
+        const p = row.previousElementSibling;
+        opened.delete(row.dataset.for);
+        row.remove();
+        if (p) tipFor(p);
+      });
     }
     say(r ? r.t : "", !r || r.err);
     count();
@@ -687,7 +716,7 @@ function apply() {
   if (key !== shownKey) {
     shownKey = key;
     shownSid = S.sid;
-    if (!same) { answers = {}; tipHide(); say(""); $("body").scrollTop = 0; hover = null; }
+    if (!same) { answers = {}; opened.clear(); tipHide(); say(""); $("body").scrollTop = 0; }
     for (const [k, a] of Object.entries(S.answers || {})) if (!answers[k]) answers[k] = {text: a.text, passage: a.passage};
     draw();
   } else {

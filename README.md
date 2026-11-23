@@ -77,7 +77,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 <img src="docs/img/reply-window.png" alt="The reply window beside the screenshot strip: session tabs on top, a row of pinned replies under them led by Latest, the line naming the session, Claude's reply with one passage marked :1, a table, an answer in blue under the first question, and the Copy and Send to Session buttons" width="880">
 
 1. While a Claude Code session is open, the reply window opens at the top left of the screen, beside the screenshot strip, with a tab for each open session. It shows every reply Claude gave since your last prompt in that session, formatted as in the terminal (tables included). It follows the session you last typed in, and the session whose terminal you click or switch to; click a tab to see another.
-2. Rest the pointer on a paragraph, a list item or a table. A box opens under it: type your answer. Code blocks show as one line; click one to open it.
+2. Click a paragraph, a list item or a table. A box opens under it: type your answer. Click the paragraph again to close an empty box; a box with text stays open. Dragging to select text never opens one. Code blocks show as one line; click one to open it.
 3. Click **Send to Session**. The session's terminal comes to the front with one line in its prompt, such as `:1 Monthly price :3 Wait for Thursday`. Read it, then press Enter.
 
 - Claude gets each paragraph you answered, with your answer.
