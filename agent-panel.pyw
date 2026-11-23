@@ -2139,6 +2139,42 @@ def quiet_forms():
     view.BrowserForm = Form
 
 
+def allow_microphone(title):
+    """The reply window records the microphone while Space is held in an answer box (dictation). WebView2 asks the
+    user with a dialog of its own before a page may use it, every time in private mode; the window titled `title`
+    answers Allow itself, for the microphone alone (every other permission keeps WebView2's own answer). The page is
+    loaded from its file for this: a page given as a string is about:blank, not a secure context, and has no
+    navigator.mediaDevices. Called after quiet_forms(), on the form class it left; a pywebview without these parts is
+    left as it is."""
+    try:
+        from webview.platforms import winforms
+        base = winforms.BrowserView.BrowserForm
+    except Exception:
+        return
+
+    class Form(base):
+        def __init__(self, window, cache_dir):
+            super().__init__(window, cache_dir)
+            if window.title != title or not getattr(self, "browser", None):
+                return
+
+            def ready(sender, args):
+                try:
+                    from Microsoft.Web.WebView2.Core import CoreWebView2PermissionKind, CoreWebView2PermissionState
+
+                    def asked(_, a):
+                        if a.PermissionKind == CoreWebView2PermissionKind.Microphone:
+                            a.State = CoreWebView2PermissionState.Allow
+                    sender.CoreWebView2.PermissionRequested += asked
+                except Exception:
+                    pass  # WebView2's own question then shows
+            try:
+                self.browser.webview.CoreWebView2InitializationCompleted += ready
+            except Exception:
+                pass
+    winforms.BrowserView.BrowserForm = Form
+
+
 def ok(t):
     return {"t": t, "err": False}
 
@@ -2322,23 +2358,33 @@ class ReplyApi:
             except OSError:
                 pass  # kept in the page; written with the next change
 
-    def voice(self, on):
-        # Space held in an answer box (on) and let go (off): Windows voice typing started and stopped (agent-reply.py
-        # Voice); answers {on} or {note} when it cannot start, {off}
-        v = self._p.voice
-        if not v:
-            return {"note": "Windows voice typing is not available here."} if on else {"off": False}
+    def dictation(self, step):
+        # Space held in an answer box: "ready" (is the speech-to-text server up; started when it is not: {up},
+        # {starting} or {note}) and "wait" (for one starting: {up} or {note}); agent-reply.py Dictation
+        d = self._p.dictation
+        if not d:
+            return {"note": "Dictation is not available here."}
         try:
-            return v.start() if on else v.stop()
+            return d.wait() if step == "wait" else d.ready()
         except Exception:
-            return {"note": "Windows voice typing did not start."} if on else {"off": False}
+            return {"note": "Voice to Text could not be reached."}
+
+    def dictate(self, audio, mime):
+        # Space let go: the recording (base64) to the server; answers {text} or {note}
+        d = self._p.dictation
+        if not d:
+            return {"note": "Dictation is not available here."}
+        try:
+            return d.transcribe(base64.b64decode(str(audio)), str(mime))
+        except Exception:
+            return {"note": "Voice to Text could not be reached."}
 
     def settings(self, uri):
-        # a click on the Settings page a voice typing note names: that page opened in front (agent-reply.py
-        # open_settings, which opens only those pages)
+        # a click on the link in a dictation note: the Settings page it names, or Voice to Text (agent-reply.py
+        # open_settings, which opens nothing else)
         m = self._p.reply_mod
         try:
-            return bool(m and m.open_settings(str(uri)))
+            return bool(m and m.open_settings(str(uri), local("dictation_app")))
         except Exception:
             return False
 
@@ -2572,24 +2618,24 @@ class Panel:
                 self.pinned = self.reply_mod.Pins()
             except Exception:
                 self.pinned = None
-        # Windows voice typing for an answer box (Space held): keys go only while the reply window is the foreground
-        self.voice = None
+        # dictation in an answer box (Space held): the page's recording to the local speech-to-text server
+        self.dictation = None
         if self.reply_mod:
             try:
-                self.voice = self.reply_mod.Voice(
-                    lambda: bool(self.reply_hwnd) and user32.GetForegroundWindow() == self.reply_hwnd)
+                self.dictation = self.reply_mod.Dictation(local, save_local)
             except Exception:
-                self.voice = None
+                self.dictation = None
         self.reply_open = local("reply_open") is not False
         self.reply_hwnd, self.reply_ready, self.reply_shown, self.reply_h = None, False, False, 0
         self.reply_key, self.head_key, self.reply_box, self.reply_now = None, None, None, None
         self.reply = None
         if self.reply_mod:
-            with open(REPLY_HTML, encoding="utf-8") as f:
-                rhtml = f.read()
             # shadow=True as the strip: DWM's frame, its own edged surface beside the strip's. Not focus=False: the user types
-            # into it, so a click activates it (quiet_forms() keeps it from taking the keyboard when it is made)
-            self.reply = webview.create_window(REPLY_TITLE, html=rhtml, js_api=ReplyApi(self), width=REPLY_W,
+            # into it, so a click activates it (quiet_forms() keeps it from taking the keyboard when it is made). Loaded
+            # from its file, not as a string: a file page is a secure context, so it may record the microphone
+            # (allow_microphone())
+            rurl = "file:///" + os.path.abspath(REPLY_HTML).replace("\\", "/").replace(" ", "%20")
+            self.reply = webview.create_window(REPLY_TITLE, url=rurl, js_api=ReplyApi(self), width=REPLY_W,
                                                height=200, min_size=(0, 0), frameless=True, easy_drag=False,
                                                on_top=False, hidden=True, shadow=True, background_color="#FFFFFF")
         self.pins = strip_pins()
@@ -2616,6 +2662,7 @@ class Panel:
 
     def run(self):
         quiet_forms()
+        allow_microphone(REPLY_TITLE)
         webview.start(self.main, gui="edgechromium", private_mode=True)
 
     def main(self):

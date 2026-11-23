@@ -1,9 +1,9 @@
 # The Field Agents reply window's rules, loaded by agent-panel.pyw (importlib): Claude's replies in a session since
 # the prompt the user last typed there, read from its transcript a piece at a time; the answers drafted under them,
 # kept per session until they are sent; the replies pinned per session; the one line Send to Session types into the
-# session's prompt, and the text Copy puts on the clipboard; Windows voice typing for an answer box held with Space
-# (Voice, the one part that sends keys: Win+H, only while the reply window is in front). tools/test-reply.py tests
-# the rest on made-up transcripts.
+# session's prompt, and the text Copy puts on the clipboard; dictation for an answer box held with Space (Dictation:
+# the recording to a local speech-to-text server, its text back). tools/test-reply.py tests them on made-up
+# transcripts and a stand-in server.
 #
 # A reply is the text of one main-thread assistant message that ended its turn (stop_reason "end_turn"): its text
 # blocks, joined. Not a reply: thinking, tool calls and their results, the text Claude writes between tool calls
@@ -321,148 +321,194 @@ def set_clipboard_text(text):
         user32.CloseClipboard()
 
 
-# ---------- Windows voice typing in an answer box (Space held) ----------
-# Windows' own dictation (Win+H) types into the box that has the keyboard; nothing here records or sends sound. The
-# page asks for it when Space is held in an answer box (agent-reply.html) and stops it when Space comes up. Win+H
-# opens and closes Windows' dictation bar, a no-activate, topmost ApplicationFrameWindow of explorer.exe that is
-# cloaked while closed; EnumWindows does not list it, FindWindowEx does. Explorer keeps several such flyouts (the
-# emoji panel's among them), so the bar is the one that came out of its cloak after our Win+H (Voice.start()).
-SPEECH_KEY = r"Software\Microsoft\Speech_OneCore\Settings\OnlineSpeechPrivacy"
-SPEECH_POLICY = r"SOFTWARE\Policies\Microsoft\InputPersonalization"
-MIC_KEY = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
-VOICE_WAIT = 1.5  # seconds for the dictation bar to show after Win+H
-VOICE_OFF = ("Windows voice typing is off. Turn on Online speech recognition in Settings › Privacy › Speech, "
-             "then hold Space again.")
-VOICE_POLICY = "Windows voice typing is turned off by a policy on this PC."
-VOICE_NO_MIC = "No microphone found. Connect one or turn it on in Settings › System › Sound, then hold Space again."
-VOICE_MIC_DENIED = "Windows blocks the microphone. Allow it in Settings › Privacy › Microphone, then hold Space again."
-VOICE_NOT_STARTED = "Windows voice typing did not start."
-# The Settings page a note names, opened by a click on its name in the note (open_settings). VOICE_POLICY has none:
-# nothing there the user can change.
-VOICE_LINKS = {VOICE_OFF: ("Settings › Privacy › Speech", "ms-settings:privacy-speech"),
-               VOICE_MIC_DENIED: ("Settings › Privacy › Microphone", "ms-settings:privacy-microphone"),
-               VOICE_NO_MIC: ("Settings › System › Sound", "ms-settings:sound")}
+# ---------- Dictation in an answer box (Space held) ----------
+# The page records the microphone while Space is held in an answer box (agent-reply.html, MediaRecorder) and hands
+# the recording here when Space comes up; it goes to a local speech-to-text server (Voice to Text) and its text comes
+# back to be typed at the caret. Nothing is kept: the sound lives only in memory for the one request. The server's
+# contract: POST <url>/api/dictate, body the audio of one utterance (WebM/Opus or WAV), query parameters `language`
+# and `prompt` (words the recogniser should spell as given), answer {"text", "language", "ms"}; errors as JSON with
+# an "error" (or "message"); GET <url>/api/health answers 200 while it runs. claude-plus.local.json (outside the repo):
+# "dictation_url" (default DICTATE_URL), "dictation_server" (the server's start script, started hidden when it is
+# not running), "dictation_app" (what the note's link opens when the server cannot be reached), "dictation_language"
+# (default DICTATE_LANGUAGE) and "dictation_terms" (the word list sent as the prompt; written with DICTATE_TERMS the
+# first time it is missing, so the user can edit it there).
+DICTATE_URL = "http://127.0.0.1:8765"
+DICTATE_LANGUAGE = "tr"
+DICTATE_TERMS = ["deploy", "commit", "push", "pull request", "merge", "branch", "rebase", "repo", "GitHub", "session",
+                 "panel", "Codex", "Claude", "Claude Code", "prompt", "hook", "agent", "subagent", "workflow",
+                 "README", "memory.md", "CLAUDE.md", "handoff", "terminal", "token", "context", "API", "backend",
+                 "frontend", "debug", "build", "test", "bug", "fix", "screenshot", "tooltip", "dashboard", "markdown",
+                 "JSON", "Python", "JavaScript", "TypeScript", "npm", "localhost", "server", "endpoint"]
+DICTATE_START_WAIT = 30   # seconds the server gets to answer its health check after it is started
+DICTATE_WAIT = 120        # seconds one transcription may take
+DICTATE_NOT_RUNNING = "Voice to Text is not running at {url}."
+DICTATE_NOT_STARTED = "Voice to Text did not start."
+DICTATE_OPEN = " Open Voice to Text to see why, then hold Space again."  # after either, when "dictation_app" is set
+DICTATE_START = " Start it, then hold Space again."  # after DICTATE_NOT_RUNNING without it
+DICTATE_FAILED = "Voice to Text could not turn this into text: {why}"
+DICTATE_EMPTY = "Nothing was heard. Hold Space and speak again."
+# What a note's link may open (open_settings): the two Windows Settings pages the page's microphone notes name, and
+# APP_LINK, the "dictation_app" the user set (its words in the note: "Open Voice to Text").
+APP_LINK = "app:voice-to-text"
+SETTINGS_LINKS = ("ms-settings:privacy-microphone", "ms-settings:sound")
 
 
-def voice_note(why):
-    """What the page is answered when voice typing cannot start: the note, and the Settings page it names, if any."""
-    link = VOICE_LINKS.get(why)
-    return {"note": why, "link": {"text": link[0], "uri": link[1]}} if link else {"note": why}
+def dictation_settings(local):
+    """(url, server, app, language, terms) from claude-plus.local.json through `local` (key -> value or None)."""
+    url = local("dictation_url")
+    url = url.rstrip("/") if isinstance(url, str) and url.startswith(("http://", "https://")) else DICTATE_URL
+    server, app = local("dictation_server"), local("dictation_app")
+    lang = local("dictation_language")
+    terms = local("dictation_terms")
+    terms = [str(t).strip() for t in terms if str(t).strip()] if isinstance(terms, list) else list(DICTATE_TERMS)
+    return (url, server if isinstance(server, str) and server else None, app if isinstance(app, str) and app else None,
+            lang if isinstance(lang, str) and lang else DICTATE_LANGUAGE, terms)
 
 
-def open_settings(uri):
-    """Opens a Settings page a note names (no other address), in front: the click on its name made the reply window
-    the foreground, so the panel may hand the foreground on (ASFW_ANY) to Settings, which the shell starts."""
-    if uri not in {u for _, u in VOICE_LINKS.values()}:
+def dictate_query(language, terms):
+    """The query string of a dictation request: the language, and the term list joined by ", " as the prompt."""
+    from urllib.parse import urlencode
+    q = {"language": language}
+    if terms:
+        q["prompt"] = ", ".join(terms)
+    return urlencode(q)
+
+
+def answer_text(body):
+    """The text of the server's answer, or ValueError with the server's own reason."""
+    v = json.loads(body.decode("utf-8"))
+    if not isinstance(v, dict):
+        raise ValueError("an answer that is not a JSON object")
+    if v.get("error") or v.get("message"):
+        raise ValueError(str(v.get("error") or v.get("message")))
+    return str(v.get("text") or "").strip()
+
+
+def start_hidden(path):
+    """Starts a server script with no window, in its own folder, detached from the panel (it keeps running when the
+    panel ends): a .py or .pyw with the pythonw.exe beside this Python, anything else as it is."""
+    import subprocess, sys
+    folder = os.path.dirname(os.path.abspath(path))
+    if path.lower().endswith((".py", ".pyw")):
+        exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        cmd = [exe if os.path.exists(exe) else sys.executable, path]
+    else:
+        cmd = [path]
+    subprocess.Popen(cmd, cwd=folder, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, close_fds=True,
+                     creationflags=0x00000008 | 0x00000200 | 0x08000000)  # DETACHED, NEW_PROCESS_GROUP, NO_WINDOW
+
+
+class Dictation:
+    """The reply window's way to the local speech-to-text server: is it up, start it when it is not, and one
+    recording in, its text out. `local` reads a key of claude-plus.local.json, `save` writes one."""
+
+    def __init__(self, local, save=None, start=start_hidden):
+        self.local, self.save, self.start = local, save, start
+        self.lock = threading.Lock()
+        self.started = -1e9  # monotonic time of the last start this panel made
+
+    def settings(self):
+        if self.save and self.local("dictation_terms") is None:  # the list the user edits, written the first time
+            try:
+                self.save("dictation_terms", list(DICTATE_TERMS))
+            except OSError:
+                pass
+        return dictation_settings(self.local)
+
+    @staticmethod
+    def up(url, timeout=1.0):
+        from urllib.request import urlopen
+        try:
+            with urlopen(url + "/api/health", timeout=timeout) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
+    @staticmethod
+    def note(text, app):
+        """A note about the server; with "dictation_app" set it ends by naming it, and those words are the link."""
+        if app:
+            return {"note": text + DICTATE_OPEN, "link": {"text": "Open Voice to Text", "uri": APP_LINK}}
+        return {"note": text + (DICTATE_START if text.startswith("Voice to Text is not running") else "")}
+
+    def starting(self):
+        return time.monotonic() - self.started < DICTATE_START_WAIT
+
+    def ready(self):
+        """{"up"} when the server answers; {"starting"} when it was not running and has been started (now or less
+        than DICTATE_START_WAIT ago); else the note that says why it cannot be reached."""
+        url, server, app, _, _ = self.settings()
+        if self.up(url):
+            return {"up": True}
+        with self.lock:
+            if self.starting():
+                return {"starting": True}
+            if not server or not os.path.exists(server):
+                return self.note(DICTATE_NOT_RUNNING.format(url=url), app)
+            try:
+                self.start(server)
+            except OSError:
+                return self.note(DICTATE_NOT_STARTED, app)
+            self.started = time.monotonic()
+        return {"starting": True}
+
+    def wait(self):
+        """Waits for a server ready() started to answer its health check: {"up"} or the note."""
+        url, _, app, _, _ = self.settings()
+        while True:
+            if self.up(url):
+                return {"up": True}
+            if not self.starting():
+                return self.note(DICTATE_NOT_STARTED, app)
+            time.sleep(0.25)
+
+    def transcribe(self, audio, mime):
+        """One recording (bytes) to {"text"} or the note; starts the server, or waits for it, when it is down."""
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError
+        url, _, app, language, terms = self.settings()
+        if not self.up(url):
+            w = self.ready()
+            if w.get("starting"):
+                w = self.wait()
+            if not w.get("up"):
+                return w
+        req = Request(url + "/api/dictate?" + dictate_query(language, terms), data=audio, method="POST",
+                      headers={"Content-Type": mime or "application/octet-stream"})
+        try:
+            with urlopen(req, timeout=DICTATE_WAIT) as r:
+                text = answer_text(r.read())
+        except HTTPError as e:
+            try:
+                answer_text(e.read())
+                why = f"it answered {e.code}."
+            except ValueError as v:
+                why = str(v)
+            return {"note": DICTATE_FAILED.format(why=why)}
+        except ValueError as v:
+            return {"note": DICTATE_FAILED.format(why=str(v))}
+        except Exception:
+            return self.note(DICTATE_NOT_RUNNING.format(url=url), app)
+        return {"text": text} if text else {"note": DICTATE_EMPTY}
+
+
+def open_settings(uri, app=None):
+    """Opens what a note's link names, in front: one of SETTINGS_LINKS, or APP_LINK, the "dictation_app" the user
+    set (`app`); no other address. The click on the link made the reply window the foreground, so the panel may hand
+    the foreground on (ASFW_ANY) to what it starts."""
+    if uri == APP_LINK and app:
+        target = app
+    elif uri in SETTINGS_LINKS:
+        target = uri
+    else:
         return False
     ctypes.WinDLL("user32").AllowSetForegroundWindow(-1)  # ASFW_ANY
     try:
-        os.startfile(uri)
+        if target.lower().endswith((".py", ".pyw")) and os.path.exists(target):
+            start_hidden(target)
+        else:
+            os.startfile(target)
     except OSError:
         return False
     return True
-
-
-def reg_value(root, path, name):
-    import winreg
-    try:
-        with winreg.OpenKey(root, path) as k:
-            return winreg.QueryValueEx(k, name)[0]
-    except OSError:
-        return None
-
-
-def voice_block(read=reg_value, mics=None):
-    """None when Windows voice typing can start here, else the note that says why not. Checked before every start:
-    online speech recognition (Windows 10 dictation runs only online), a policy against it, the microphone's
-    privacy switch, and at least one recording device."""
-    import winreg
-    if read(winreg.HKEY_LOCAL_MACHINE, SPEECH_POLICY, "AllowInputPersonalization") == 0:
-        return VOICE_POLICY
-    if read(winreg.HKEY_CURRENT_USER, SPEECH_KEY, "HasAccepted") != 1:
-        return VOICE_OFF
-    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-        if str(read(root, MIC_KEY, "Value") or "").lower() == "deny":
-            return VOICE_MIC_DENIED
-    if (ctypes.windll.winmm.waveInGetNumDevs() if mics is None else mics) == 0:
-        return VOICE_NO_MIC
-    return None
-
-
-class _KI(ctypes.Structure):
-    _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort), ("dwFlags", ctypes.c_ulong),
-                ("time", ctypes.c_ulong), ("extra", ctypes.c_size_t)]
-
-
-class _IN(ctypes.Structure):
-    class _U(ctypes.Union):
-        _fields_ = [("ki", _KI), ("pad", ctypes.c_byte * 32)]
-    _fields_ = [("type", ctypes.c_ulong), ("u", _U)]
-
-
-def flyouts():
-    """{hwnd: shown} of explorer's no-activate, topmost ApplicationFrameWindows (the dictation bar is one)."""
-    user32, dwm = ctypes.WinDLL("user32"), ctypes.WinDLL("dwmapi")  # own instances: the panel's argtypes stay its own
-    user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
-    user32.FindWindowExW.restype = ctypes.c_void_p
-    user32.FindWindowExW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p]
-    out, h = {}, None
-    for _ in range(200):
-        h = user32.FindWindowExW(None, h, "ApplicationFrameWindow", None)
-        if not h:
-            break
-        if user32.GetWindowLongW(h, -20) & 0x08000008 != 0x08000008:  # WS_EX_NOACTIVATE | TOPMOST
-            continue
-        cloak = ctypes.c_ulong()
-        dwm.DwmGetWindowAttribute(ctypes.c_void_p(h), 14, ctypes.byref(cloak), 4)  # DWMWA_CLOAKED
-        out[h] = bool(user32.IsWindowVisible(h)) and not cloak.value
-    return out
-
-
-def win_h():
-    """Win+H as one SendInput call, so no key the user presses lands between its four events."""
-    user32 = ctypes.WinDLL("user32")
-    user32.SendInput.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_int]
-    keys = [(0x5B, 0), (0x48, 0), (0x48, 2), (0x5B, 2)]  # LWin down, H down, H up, LWin up
-    arr = (_IN * 4)()
-    for i, (vk, up) in enumerate(keys):
-        arr[i].type = 1  # INPUT_KEYBOARD
-        arr[i].u.ki = _KI(vk, user32.MapVirtualKeyW(vk, 0), up | (1 if vk == 0x5B else 0), 0, 0)  # LWin is extended
-    return user32.SendInput(4, arr, ctypes.sizeof(_IN)) == 4
-
-
-class Voice:
-    """Starts and stops Windows voice typing for the reply window. Keys go only while `front()` says the reply window
-    is the foreground window; never to another window."""
-
-    def __init__(self, front):
-        self.front, self.bar, self.lock = front, None, threading.Lock()
-
-    def start(self):
-        with self.lock:
-            why = voice_block()
-            if why:
-                return voice_note(why)
-            if not self.front():
-                return {"note": VOICE_NOT_STARTED}
-            before = flyouts()
-            if not win_h():
-                return {"note": VOICE_NOT_STARTED}
-            end = time.monotonic() + VOICE_WAIT
-            while time.monotonic() < end:
-                time.sleep(0.05)
-                new = [h for h, shown in flyouts().items() if shown and not before.get(h)]
-                if new:
-                    self.bar = new[0]
-                    return {"on": True}
-            return {"note": VOICE_NOT_STARTED}
-
-    def stop(self):
-        """Win+H again only while the bar it opened still shows (dictation that stopped by itself is not started
-        again) and the reply window is in front."""
-        with self.lock:
-            bar, self.bar = self.bar, None
-            if bar and flyouts().get(bar) and self.front():
-                return {"off": win_h()}
-            return {"off": False}

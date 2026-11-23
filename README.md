@@ -81,7 +81,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 3. Click **Send to Session**. The session's terminal comes to the front with one line in its prompt, such as `:1 Monthly price :3 Wait for Thursday`. Read it, then press Enter.
 
 - Claude gets each paragraph you answered, with your answer.
-- Hold **Space** in an answer box to speak your answer: Windows voice typing (Win+H) types what you say, and letting go of Space stops it. A quick tap still types a space. It needs a microphone and Windows' **Online speech recognition** (Settings › Privacy › Speech); when one is missing, the note under the box says so and a click on the Settings page it names opens that page. It speaks the input language you type in when Windows dictation supports it.
+- Hold **Space** in an answer box to speak your answer, as in Claude Code: a space appears, then *Listening…* with a level meter; let go and your words go in at the cursor. A quick tap still types a space. The speech is turned into text on your own PC by a local speech-to-text server (see [Dictation](#dictation)); nothing is kept. When the microphone or the server is missing, the note under the box says so, with a link that helps.
 - Your answers are kept until you send them, even if you fold the window or restart.
 - Click **Pin** at the top right of a reply to keep it: it becomes a chip under the tabs, still there after newer prompts and restarts. Click the chip to read and answer it again, **Latest** to go back, its x to unpin it. A session keeps 8 pins.
 - **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.
@@ -181,6 +181,18 @@ Put any of these in `~/.claude/claude-plus.local.json` (the installer never chan
 - The alert and its sound: the panel's tray menu, **Alerts** and **Alert Sound**.
 - Field Agents: **Quit** in its tray menu (it starts again at the next sign-in).
 - Copy on select: Windows Terminal, **Settings** > **Interaction**. It stays off, even after a reinstall.
+
+## Dictation
+
+Holding **Space** in a reply window answer box sends what you said to a speech-to-text server on your own PC: `POST <url>/api/dictate` with the audio of one utterance (WebM/Opus) as the body and `language` and `prompt` as query parameters, answering `{"text": "..."}` (errors as `{"error": "..."}`); `GET <url>/api/health` answers while it runs. Set it up in the same `~/.claude/claude-plus.local.json`:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `"dictation_url"` | `"http://127.0.0.1:8765"` | Where the server listens |
+| `"dictation_server"` | none | The server's start script; a `.py` or `.pyw` is started hidden when the server is not running |
+| `"dictation_app"` | none | What **Open Voice to Text** in a note opens |
+| `"dictation_language"` | `"tr"` | The language you speak |
+| `"dictation_terms"` | common English developer words, written the first time | Words the server should spell as written (sent as `prompt`); edit the list freely |
 
 ## Uninstall
 

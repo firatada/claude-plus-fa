@@ -167,11 +167,20 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .ans:focus, .ans.has { border: 0; border-left: 2px solid var(--blue); border-radius: 0 var(--r-small) var(--r-small) 0;
   background: var(--ans-bg); padding-left: 10px; }
 .ans:focus { box-shadow: 0 0 0 3px rgba(27, 77, 245, .12); }
-/* Space held in a box: Windows voice typing types into it; the line under the box says what is happening */
+/* Space held in a box: dictation. The line under the box says what is happening: "Keep holding…", "Starting Voice
+   to Text…", listening (a red pulsing dot, the words, a five-bar level meter), "Transcribing…" (pulsing grey, as
+   Claude Code's), or a note in amber */
 .ans.listening { border-left-color: var(--red); box-shadow: 0 0 0 3px rgba(225, 29, 72, .12); }
 .vline { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--muted);
   font: 400 12px/16px "Segoe UI", system-ui, sans-serif; }
-.vline.on::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.vline.on::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+  animation: rec 1.2s ease-in-out infinite; }
+@keyframes rec { 50% { opacity: .35; } }
+.vline .lvl { display: inline-flex; align-items: center; gap: 2px; height: 12px; }
+.vline .lvl i { width: 3px; height: 12px; border-radius: 2px; background: var(--red); transform: scaleY(.15);
+  transition: transform 60ms linear; }
+.vline.busy span { animation: busy 2s ease-in-out infinite; }
+@keyframes busy { 50% { opacity: .45; } }
 .vline.note { color: #92400e; }
 #empty { color: var(--muted); padding: 6px 0; }
 #empty[hidden], #miss[hidden] { display: none; }
@@ -366,23 +375,41 @@ function tabTarget(n, i, back) {
   return i >= 0 && j >= 0 && j < n ? j : -1;
 }
 
-// Space in an answer box: a tap types a space; held HOLD ms it starts Windows voice typing (Win+H, sent by the panel)
-// until it comes up. st: null (Space up), "wait" (down, not yet a hold), "start" (asked the panel), "on" (listening),
-// "note" (could not start; the note shows). ev: {type: "down" (plain Space; repeat: key repeat), "up", "timer" (HOLD
-// passed), "key" (another key went down), "blur" (the box lost the keyboard)}. Answers {st, act}: act "timer" (start
-// the HOLD timer), "space" (type one space), "start", "stop" or "". A Space key never types by itself: the space of a
-// tap goes in when Space comes up, or at once when another key goes down first (fast typing rolls over), and key
-// repeat never types.
-const HOLD = 400;
-function spaceRule(st, ev) {
+// Space in an answer box: hold it to speak, as Claude Code's own hold-to-talk feels. Its rule, read from Claude Code
+// 2.1.330 (a terminal has no key-up, so the key's own repeat tells a hold): the first Space types a space; from the
+// WARM-th Space in quick succession it says "keep holding…"; at the START-th it takes the typed spaces back out and
+// starts listening; key repeat never types. So the caret moves one step, then listening starts (about 0.6 s at
+// Windows' default repeat). Here the browser has key-up, so letting go ends listening at once (Claude Code waits for
+// the repeats to stop for 200 ms), and a keyboard that sends no repeat starts after HOLD_MS.
+// s: null (Space up) or {st, n}: st "wait" (down, the space typed), "warm" (keep holding), "rec" (listening asked
+// for) or "note" (could not start; Space still down), n the Space events counted. ev: {type: "down" (a plain Space;
+// repeat: key repeat), "up", "timer" (HOLD_MS passed), "key" (another key went down), "blur" (the box lost the
+// keyboard), "fail" (listening could not start)}. Answers {s, act}: act "space" (type one space, start the HOLD_MS
+// timer), "warm" (say keep holding), "cold" (take that back), "start" (take the space out, listen), "stop" (stop
+// listening, transcribe) or "".
+const WARM = 2, START = 5, HOLD_MS = 700;
+function spaceRule(s, ev) {
+  const st = s ? s.st : null, held = st === "wait" || st === "warm";
   switch (ev.type) {
-    case "down": return st === null && !ev.repeat ? {st: "wait", act: "timer"} : {st, act: ""};
-    case "timer": return st === "wait" ? {st: "start", act: "start"} : {st, act: ""};
-    case "key": return st === "wait" ? {st: null, act: "space"} : {st, act: ""};
-    case "up": return {st: null, act: st === "wait" ? "space" : st === "start" || st === "on" ? "stop" : ""};
-    case "blur": return {st: null, act: st === "start" || st === "on" ? "stop" : ""};
+    case "down":
+      if (!s) return ev.repeat ? {s: null, act: ""} : {s: {st: "wait", n: 1}, act: "space"};
+      if (!held) return {s, act: ""};
+      if (s.n + 1 >= START) return {s: {st: "rec", n: s.n + 1}, act: "start"};
+      if (s.n + 1 >= WARM) return {s: {st: "warm", n: s.n + 1}, act: st === "wait" ? "warm" : ""};
+      return {s: {st, n: s.n + 1}, act: ""};
+    case "timer": return held ? {s: {st: "rec", n: s.n}, act: "start"} : {s, act: ""};
+    case "key": return held ? {s: null, act: st === "warm" ? "cold" : ""} : {s, act: ""};
+    case "up": case "blur": return {s: null, act: st === "rec" ? "stop" : st === "warm" ? "cold" : ""};
+    case "fail": return st === "rec" ? {s: {st: "note", n: s.n}, act: ""} : {s, act: ""};
   }
-  return {st, act: ""};
+  return {s, act: ""};
+}
+// The dictated text put in at the caret, between the text before and after it: a space before it unless the text
+// before is empty or ends in whitespace, and one after it unless the text after is empty or starts with whitespace
+// (Claude Code's own rule). Answers {s, caret}: what goes in, and the caret's place in it (after the words).
+function joinDictation(before, after, text) {
+  const pre = before && !/\s$/.test(before) ? " " : "", post = after && !/^\s/.test(after) ? " " : "";
+  return {s: pre + text + post, caret: pre.length + text.length};
 }
 
 // ---------- drawing ----------
@@ -526,13 +553,15 @@ function tipFor(p) {  // the paragraph's tooltip says what a click does; none wh
   if (row && row.classList.contains("ansrow")) delete p.dataset.tip;
   else p.dataset.tip = paraTip(kindOf(p));
 }
-// ---------- Windows voice typing: Space held in a box (spaceRule() decides, the panel sends Win+H) ----------
-let voiceBox = null, voiceSt = null, voiceTimer = 0, voiceQueue = Promise.resolve();
-function vline(t, kind, text, link) {  // the line under a box: "" (none), "start", "on" or "note"; link: {text, uri},
-  const row = t.parentElement;                // the Settings page the note names, its name made a link to it
+// ---------- dictation: Space held in a box (spaceRule() decides; the panel hands the recording to Voice to Text) ----------
+let spaceSt = null, spaceBox = null, holdTimer = 0, typedAt = -1, rec = null;
+const busy = new Set();  // boxes whose recording is being transcribed: their line stays when they lose the keyboard
+function vline(t, kind, text, link) {  // the line under a box: "" (none), "warm", "start", "on", "busy" or "note";
+  const row = t.parentElement;         // link: {text, uri}, what the note names, its words made a link to it
+  if (!row) return null;
   let l = row.querySelector(".vline");
-  t.classList.toggle("listening", kind === "on");
-  if (!kind) { if (l) { l.remove(); size(); } return; }
+  t.classList.toggle("listening", kind === "on" || kind === "start");
+  if (!kind) { if (l) { l.remove(); size(); } return null; }
   if (!l) { l = document.createElement("div"); l.setAttribute("role", "status"); row.append(l); }
   l.className = "vline " + kind;
   const at = link ? text.indexOf(link.text) : -1, words = document.createElement("span");  // one flex item: wraps as text
@@ -541,35 +570,158 @@ function vline(t, kind, text, link) {  // the line under a box: "" (none), "star
     const a = document.createElement("a");
     a.className = "lnk";
     a.dataset.settings = link.uri;
-    a.dataset.tip = "Opens this page of Windows Settings";
+    a.dataset.tip = link.uri.startsWith("ms-settings:") ? "Opens this page of Windows Settings" : "Opens Voice to Text";
     a.textContent = link.text;
     words.append(text.slice(0, at), a, text.slice(at + link.text.length));
   }
   l.replaceChildren(words);
+  let bars = null;
+  if (kind === "on") {
+    const m = document.createElement("span");
+    m.className = "lvl";
+    m.setAttribute("aria-hidden", "true");
+    m.innerHTML = "<i></i><i></i><i></i><i></i><i></i>";
+    l.append(m);
+    bars = [...m.children];
+  }
   size();
+  return bars;
 }
-// a press on a note's Settings link leaves the keyboard in its box: the box losing it would take the note, and the
-// link with it, away before the click
+// a press on a note's link leaves the keyboard in its box: the box losing it would take the note, and the link with
+// it, away before the click
 document.addEventListener("mousedown", e => { if (e.target.closest(".vline a.lnk")) e.preventDefault(); }, true);
-function voiceStep(t, ev) {
-  const r = spaceRule(voiceSt, ev);
-  voiceSt = r.st;
-  voiceBox = r.st === null ? null : t;
-  if (r.act === "timer") { clearTimeout(voiceTimer); voiceTimer = setTimeout(() => voiceStep(t, {type: "timer"}), HOLD); }
-  else if (r.st !== "wait") clearTimeout(voiceTimer);  // key repeat while waiting keeps the timer
-  if (r.act === "space") { t.focus(); document.execCommand("insertText", false, " "); }  // as typed: undo and input
-  if (r.act === "start") {
-    vline(t, "start", "Starting Windows voice typing…");
-    voiceQueue = voiceQueue.then(() => api().voice(true)).then(a => {
-      if (voiceBox !== t || voiceSt !== "start") return;  // let go meanwhile: the stop queued behind this ends it
-      if (a && a.on) { voiceSt = "on"; vline(t, "on", "Listening… release Space to stop."); }
-      else { voiceSt = "note"; vline(t, "note", (a && a.note) || "Windows voice typing did not start.", a && a.link); }
-    }).catch(() => {});
+function spaceStep(t, ev) {
+  const r = spaceRule(spaceSt, ev);
+  spaceSt = r.s;
+  spaceBox = r.s ? t : null;
+  if (!r.s || r.s.st !== "wait" && r.s.st !== "warm") clearTimeout(holdTimer);
+  if (r.act === "space") {  // as typed: undo and input work
+    t.focus();
+    document.execCommand("insertText", false, " ");
+    typedAt = t.selectionStart;
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => { if (spaceBox === t) spaceStep(t, {type: "timer"}); }, HOLD_MS);
   }
-  if (r.act === "stop") {
-    vline(t, "");
-    voiceQueue = voiceQueue.then(() => api().voice(false)).catch(() => {});
+  if (r.act === "warm") vline(t, "warm", "Keep holding…");
+  if (r.act === "cold") vline(t, "");
+  if (r.act === "start") { untype(t); listen(t); }
+  if (r.act === "stop") finish();
+}
+function untype(t) {  // the space the press typed goes when listening starts, as in Claude Code; only if it is still there
+  if (typedAt > 0 && t.selectionStart === typedAt && t.selectionEnd === typedAt && t.value[typedAt - 1] === " ") {
+    t.setSelectionRange(typedAt - 1, typedAt);
+    document.execCommand("delete");
   }
+  typedAt = -1;
+}
+function micNote(e) {  // getUserMedia's failure as a note, with the Settings page that helps
+  const n = e && e.name;
+  if (n === "NotAllowedError" || n === "SecurityError")
+    return {note: "Windows blocks the microphone. Allow it in Settings › Privacy › Microphone, then hold Space again.",
+            link: {text: "Settings › Privacy › Microphone", uri: "ms-settings:privacy-microphone"}};
+  if (n === "NotFoundError" || n === "OverconstrainedError")
+    return {note: "No microphone found. Connect one or turn it on in Settings › System › Sound, then hold Space again.",
+            link: {text: "Settings › System › Sound", uri: "ms-settings:sound"}};
+  if (n === "NotReadableError" || n === "AbortError")
+    return {note: "The microphone could not start; another program may hold it. Check it in Settings › System › Sound, then hold Space again.",
+            link: {text: "Settings › System › Sound", uri: "ms-settings:sound"}};
+  return {note: "This window cannot record the microphone."};
+}
+function failed(me, a) {  // listening could not start: the note, nothing recorded is kept
+  if (rec === me) rec = null;
+  me.stopped = true;
+  stopMic(me);
+  vline(me.t, "note", a.note, a.link);
+  if (spaceBox === me.t) spaceStep(me.t, {type: "fail"});
+}
+function stopMic(me) {
+  cancelAnimationFrame(me.raf);
+  if (me.ctx) me.ctx.close().catch(() => {});
+  if (me.stream) me.stream.getTracks().forEach(k => k.stop());
+}
+function meter(me, bars) {  // the five bars follow the microphone's level (root mean square, eased down)
+  try {
+    me.ctx = new AudioContext();
+    const an = me.ctx.createAnalyser();
+    an.fftSize = 512;
+    me.ctx.createMediaStreamSource(me.stream).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    let lv = 0;
+    const tick = () => {
+      if (me.stopped) return;
+      an.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const x of buf) sum += x * x;
+      lv = Math.max(Math.min(1, Math.sqrt(Math.sqrt(sum / buf.length) * 8)), lv * 0.85);
+      if (me.bars) me.bars.forEach((b, i) => { b.style.transform = `scaleY(${Math.max(0.15, Math.min(1, lv * (1.3 - Math.abs(i - 2) * 0.2)))})`; });
+      me.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (e) { /* no meter; the recording goes on */ }
+}
+function listening(me) {  // the microphone records and the server answers: say so
+  if (rec !== me || me.stopped) return;
+  me.bars = vline(me.t, "on", "Listening… release Space to stop.");
+}
+async function listen(t) {
+  const me = rec = {t, key: t.parentElement.dataset.for, chunks: [], stopped: false, mic: false, up: false};
+  const server = api().dictation("ready");
+  if (!navigator.mediaDevices) { failed(me, micNote(null)); return; }
+  try {
+    me.stream = await navigator.mediaDevices.getUserMedia({audio: true});
+  } catch (e) { failed(me, micNote(e)); return; }
+  if (me.stopped) { stopMic(me); return; }  // let go before the microphone was up: nothing to send
+  me.mr = new MediaRecorder(me.stream, {audioBitsPerSecond: 32000});  // speech: small enough for the bridge
+  me.mr.ondataavailable = e => { if (e.data && e.data.size) me.chunks.push(e.data); };
+  me.mr.start();
+  me.mic = true;
+  meter(me);
+  let a = await server;
+  if (me.stopped) return;  // let go meanwhile: finish() sends it, and the panel starts or waits for the server itself
+  if (a && a.starting) {
+    vline(t, "start", "Starting Voice to Text…");
+    a = await api().dictation("wait");
+    if (me.stopped) return;
+  }
+  if (!a || !a.up) { failed(me, a && a.note ? a : {note: "Voice to Text could not be reached."}); return; }
+  me.up = true;
+  listening(me);
+}
+function finish() {  // Space let go (or the box, or the window, lost the keyboard): what was said, to text
+  const me = rec;
+  if (!me) return;
+  rec = null;
+  me.stopped = true;
+  if (!me.mic) { vline(me.t, ""); return; }  // the microphone was not up yet: listen() stops it, nothing is sent
+  cancelAnimationFrame(me.raf);
+  busy.add(me.t);
+  vline(me.t, "busy", "Transcribing…");
+  me.mr.onstop = async () => {
+    stopMic(me);
+    let a;
+    try {
+      const b64 = await new Promise((ok, no) => {
+        const r = new FileReader();
+        r.onload = () => ok(String(r.result).split(",")[1] || "");
+        r.onerror = no;
+        r.readAsDataURL(new Blob(me.chunks, {type: me.mr.mimeType}));
+      });
+      a = await api().dictate(b64, me.mr.mimeType || "audio/webm");
+    } catch (e) { a = {note: "Voice to Text could not be reached."}; }
+    busy.delete(me.t);
+    let t = me.t;
+    if (!t.isConnected) t = document.querySelector(`.ansrow[data-for="${CSS.escape(me.key)}"] .ans`) || t;  // redrawn meanwhile
+    if (a && a.text) { vline(t, ""); putDictation(t, a.text); }
+    else vline(t, "note", (a && a.note) || "Voice to Text could not be reached.", a && a.link);
+  };
+  me.mr.stop();
+}
+function putDictation(t, text) {  // at the caret, keeping the box's keyboard if it has it
+  if (!t.isConnected) return;
+  const a = t.selectionStart, b = t.selectionEnd, j = joinDictation(t.value.slice(0, a), t.value.slice(b), text);
+  if (document.activeElement === t) document.execCommand("insertText", false, j.s);
+  else { t.value = t.value.slice(0, a) + j.s + t.value.slice(b); changed(t); }
+  t.setSelectionRange(a + j.caret, a + j.caret);
 }
 let saveJob = {};
 function changed(t) {
@@ -586,13 +738,13 @@ function changed(t) {
 }
 document.addEventListener("input", e => { if (e.target.classList.contains("ans")) changed(e.target); });
 document.addEventListener("keyup", e => {
-  if (e.code === "Space" && voiceBox) voiceStep(voiceBox, {type: "up"});
+  if (e.code === "Space" && spaceBox) spaceStep(spaceBox, {type: "up"});
 });
-addEventListener("blur", () => { if (voiceBox) voiceStep(voiceBox, {type: "blur"}); });  // the window lost the keyboard
+addEventListener("blur", () => { if (spaceBox) spaceStep(spaceBox, {type: "blur"}); });  // the window lost the keyboard
 document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
-  if (voiceBox === e.target) voiceStep(e.target, {type: "blur"});
-  vline(e.target, "");
+  if (spaceBox === e.target) spaceStep(e.target, {type: "blur"});
+  if (!busy.has(e.target)) vline(e.target, "");  // "Transcribing…" stays: its text still comes
   setTimeout(() => { if (pending) { pending = false; apply(); } }, 0);
 });
 // Tab and Shift+Tab keep the box's text and open the next (previous) block's box with the caret in it, scrolled into
@@ -610,16 +762,16 @@ function tabMove(t, back) {
 }
 // Keys typed in an answer box stay in it: Enter and Esc finish the answer and leave the box (its text and draft kept,
 // the focus goes nowhere, so no tab, chip or button is reached or pressed); Tab and Shift+Tab move between the blocks'
-// boxes (tabMove()), never to another control; Shift+Enter is a new line; a plain Space goes to the voice typing rule.
+// boxes (tabMove()), never to another control; Shift+Enter is a new line; a plain Space goes to the dictation rule.
 // stopPropagation: no other handler sees them.
 document.addEventListener("keydown", e => {
   sayClear();
   if (!e.target.classList.contains("ans")) return;
   e.stopPropagation();
   const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
-  if (e.code === "Space" && plain && !e.isComposing) { e.preventDefault(); voiceStep(e.target, {type: "down", repeat: e.repeat}); return; }
-  if (voiceBox === e.target && e.code !== "Space") voiceStep(e.target, {type: "key"});
-  else if (!voiceBox) vline(e.target, "");  // a note from an earlier hold goes with the next key
+  if (e.code === "Space" && plain && !e.isComposing) { e.preventDefault(); spaceStep(e.target, {type: "down", repeat: e.repeat}); return; }
+  if (spaceBox === e.target && e.code !== "Space") spaceStep(e.target, {type: "key"});
+  else if (!spaceBox && !busy.has(e.target)) vline(e.target, "");  // a note from an earlier hold goes with the next key
   if (e.isComposing) return;  // an IME's Enter confirms its own text
   if (e.key === "Tab") { e.preventDefault(); tabMove(e.target, e.shiftKey); }
   else if ((e.key === "Enter" && !e.shiftKey) || e.key === "Escape") { e.preventDefault(); e.target.blur(); }

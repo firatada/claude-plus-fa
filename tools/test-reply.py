@@ -2,11 +2,12 @@
 # main thread; not tool_use narration, thinking, a subagent, <synthetic> or an API error), every reply since the
 # last typed prompt, two text blocks of one message joined, reading on from where the last read stopped; the
 # drafts kept per session; the pinned replies; the line Send to Session types and the text Copy puts on the
-# clipboard; which session's terminal came to the front (front_session, taken from agent-panel.pyw by ast).
+# clipboard; which session's terminal came to the front (front_session, taken from agent-panel.pyw by ast); the
+# dictation client against a stand-in speech-to-text server on 127.0.0.1 (no microphone, nothing recorded).
 # Run: python -I tools/test-reply.py
 # Every transcript here is made up, in a temporary folder; the drafts file too. The prompt rule is the panel's own
 # typed_prompt(), taken out of agent-panel.pyw by ast (importing it would trip its one-instance mutex).
-import ast, importlib.util, json, os, re, shutil, tempfile, unittest
+import ast, http.server, importlib.util, json, os, re, shutil, tempfile, threading, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -296,12 +297,14 @@ out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}
 out.tips = [paraTip("p"), paraTip("li"), paraTip("table")];
 out.tab = [tabTarget(5, 0, false), tabTarget(5, 3, false), tabTarget(5, 4, false), tabTarget(5, 4, true), tabTarget(5, 0, true),
   tabTarget(1, 0, false), tabTarget(5, -1, false)];
-const run = (evs) => { let st = null; const acts = []; for (const e of evs) { const r = spaceRule(st, e); st = r.st; acts.push(r.act); } return [st, acts]; };
+const run = (evs) => { let s = null; const acts = []; for (const e of evs) { const r = spaceRule(s, e); s = r.s; acts.push(r.act); } return [s && s.st, acts]; };
 const D = {type: "down", repeat: false}, R = {type: "down", repeat: true}, U = {type: "up"}, T = {type: "timer"},
-  K = {type: "key"}, B = {type: "blur"};
-out.space = {hold: HOLD, tap: run([D, R, U]), hold2: run([D, R, T, R, R, U]), roll: run([D, K, R, U]),
-  lateTimer: run([D, U, T]), blurWait: run([D, B]), blurOn: run([D, T, B]), noteUp: (() => { let r = spaceRule("note", U); return [r.st, r.act]; })(),
-  onKey: (() => { const r = spaceRule("on", K); return [r.st, r.act]; })(), upEarly: run([D, T, U])};
+  K = {type: "key"}, B = {type: "blur"}, F = {type: "fail"};
+out.space = {consts: [WARM, START, HOLD_MS], tap: run([D, U]), tapRepeat: run([D, R, U]), hold: run([D, R, R, R, R, R, U]),
+  noRepeat: run([D, T, U]), roll: run([D, K]), rollWarm: run([D, R, K]), lateTimer: run([D, U, T]), blurWarm: run([D, R, B]),
+  blurRec: run([D, T, B]), fail: run([D, T, F, R, U]), recKey: run([D, T, K]), stray: run([R])};
+out.join = [joinDictation("", "", "merhaba"), joinDictation("abc", "", "x"), joinDictation("abc ", "def", "x"),
+  joinDictation("abc", " def", "x"), joinDictation("abc\n", "", "x")];
 console.log(JSON.stringify(out));
 """
 
@@ -390,59 +393,160 @@ class Markdown(unittest.TestCase):
         self.assertEqual(self.md["tab"], [1, 4, -1, 3, -1, -1, -1])
 
 
-    def test_space_tap_types_one_space_and_a_hold_starts_and_stops_voice_typing(self):
+    def test_space_tap_types_one_space_and_a_hold_listens_as_claude_code_does(self):
         sp = self.md["space"]
-        self.assertEqual(sp["hold"], 400)
-        self.assertEqual(sp["tap"], [None, ["timer", "", "space"]])  # key repeat never types; the space at key up
-        self.assertEqual(sp["hold2"], [None, ["timer", "", "start", "", "", "stop"]])  # no space from the repeats
-        self.assertEqual(sp["upEarly"], [None, ["timer", "start", "stop"]])  # let go while the panel was asked
+        self.assertEqual(sp["consts"], [2, 5, 700])  # Claude Code 2.1.330: warm-up at 2 rapid Spaces, listening at 5
+        self.assertEqual(sp["tap"], [None, ["space", ""]])  # the space goes in at once and stays
+        self.assertEqual(sp["tapRepeat"], [None, ["space", "warm", "cold"]])  # let go while warming: the space stays
+        # held: the first Space types, the 2nd says keep holding, the 5th takes the space out and listens; up stops
+        self.assertEqual(sp["hold"], [None, ["space", "warm", "", "", "start", "", "stop"]])
+        self.assertEqual(sp["noRepeat"], [None, ["space", "start", "stop"]])  # a keyboard without repeat: HOLD_MS
+        self.assertEqual(sp["stray"], [None, [""]])  # a repeat whose press was not seen types nothing
 
-    def test_space_rolled_over_by_the_next_key_goes_in_first(self):
-        self.assertEqual(self.md["space"]["roll"], [None, ["timer", "space", "", ""]])
+    def test_space_rolled_over_by_the_next_key_stays_a_space(self):
+        self.assertEqual(self.md["space"]["roll"], [None, ["space", ""]])
+        self.assertEqual(self.md["space"]["rollWarm"], [None, ["space", "warm", "cold"]])
 
-    def test_space_timer_after_release_and_leaving_the_box(self):
+    def test_space_timer_after_release_leaving_the_box_and_a_failed_start(self):
         sp = self.md["space"]
-        self.assertEqual(sp["lateTimer"], [None, ["timer", "space", ""]])
-        self.assertEqual(sp["blurWait"], [None, ["timer", ""]])
-        self.assertEqual(sp["blurOn"], [None, ["timer", "start", "stop"]])
-        self.assertEqual(sp["noteUp"], [None, ""])  # could not start: nothing to stop, nothing typed
-        self.assertEqual(sp["onKey"], ["on", ""])  # keys typed while listening go in as typed
+        self.assertEqual(sp["lateTimer"], [None, ["space", "", ""]])
+        self.assertEqual(sp["blurWarm"], [None, ["space", "warm", "cold"]])
+        self.assertEqual(sp["blurRec"], [None, ["space", "start", "stop"]])  # what was said is still sent
+        self.assertEqual(sp["fail"], [None, ["space", "start", "", "", ""]])  # the note stays; repeats type nothing
+        self.assertEqual(sp["recKey"], ["rec", ["space", "start", ""]])  # keys typed while listening go in as typed
+
+    def test_dictated_text_gets_a_space_where_the_text_round_it_needs_one(self):
+        self.assertEqual(self.md["join"], [{"s": "merhaba", "caret": 7}, {"s": " x", "caret": 2},
+                                           {"s": "x ", "caret": 1}, {"s": " x", "caret": 2}, {"s": "x", "caret": 1}])
 
 
-class Voice(unittest.TestCase):
-    """voice_block() on made-up registry values; nothing here sends a key."""
+class Stub(http.server.BaseHTTPRequestHandler):
+    """A stand-in for the speech-to-text server, with its contract: GET /api/health, POST /api/dictate."""
+    answer = (200, {"text": "merhaba deploy", "language": "tr", "ms": 12})
+    seen = []
 
-    def block(self, speech=1, policy=None, mic_hklm="Allow", mic_hkcu="Allow", mics=2):
-        import winreg
-        vals = {(winreg.HKEY_CURRENT_USER, ar.SPEECH_KEY, "HasAccepted"): speech,
-                (winreg.HKEY_LOCAL_MACHINE, ar.SPEECH_POLICY, "AllowInputPersonalization"): policy,
-                (winreg.HKEY_LOCAL_MACHINE, ar.MIC_KEY, "Value"): mic_hklm,
-                (winreg.HKEY_CURRENT_USER, ar.MIC_KEY, "Value"): mic_hkcu}
-        return ar.voice_block(read=lambda root, path, name: vals.get((root, path, name)), mics=mics)
+    def do_GET(self):
+        self.reply(200, {"app": "stub"}) if self.path == "/api/health" else self.reply(404, {"error": "not found"})
 
-    def test_ready(self):
-        self.assertIsNone(self.block())
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        Stub.seen.append((self.path, self.headers.get("Content-Type"), body))
+        self.reply(*Stub.answer)
 
-    def test_each_reason(self):
-        self.assertEqual(self.block(speech=None), ar.VOICE_OFF)  # never turned on (this PC on 2026-11-23)
-        self.assertEqual(self.block(speech=0), ar.VOICE_OFF)
-        self.assertEqual(self.block(policy=0), ar.VOICE_POLICY)
-        self.assertEqual(self.block(mic_hklm="Deny"), ar.VOICE_MIC_DENIED)
-        self.assertEqual(self.block(mic_hkcu="Deny"), ar.VOICE_MIC_DENIED)
-        self.assertEqual(self.block(mics=0), ar.VOICE_NO_MIC)
+    def reply(self, code, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
 
-    def test_each_note_links_the_settings_page_it_names(self):
-        for note, uri in ((ar.VOICE_OFF, "ms-settings:privacy-speech"), (ar.VOICE_MIC_DENIED, "ms-settings:privacy-microphone"),
-                          (ar.VOICE_NO_MIC, "ms-settings:sound")):
-            n = ar.voice_note(note)
-            self.assertEqual(n["link"]["uri"], uri)
-            self.assertIn(n["link"]["text"], note)  # the page drawn as a link is the one the note names
-        self.assertEqual(ar.voice_note(ar.VOICE_POLICY), {"note": ar.VOICE_POLICY})  # nothing the user can change
-        self.assertEqual(ar.voice_note(ar.VOICE_NOT_STARTED), {"note": ar.VOICE_NOT_STARTED})
+    def log_message(self, *a):
+        pass
+
+
+def serve(port=0):
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Stub)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def free_port():
+    import socket
+    with socket.socket() as k:
+        k.bind(("127.0.0.1", 0))
+        return k.getsockname()[1]
+
+
+class Dictation(unittest.TestCase):
+    """agent-reply.py Dictation against a stand-in server on 127.0.0.1; settings from a made-up dict."""
+
+    def setUp(self):
+        self.srv = serve()
+        self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
+        self.conf, self.saved = {"dictation_url": self.url}, {}
+        Stub.seen, Stub.answer = [], (200, {"text": "merhaba deploy", "language": "tr", "ms": 12})
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def client(self, **kw):
+        self.conf.update(kw)
+        return ar.Dictation(self.conf.get, lambda k, v: (self.saved.__setitem__(k, v), self.conf.__setitem__(k, v)))
+
+    def test_the_term_list_is_written_once_with_the_defaults_and_read_from_the_file(self):
+        d = self.client()
+        self.assertEqual(d.ready(), {"up": True})
+        self.assertEqual(self.saved["dictation_terms"], ar.DICTATE_TERMS)
+        self.saved.clear()
+        self.conf["dictation_terms"] = ["Fable", "  ", "Opus"]
+        self.assertEqual(d.settings()[4], ["Fable", "Opus"])
+        self.assertEqual(self.saved, {})  # an existing list is never overwritten
+
+    def test_the_recording_goes_with_its_type_the_language_and_the_terms(self):
+        d = self.client(dictation_terms=["deploy", "memory.md"])
+        self.assertEqual(d.transcribe(b"OggS-audio", "audio/webm;codecs=opus"), {"text": "merhaba deploy"})
+        path, mime, body = Stub.seen[0]
+        self.assertTrue(path.startswith("/api/dictate?"))
+        from urllib.parse import parse_qs, urlparse
+        self.assertEqual(parse_qs(urlparse(path).query), {"language": ["tr"], "prompt": ["deploy, memory.md"]})
+        self.assertEqual((mime, body), ("audio/webm;codecs=opus", b"OggS-audio"))
+
+    def test_an_empty_text_and_a_server_error_are_notes(self):
+        d = self.client()
+        Stub.answer = (200, {"text": "  ", "language": "tr", "ms": 3})
+        self.assertEqual(d.transcribe(b"x", "audio/wav"), {"note": ar.DICTATE_EMPTY})
+        Stub.answer = (500, {"error": "could not decode the audio"})
+        self.assertEqual(d.transcribe(b"x", "audio/wav"),
+                         {"note": "Voice to Text could not turn this into text: could not decode the audio"})
+
+    def test_a_server_that_is_down_and_not_set_up_to_start_is_a_note(self):
+        self.tearDown()
+        self.setUp()
+        port = free_port()
+        d = self.client(dictation_url="http://127.0.0.1:%d" % port)
+        self.assertEqual(d.ready(), {"note": "Voice to Text is not running at http://127.0.0.1:%d. Start it, then hold "
+                                             "Space again." % port})
+        d = self.client(dictation_app="C:\\made-up\\launcher.pyw")
+        n = d.ready()
+        self.assertEqual(n["link"], {"text": "Open Voice to Text", "uri": ar.APP_LINK})
+        self.assertIn(n["link"]["text"], n["note"])  # the words drawn as the link stand in the note
+
+    def test_a_server_that_is_down_is_started_once_and_waited_for(self):
+        port, started, srv = free_port(), [], []
+        script = os.path.join(tempfile.mkdtemp(), "server.py")
+        open(script, "w").close()
+
+        def start(path):  # stands in for start_hidden: the stand-in server comes up a moment later
+            started.append(path)
+            threading.Timer(0.6, lambda: srv.append(serve(port))).start()
+        d = ar.Dictation({"dictation_url": "http://127.0.0.1:%d" % port, "dictation_server": script,
+                          "dictation_terms": []}.get, None, start)
+        try:
+            self.assertEqual(d.ready(), {"starting": True})
+            self.assertEqual(d.ready(), {"starting": True})  # a second hold meanwhile starts nothing more
+            self.assertEqual(started, [script])
+            self.assertEqual(d.wait(), {"up": True})
+            self.assertEqual(d.transcribe(b"x", "audio/wav"), {"text": "merhaba deploy"})
+            self.assertNotIn("prompt=", Stub.seen[-1][0])  # an empty term list sends no prompt
+        finally:
+            for k in srv:
+                k.shutdown()
+                k.server_close()
+
+    def test_a_server_that_never_comes_up_ends_in_a_note(self):
+        script = os.path.join(tempfile.mkdtemp(), "server.py")
+        open(script, "w").close()
+        d = ar.Dictation({"dictation_url": "http://127.0.0.1:%d" % free_port(), "dictation_server": script}.get,
+                         None, lambda path: None)
+        self.assertEqual(d.ready(), {"starting": True})
+        d.started -= ar.DICTATE_START_WAIT - 0.5  # as if it had been starting for nearly the whole wait
+        self.assertEqual(d.wait(), {"note": ar.DICTATE_NOT_STARTED})
 
     def test_open_settings_opens_no_other_address(self):
-        for uri in ("ms-settings:windowsupdate", "https://example.com", "C:\\Windows\\notepad.exe", ""):
-            self.assertFalse(ar.open_settings(uri))
+        for uri in ("ms-settings:windowsupdate", "https://example.com", "C:\\Windows\\notepad.exe", "", ar.APP_LINK):
+            self.assertFalse(ar.open_settings(uri))  # the app link only with a "dictation_app" set
 
 
 class Pins(unittest.TestCase):
