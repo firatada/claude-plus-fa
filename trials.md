@@ -581,3 +581,6 @@ Uninstall (2026-10-07): `uninstall.cmd` / `uninstall.py` removes every hook whos
 - Side effect noted: one e2e run put a stand-in window in front while the maintainer was working; a screenshot he took then is named after it (`python_sfx-stand-in-browser_…png` in his screenshots folder, left as his).
 
 - 2026-11-23, resumed multiline reply sending after a usage-limit interruption. The fixture tests exercised full replies with inline answers and confirmed quoted markers stay out of the manual numbered reply hook.
+
+- 2026-11-23, the reply window was 36 px from the top because the shared screenshot strip position was saved at y=36. Set the default to the work-area top on the right dock, and to the bottom edge of the tab bar on the top dock. Reset the saved position on the maintainer's machine so the new default takes effect.
+- After installation, Win32 window rectangles put the right-docked panel, reply window and screenshot strip at y=0. The merged build passed 69 reply, 62 quote-reply and 23 panel tests. Paste tests passed with the optional real clipboard test skipped. A live multiline paste into the user's Claude Code tab was not exercised.

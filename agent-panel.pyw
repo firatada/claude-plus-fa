@@ -3836,7 +3836,7 @@ class Panel:
             r = wt.RECT()
             user32.GetWindowRect(self.hwnd, ctypes.byref(r))
             right = min(right, r.left)
-        return right - gap, top + gap, wa
+        return right - gap, top, wa
 
     def strip_rect(self, n, head=False):
         """Screen pixels (x, y, w, h) of a strip of n screenshots (None with none), and how many columns they take.
