@@ -81,7 +81,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 3. Click **Send to Session**. The session's terminal comes to the front with one line in its prompt, such as `:1 Monthly price :3 Wait for Thursday`. Read it, then press Enter.
 
 - Claude gets each paragraph you answered, with your answer.
-- Hold **Space** in an answer box to speak your answer: Windows voice typing (Win+H) types what you say, and letting go of Space stops it. A quick tap still types a space. It needs a microphone and Windows' **Online speech recognition** (Settings › Privacy › Speech), and speaks the input language you type in when Windows dictation supports it.
+- Hold **Space** in an answer box to speak your answer: Windows voice typing (Win+H) types what you say, and letting go of Space stops it. A quick tap still types a space. It needs a microphone and Windows' **Online speech recognition** (Settings › Privacy › Speech); when one is missing, the note under the box says so and a click on the Settings page it names opens that page. It speaks the input language you type in when Windows dictation supports it.
 - Your answers are kept until you send them, even if you fold the window or restart.
 - Click **Pin** at the top right of a reply to keep it: it becomes a chip under the tabs, still there after newer prompts and restarts. Click the chip to read and answer it again, **Latest** to go back, its x to unpin it. A session keeps 8 pins.
 - **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.

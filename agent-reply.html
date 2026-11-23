@@ -523,16 +523,29 @@ function tipFor(p) {  // the paragraph's tooltip says what a click does; none wh
 }
 // ---------- Windows voice typing: Space held in a box (spaceRule() decides, the panel sends Win+H) ----------
 let voiceBox = null, voiceSt = null, voiceTimer = 0, voiceQueue = Promise.resolve();
-function vline(t, kind, text) {  // the line under a box: "" (none), "start", "on" or "note"
-  const row = t.parentElement;
+function vline(t, kind, text, link) {  // the line under a box: "" (none), "start", "on" or "note"; link: {text, uri},
+  const row = t.parentElement;                // the Settings page the note names, its name made a link to it
   let l = row.querySelector(".vline");
   t.classList.toggle("listening", kind === "on");
   if (!kind) { if (l) { l.remove(); size(); } return; }
   if (!l) { l = document.createElement("div"); l.setAttribute("role", "status"); row.append(l); }
   l.className = "vline " + kind;
-  l.textContent = text;
+  const at = link ? text.indexOf(link.text) : -1, words = document.createElement("span");  // one flex item: wraps as text
+  if (at < 0) words.textContent = text;
+  else {
+    const a = document.createElement("a");
+    a.className = "lnk";
+    a.dataset.settings = link.uri;
+    a.dataset.tip = "Opens this page of Windows Settings";
+    a.textContent = link.text;
+    words.append(text.slice(0, at), a, text.slice(at + link.text.length));
+  }
+  l.replaceChildren(words);
   size();
 }
+// a press on a note's Settings link leaves the keyboard in its box: the box losing it would take the note, and the
+// link with it, away before the click
+document.addEventListener("mousedown", e => { if (e.target.closest(".vline a.lnk")) e.preventDefault(); }, true);
 function voiceStep(t, ev) {
   const r = spaceRule(voiceSt, ev);
   voiceSt = r.st;
@@ -545,7 +558,7 @@ function voiceStep(t, ev) {
     voiceQueue = voiceQueue.then(() => api().voice(true)).then(a => {
       if (voiceBox !== t || voiceSt !== "start") return;  // let go meanwhile: the stop queued behind this ends it
       if (a && a.on) { voiceSt = "on"; vline(t, "on", "Listening… release Space to stop."); }
-      else { voiceSt = "note"; vline(t, "note", (a && a.note) || "Windows voice typing did not start."); }
+      else { voiceSt = "note"; vline(t, "note", (a && a.note) || "Windows voice typing did not start.", a && a.link); }
     }).catch(() => {});
   }
   if (r.act === "stop") {
@@ -603,6 +616,7 @@ document.addEventListener("click", e => {
   if (sw) { pinDo("swap", sw.dataset.swap); return; }
   if (e.target.closest("#ask [data-cancel]")) { askHide(); return; }
   const a = e.target.closest("a.lnk");
+  if (a && a.dataset.settings) { e.preventDefault(); tipHide(); api().settings(a.dataset.settings); return; }  // its box stays
   if (a) { e.preventDefault(); tipHide(); api().link(a.dataset.url); return; }
   const row = e.target.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }

@@ -334,9 +334,33 @@ VOICE_WAIT = 1.5  # seconds for the dictation bar to show after Win+H
 VOICE_OFF = ("Windows voice typing is off. Turn on Online speech recognition in Settings › Privacy › Speech, "
              "then hold Space again.")
 VOICE_POLICY = "Windows voice typing is turned off by a policy on this PC."
-VOICE_NO_MIC = "No microphone found. Connect one, then hold Space again."
+VOICE_NO_MIC = "No microphone found. Connect one or turn it on in Settings › System › Sound, then hold Space again."
 VOICE_MIC_DENIED = "Windows blocks the microphone. Allow it in Settings › Privacy › Microphone, then hold Space again."
 VOICE_NOT_STARTED = "Windows voice typing did not start."
+# The Settings page a note names, opened by a click on its name in the note (open_settings). VOICE_POLICY has none:
+# nothing there the user can change.
+VOICE_LINKS = {VOICE_OFF: ("Settings › Privacy › Speech", "ms-settings:privacy-speech"),
+               VOICE_MIC_DENIED: ("Settings › Privacy › Microphone", "ms-settings:privacy-microphone"),
+               VOICE_NO_MIC: ("Settings › System › Sound", "ms-settings:sound")}
+
+
+def voice_note(why):
+    """What the page is answered when voice typing cannot start: the note, and the Settings page it names, if any."""
+    link = VOICE_LINKS.get(why)
+    return {"note": why, "link": {"text": link[0], "uri": link[1]}} if link else {"note": why}
+
+
+def open_settings(uri):
+    """Opens a Settings page a note names (no other address), in front: the click on its name made the reply window
+    the foreground, so the panel may hand the foreground on (ASFW_ANY) to Settings, which the shell starts."""
+    if uri not in {u for _, u in VOICE_LINKS.values()}:
+        return False
+    ctypes.WinDLL("user32").AllowSetForegroundWindow(-1)  # ASFW_ANY
+    try:
+        os.startfile(uri)
+    except OSError:
+        return False
+    return True
 
 
 def reg_value(root, path, name):
@@ -419,7 +443,7 @@ class Voice:
         with self.lock:
             why = voice_block()
             if why:
-                return {"note": why}
+                return voice_note(why)
             if not self.front():
                 return {"note": VOICE_NOT_STARTED}
             before = flyouts()

@@ -426,6 +426,19 @@ class Voice(unittest.TestCase):
         self.assertEqual(self.block(mic_hkcu="Deny"), ar.VOICE_MIC_DENIED)
         self.assertEqual(self.block(mics=0), ar.VOICE_NO_MIC)
 
+    def test_each_note_links_the_settings_page_it_names(self):
+        for note, uri in ((ar.VOICE_OFF, "ms-settings:privacy-speech"), (ar.VOICE_MIC_DENIED, "ms-settings:privacy-microphone"),
+                          (ar.VOICE_NO_MIC, "ms-settings:sound")):
+            n = ar.voice_note(note)
+            self.assertEqual(n["link"]["uri"], uri)
+            self.assertIn(n["link"]["text"], note)  # the page drawn as a link is the one the note names
+        self.assertEqual(ar.voice_note(ar.VOICE_POLICY), {"note": ar.VOICE_POLICY})  # nothing the user can change
+        self.assertEqual(ar.voice_note(ar.VOICE_NOT_STARTED), {"note": ar.VOICE_NOT_STARTED})
+
+    def test_open_settings_opens_no_other_address(self):
+        for uri in ("ms-settings:windowsupdate", "https://example.com", "C:\\Windows\\notepad.exe", ""):
+            self.assertFalse(ar.open_settings(uri))
+
 
 class Pins(unittest.TestCase):
     """The pinned replies: per session, in pin order, PIN_MAX at most, kept with their own text."""

@@ -2333,6 +2333,15 @@ class ReplyApi:
         except Exception:
             return {"note": "Windows voice typing did not start."} if on else {"off": False}
 
+    def settings(self, uri):
+        # a click on the Settings page a voice typing note names: that page opened in front (agent-reply.py
+        # open_settings, which opens only those pages)
+        m = self._p.reply_mod
+        try:
+            return bool(m and m.open_settings(str(uri)))
+        except Exception:
+            return False
+
     def send(self, sid, answers):
         try:
             return self._p.reply_send(str(sid), answers)
