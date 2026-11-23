@@ -242,6 +242,10 @@ REPLY_W = 820          # logical pixels: the reply window's width, left of the s
 REPLY_MIN = REPLY_W    # logical pixels the reply window keeps beside the screenshots (they wrap into rows first)
 REPLY_BELOW = 8        # logical pixels the reply window keeps from the work area's bottom; taller, it scrolls inside
 SEND_WAIT = 4          # seconds Send to Session waits for the terminal to read the line it pastes
+SEND_FRONT = 1.5       # seconds it gives the terminal to be in front, on top and showing the session's tab
+SEND_SETTLE = 0.25     # seconds between the terminal coming in front and the paste: the terminal reports the focus to
+                       # Claude Code (a focus-in sequence) on its own, not in the same read as the pasted line
+SEND_LOG = os.path.join(STATE_DIR, "reply-send.log")  # one line per step of every Send to Session (no text sent)
 QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
          os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
 VIEW_TITLE = "Field Agents Screenshot"
@@ -730,14 +734,22 @@ def link_raise(flash, shown, fg, wins, pid_of, click, now, used, wait=LINK_WAIT)
 
 
 def links_log(*a):
-    """A line in LINKS_LOG, cut back to its last 32 KB past 64 KB."""
+    append_log(LINKS_LOG, *a)
+
+
+def send_log(*a):
+    append_log(SEND_LOG, *a)
+
+
+def append_log(path, *a):
+    """A line in a log, cut back to its last 32 KB past 64 KB."""
     try:
-        if os.path.exists(LINKS_LOG) and os.path.getsize(LINKS_LOG) > 65536:
-            with open(LINKS_LOG, encoding="utf-8", errors="replace") as f:
+        if os.path.exists(path) and os.path.getsize(path) > 65536:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 tail = f.read()[-32768:]
-            with open(LINKS_LOG, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(tail)
-        with open(LINKS_LOG, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), " ".join(str(x) for x in a)))
     except OSError:
         pass
@@ -763,6 +775,22 @@ def focus_session(s, others=()):
             if name in window_title(hwnd):
                 break
     return True
+
+
+def front_state(hwnd, fg, top, title, name, shared):
+    """Where a session's terminal (hwnd) stands for Send to Session to type into it, given the foreground window
+    (fg), the top ordinary window (top, top_window()), its title and whether the window holds other sessions' tabs
+    (shared): "" when the line can go in and the user sees it, else what is missing. The foreground alone is not
+    enough: another window can cover the foreground one, and then the user sees nothing come up."""
+    if fg != hwnd:
+        return "it is not the window in front"
+    if top != hwnd:
+        return "another window covers it"
+    if not CLAUDE_TITLE.match(title or ""):
+        return "it shows no Claude Code tab"
+    if shared and name and name not in title:
+        return "another tab is showing"
+    return ""
 
 
 def own(hwnd):
@@ -4057,8 +4085,8 @@ class Panel:
 
     def reply_send(self, sid, answers):
         """Send to Session: the answered paragraphs join the session's numbered ":N" list (as selections do, so
-        quote-reply.py sends each with its answer), its terminal comes to the front, and the one line ":N answer
-        :N answer" is typed into its prompt through the paste key's process, at the cursor, without Enter. The
+        quote-reply.py sends each with its answer), its terminal comes to the front, and the one line "My answers:
+        :N answer :N answer" is typed into its prompt through the paste key's process, at the cursor, without Enter. The
         draft goes once the terminal has read the line; a failure takes the new entries out of the list again."""
         q, mod = self.quote_mod, self.reply_mod
         s = next((o for o in self.sessions if o["id"] == sid and o.get("status") and o.get("pid")), None)
@@ -4093,15 +4121,25 @@ class Panel:
                     q.drop(self.qlists, sid, n)
                 self.quote_save()
             return err(msg)
+        def where():
+            return front_state(hwnd, user32.GetForegroundWindow(), top_window(), window_title(hwnd), s.get("name"),
+                               self.shared(s, hwnd))
+        send_log("send", sid[:8], "answers %d" % len(pairs), "characters %d" % len(line))
         focus_session(s, self.other_names(s))
-        for _ in range(20):  # the terminal in front with the session's own tab showing
-            title = window_title(hwnd)
-            if user32.GetForegroundWindow() == hwnd and CLAUDE_TITLE.match(title) and \
-                    (not self.shared(s, hwnd) or not s.get("name") or s["name"] in title):
+        start = time.time()
+        again = True
+        while True:  # in front, nothing over it, the session's own tab showing
+            why = where()
+            if not why or time.time() - start > SEND_FRONT:
                 break
+            if again and time.time() - start > SEND_FRONT / 2:
+                again = False
+                bring_front(hwnd)  # once more: a window that came up over it meanwhile, a foreground refused
             time.sleep(0.05)
-        else:
-            return undo("Could not bring the terminal of %s to the front with its tab showing. Use Copy." % name)
+        send_log("front", why or "ok", "%.2f s" % (time.time() - start))
+        if why:
+            return undo("Could not bring the terminal of %s to the front: %s. Use Copy." % (name, why))
+        time.sleep(SEND_SETTLE)
         rid = int(time.time() * 1000) % 2000000000
         data = json.dumps({"id": rid, "hwnd": int(hwnd), "text": line}).encode("utf-8")
         buf = ctypes.create_string_buffer(data, len(data))
@@ -4111,6 +4149,7 @@ class Panel:
                 or res.value != 1:  # WM_COPYDATA, SMTO_ABORTIFHUNG
             why = {2: "the paste key is busy", 3: "the terminal left the front",
                    4: "its window shows no Claude Code tab"}.get(res.value, "the paste key did not answer")
+            send_log("paste key", why)
             return undo("Could not type it: %s. Use Copy." % why)
         got, end = 0, time.time() + SEND_WAIT
         while time.time() < end and not got:
@@ -4118,8 +4157,14 @@ class Panel:
             r = ctypes.c_size_t()
             if user32.SendMessageTimeoutW(h, 0x8002, rid, 0, 0x0002, 500, ctypes.byref(r)):  # WM_TYPED
                 got = r.value
+        send_log("typed", {1: "read"}.get(got, "not read (%d)" % got))
         if got != 1:
             return undo("The terminal did not take the line. Use Copy.")
+        # the line is in its prompt: the terminal stays where the user sees it, raised again if anything came over it
+        after = where()
+        if after:
+            bring_front(hwnd)
+            send_log("after", after, "raised again:", where() or "ok")
         if self.drafts:  # only the answers sent: those under another chip stay
             try:
                 self.drafts.clear(sid, [str(a.get("key")) for a in answers if a.get("key")])

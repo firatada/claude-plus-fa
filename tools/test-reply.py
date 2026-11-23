@@ -205,6 +205,24 @@ class Drafts(unittest.TestCase):
         self.assertEqual(list(d.get("A")), ["new"])
         self.assertFalse(d.expire("A", 200))
 
+    def test_page_calls_on_threads_of_their_own_lose_nothing(self):
+        # pywebview runs each api.draft() on a thread of its own, beside the panel's loop
+        import threading
+        d = ar.Drafts(self.file)
+
+        def typing(t):
+            for k in range(40):
+                d.put("A", "m#%d-%d" % (t, k), "p", "answer %d" % k)
+                d.expire("A", 1)  # the loop's pass meanwhile (an old prompt: nothing goes)
+        threads = [threading.Thread(target=typing, args=(t,)) for t in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(d.get("A")), 240)
+        self.assertEqual(len(ar.Drafts(self.file).get("A")), 240)  # the file as well
+        self.assertEqual([f for f in os.listdir(os.path.dirname(self.file)) if f.endswith(".tmp")], [])
+
     def test_a_broken_file_starts_empty(self):
         os.makedirs(os.path.dirname(self.file))
         with open(self.file, "w") as f:
@@ -215,14 +233,15 @@ class Drafts(unittest.TestCase):
 class Line(unittest.TestCase):
     def test_send_line(self):
         self.assertEqual(ar.send_line([(1, "Monthly price,\n  billed yearly."), (4, "Wait for Thursday.")]),
-                         ":1 Monthly price, billed yearly. :4 Wait for Thursday.")
+                         "My answers: :1 Monthly price, billed yearly. :4 Wait for Thursday.")
 
     def test_empty_answers_left_out(self):
-        self.assertEqual(ar.send_line([(1, "  "), (2, "ok")]), ":2 ok")
+        self.assertEqual(ar.send_line([(1, "  "), (2, "ok")]), "My answers: :2 ok")
+        self.assertEqual(ar.send_line([(1, "  ")]), "")
 
     def test_a_typed_marker_inside_an_answer_goes_in_code(self):
         line = ar.send_line([(1, "as in :3 before"), (2, "ok :x fine 10:30")])
-        self.assertEqual(line, ":1 as in `:3` before :2 ok :x fine 10:30")
+        self.assertEqual(line, "My answers: :1 as in `:3` before :2 ok :x fine 10:30")
         spec = importlib.util.spec_from_file_location("qr", os.path.join(ROOT, "quote-reply.py"))
         qr = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(qr)
@@ -231,7 +250,7 @@ class Line(unittest.TestCase):
     def test_copy_text(self):
         self.assertEqual(ar.copy_text([("1. Should the yearly plan\n   show monthly?", "Monthly."), ("Skip", "  "),
                                        ("Ship it today?", "Yes,\nbehind the flag.")]),
-                         ":1 Monthly. :2 Yes, behind the flag.\n\n:1\n> 1. Should the yearly plan\n>    show monthly?\n\n"
+                         "My answers: :1 Monthly. :2 Yes, behind the flag.\n\n:1\n> 1. Should the yearly plan\n>    show monthly?\n\n"
                          ":2\n> Ship it today?\n")
         self.assertEqual(ar.copy_text([("p", " ")]), "")
 
@@ -302,6 +321,13 @@ const D = {type: "down", repeat: false}, R = {type: "down", repeat: true}, U = {
 out.space = {hold: HOLD, tap: run([D, R, U]), hold2: run([D, R, T, R, R, U]), roll: run([D, K, R, U]),
   lateTimer: run([D, U, T]), blurWait: run([D, B]), blurOn: run([D, T, B]), noteUp: (() => { let r = spaceRule("note", U); return [r.st, r.act]; })(),
   onKey: (() => { const r = spaceRule("on", K); return [r.st, r.act]; })(), upEarly: run([D, T, U])};
+// the answers Send to Session takes: paragraphs, list items, a table, two replies; one under another chip and an
+// emptied one stay out; in the order the blocks stand, whatever order they were typed in
+const ans = {"m2#0": {text: "six"}, "m1#9": {text: "table"}, "m1#0": {text: "intro"}, "pin#1": {text: "other chip"},
+  "m1#6": {text: "item two"}, "m1#5": {text: "item one"}, "m1#7": {text: "  "}};
+const src = {"m1#0": "Intro.", "m1#5": "1. one", "m1#6": "2. two", "m1#7": "3. three", "m1#9": "| a |\n|---|\n| 1 |", "m2#0": "Second."};
+out.send = sendList(ans, src, ["m1#0", "m1#5", "m1#6", "m1#7", "m1#9", "m2#0"]);
+out.sendUnordered = sendList(ans, src, []).length;
 console.log(JSON.stringify(out));
 """
 
@@ -385,6 +411,12 @@ class Markdown(unittest.TestCase):
     def test_the_hint_says_what_a_click_does(self):
         self.assertEqual(self.md["tips"], ["Click to answer this paragraph", "Click to answer this item",
                                            "Click to answer this table"])
+
+    def test_send_takes_every_answer_shown_in_block_order(self):
+        self.assertEqual([(a["key"], a["text"], a["passage"]) for a in self.md["send"]],
+                         [("m1#0", "intro", "Intro."), ("m1#5", "item one", "1. one"), ("m1#6", "item two", "2. two"),
+                          ("m1#9", "table", "| a |\n|---|\n| 1 |"), ("m2#0", "six", "Second.")])
+        self.assertEqual(self.md["sendUnordered"], 5)  # the bar's count: the same answers
 
     def test_tab_goes_to_the_next_block_and_shift_tab_back_ending_at_either_end(self):
         self.assertEqual(self.md["tab"], [1, 4, -1, 3, -1, -1, -1])
@@ -588,6 +620,35 @@ class Follow(unittest.TestCase):
         self.assertIsNone(self.go((60, "✳ closed")))  # a closed session
         self.assertIsNone(self.go(None))
         self.assertIsNone(self.go((0, "")))
+
+
+class SendFront(unittest.TestCase):
+    """front_state(): whether Send to Session may type into the session's terminal (10) and the user sees it come
+    up: the window in front, nothing over it, a Claude Code tab, its own tab when the window holds several."""
+
+    def setUp(self):
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "front_state"]
+        keep += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "CLAUDE_TITLE" for t in n.targets)]
+        ns = {"re": re}
+        exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+        self.f = ns["front_state"]
+
+    def test_in_front_and_on_top(self):
+        self.assertEqual(self.f(10, 10, 10, "✳ alpha", "alpha", False), "")
+        self.assertEqual(self.f(10, 10, 10, "✳ alpha", "alpha", True), "")
+
+    def test_the_foreground_covered_by_another_window_is_not_enough(self):
+        self.assertEqual(self.f(10, 10, 40, "✳ alpha", "alpha", False), "another window covers it")
+
+    def test_not_in_front(self):
+        self.assertEqual(self.f(10, 30, 10, "✳ alpha", "alpha", False), "it is not the window in front")
+
+    def test_tabs(self):
+        self.assertEqual(self.f(10, 10, 10, "✳ beta", "alpha", True), "another tab is showing")
+        self.assertEqual(self.f(10, 10, 10, "✳ beta", "alpha", False), "")  # its only session, whatever its title
+        self.assertEqual(self.f(10, 10, 10, "Windows PowerShell", "alpha", False), "it shows no Claude Code tab")
 
 
 if __name__ == "__main__":

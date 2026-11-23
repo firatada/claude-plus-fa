@@ -171,9 +171,11 @@ class Hook(unittest.TestCase):
         out = qr.reply(":1 yes, fix it :3 no :4 your call", A)
         self.assertEqual(out["systemMessage"], "Quoted: :1 :3 :4")
         c = self.ctx(out)
-        self.assertIn('<quote n="1">\n<passage>\nQuestion one?\n</passage>\n<reply>\nyes, fix it\n</reply>\n</quote>', c)
+        self.assertIn('<quote n="1">\n<passage>\nQuestion one?\n</passage>\n<user_answer>\nyes, fix it\n</user_answer>\n</quote>', c)
         self.assertIn('<quote n="3">', c)
-        self.assertIn("<reply>\nyour call\n</reply>", c)
+        self.assertIn("<user_answer>\nyour call\n</user_answer>", c)
+        self.assertIn("the user's own answer to it, written by the user", c)
+        self.assertNotIn("<reply>", c)
         self.assertNotIn("Question two?", c)  # unanswered: not sent
         self.assertEqual(self.reset_of(), {"gen": 7, "upto": 4})
 
@@ -194,11 +196,30 @@ class Hook(unittest.TestCase):
         self.assertEqual(qr.reply(": hi", A), {"systemMessage": "Reply: nothing to quote (no selection is listed)"})
         self.assertFalse(os.path.exists(qr.reset_path(A)))
 
+    def test_the_line_send_to_session_types(self):
+        # agent-reply.send_line(): "My answers:" first, then the markers; answers across paragraphs, list items and a
+        # table, as the reply window sends them. The label is no marker and no answer; every answer goes, each named
+        # <user_answer> with its own passage.
+        self.write({1: "Intro paragraph.", 2: "1. **Cover ratio:** in the product.", 3: "| a | b |\n|---|---|\n| 1 | 2 |",
+                    4: "Second reply."})
+        spec = importlib.util.spec_from_file_location("ar", os.path.join(HERE, "..", "agent-reply.py"))
+        ar = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ar)
+        line = ar.send_line([(1, "keep it"), (2, "move it to D3"), (3, "add a column"), (4, "fine")])
+        self.assertTrue(line.startswith("My answers: :1 keep it"))
+        out = qr.reply(line, A)
+        self.assertEqual(out["systemMessage"], "Quoted: :1 :2 :3 :4")
+        c = self.ctx(out)
+        for n, a in ((1, "keep it"), (2, "move it to D3"), (3, "add a column"), (4, "fine")):
+            self.assertIn("<user_answer>\n%s\n</user_answer>" % a, c)
+        self.assertIn("| a | b |", c)
+        self.assertNotIn("My answers", c)
+
     def test_numbered_with_unknown(self):
         self.write({1: "Q1", 2: "Q2"})
         out = qr.reply(":1 yes :5 no", A)
         self.assertEqual(out["systemMessage"], "Quoted: :1 (:5 matched nothing)")
-        self.assertIn("<reply>\nyes :5 no\n</reply>", self.ctx(out))
+        self.assertIn("<user_answer>\nyes :5 no\n</user_answer>", self.ctx(out))
 
     def test_unknown_only(self):
         self.write({1: "Q1"})
@@ -238,7 +259,7 @@ class Hook(unittest.TestCase):
         self.assertIn("ask the user which item they mean", c)
         for n in (1, 2, 4):
             self.assertIn('<quote n="%d">\n<passage>\nQ%d\n</passage>\n</quote>' % (n, n), c)
-        self.assertNotIn("<reply>", c)
+        self.assertNotIn("<user_answer>", c)
 
     def test_bare_plus_marker_is_numbered(self):
         self.write({1: "Q1", 2: "Q2"})

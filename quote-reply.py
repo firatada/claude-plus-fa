@@ -374,12 +374,13 @@ def parse(prompt, known, sources=()):
 
 
 def block(n, item, reply_text=None):
-    """One <quote>: passage n as sent (and how much CAP cut off), with the user's reply when there is one."""
+    """One <quote>: passage n as sent (and how much CAP cut off), with the user's answer when there is one, named
+    <user_answer> so the model reads it as the user's own words (a bare <reply> could read as its own)."""
     out = '<quote n="%d">\n<passage>\n%s\n</passage>' % (n, item["text"])
     if item.get("more"):
         out += "\n<note>The passage was cut to its first %d of %d characters.</note>" % (CAP, CAP + item["more"])
     if reply_text is not None:
-        out += "\n<reply>\n%s\n</reply>" % (reply_text or "(no text after the marker)")
+        out += "\n<user_answer>\n%s\n</user_answer>" % (reply_text or "(no text after the marker)")
     return out + "\n</quote>"
 
 
@@ -459,12 +460,13 @@ def answer_for(prompt, lst, transcript=None):
         return None  # its only ":N" sat in code
     nothing = " ".join(":" + u for u in unknown) + " matched nothing" if unknown else ""
     if answers:  # numbered: each answered passage with its reply; the list is used up
-        context = ("The user selected passages from the conversation and replied to some of them in this prompt. "
-                   "In the prompt, \":N\" starts the reply to passage N and the reply runs to the next such marker "
-                   "or the end. Each <quote> below holds passage N and the user's reply to it; act on each reply "
-                   "with its own passage.")
+        context = ("The user answered passages from earlier in this conversation in this prompt. In the prompt, "
+                   "\":N\" starts the user's answer to passage N and the answer runs to the next such marker or the "
+                   "end. Each <quote> below holds passage N and, in <user_answer>, the user's own answer to it, "
+                   "written by the user: take each <user_answer> as what the user says about its passage, and act on "
+                   "each with its own passage.")
         if unknown:
-            context += (" Markers that match no passage (%s) are ordinary text of the reply around them."
+            context += (" Markers that match no passage (%s) are ordinary text of the answer around them."
                         % " ".join(":" + u for u in unknown))
         context += "\n" + "\n".join(block(n, items[n], a) for n, a in answers)
         sent = " ".join(":%d" % n for n, _ in answers)

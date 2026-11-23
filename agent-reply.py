@@ -20,6 +20,7 @@ DRAFTS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel"
 PINS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-pins.json")
 PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
+LABEL = "My answers:"  # leads the line Send to Session types (and the line Copy puts first)
 
 
 def stamp(ts):
@@ -130,6 +131,15 @@ def load_json(path):
         return {}
 
 
+def locked(f):
+    """A store's method, run under its lock."""
+    def run(self, *a, **k):
+        with self.lock:
+            return f(self, *a, **k)
+    run.__doc__ = f.__doc__
+    return run
+
+
 class Drafts:
     """The answers typed under a session's paragraphs, kept in DRAFTS across closes and restarts until they are
     sent: {session id: {paragraph key: {"text", "passage", "at"}}}. A key is "<message id>#<block>". An answer goes
@@ -137,12 +147,16 @@ class Drafts:
 
     def __init__(self, path=DRAFTS):
         self.path = path
+        # pywebview runs every page call on a thread of its own, beside the panel's loop (expire, get): one at a time
+        self.lock = threading.RLock()
         self.data = {sid: {k: a for k, a in (d or {}).items() if isinstance(a, dict) and a.get("text")}
                      for sid, d in load_json(path).items() if isinstance(d, dict)}
 
+    @locked
     def get(self, sid):
         return dict(self.data.get(sid) or {})
 
+    @locked
     def put(self, sid, key, passage, text, now=None):
         """One answer typed, changed or emptied (empty: gone). True when the store changed."""
         d = self.data.setdefault(sid, {})
@@ -161,6 +175,7 @@ class Drafts:
         self.save()
         return True
 
+    @locked
     def clear(self, sid, keys=None):
         """Sent: the session's answers go (only those keys, when given)."""
         d = self.data.get(sid)
@@ -173,6 +188,7 @@ class Drafts:
         self.save()
         return True
 
+    @locked
     def expire(self, sid, prompt_at):
         """A prompt typed at prompt_at: the answers written before it go."""
         d = self.data.get(sid)
@@ -187,7 +203,7 @@ class Drafts:
 
 def save_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = "%s.%d.tmp" % (path, os.getpid())
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())  # two threads never share one
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -275,8 +291,11 @@ def one_line(text):
 
 
 def send_line(pairs):
-    """The one line typed into the session's prompt: ":N answer" for each (number in the session's list, answer)."""
-    return " ".join(":%d %s" % (n, one_line(a)) for n, a in pairs if one_line(a))
+    """The one line typed into the session's prompt: LABEL, then ":N answer" for each (number in the session's list,
+    answer). The label says in the prompt itself that what follows is the user's own answers; it holds no ":N", so
+    quote-reply.py reads the markers after it as before. Empty when no answer has text."""
+    body = " ".join(":%d %s" % (n, one_line(a)) for n, a in pairs if one_line(a))
+    return "%s %s" % (LABEL, body) if body else ""
 
 
 def copy_text(answers):
