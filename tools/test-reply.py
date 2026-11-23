@@ -235,5 +235,128 @@ class Line(unittest.TestCase):
         self.assertEqual(ar.copy_text([("p", " ")]), "")
 
 
+def layout():
+    """band_layout() and the constants it reads, taken out of agent-panel.pyw by ast."""
+    with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    names = {"SHOT_W", "SHOT_H", "SHOT_PAD", "SHOT_GAP", "REPLY_W", "REPLY_MIN"}
+    keep = [n for n in tree.body if isinstance(n, ast.Assign) and any(
+        getattr(t, "id", "") in names or any(getattr(e, "id", "") in names for e in getattr(t, "elts", [])) for t in n.targets)]
+    keep += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "band_layout"]
+    ns = {}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+    return ns
+
+
+class Layout(unittest.TestCase):
+    """The reply window at the screen's left edge and the strip of screenshots right of it, SHOT_GAP apart."""
+    ns = layout()
+
+    def check(self, room, n, head):
+        cols, rows, sw, rw = self.ns["band_layout"](room, n, head)
+        if head and n and rw:
+            self.assertLessEqual(rw + self.ns["SHOT_GAP"] + sw, room)  # never overlapping, the gap kept
+        return cols, rows, sw, rw
+
+    def test_screenshots_wrap_before_the_reply_window_narrows(self):
+        self.assertEqual(self.check(1600, 6, True), (4, 2, 630, 820))
+        self.assertEqual(self.check(1000, 3, True), (1, 3, 162, 820))
+
+    def test_no_screenshot_leaves_the_reply_window_alone(self):
+        self.assertEqual(self.check(1600, 0, True), (0, 0, 0, 820))
+
+    def test_no_session_is_the_strip_alone(self):
+        self.assertEqual(self.check(1600, 3, False), (3, 1, 474, 0))
+
+    def test_a_narrow_screen_narrows_the_reply_window(self):
+        self.assertEqual(self.check(600, 2, True), (1, 2, 162, 430))
+
+
+# The reply page's markdown (blocks(), cells(), inline(), blockHtml()), run in node when it is installed: the part of
+# agent-reply.html between its markdown and drawing headings, with esc and the chevron it uses.
+JS = r"""
+const out = {};
+const tbl = blocks("Spend:\n\n| Job | Calls | Tokens |\n|---|--:|:-:|\n| News **scoring** | 63 | 1,55 m |\n| Trend `cut` | 23 | 485 k |\n\nAfter.");
+out.kinds = tbl.map(b => b.kind);
+out.table = tbl[1];
+out.tableHtml = blockHtml(tbl[1], "k");
+out.noSep = blocks("| a | b |\n| c | d |").map(b => b.kind);
+out.loose = blocks("a | b\n--|--\n1 | 2").map(b => [b.kind, b.head, b.rows]);
+out.pipe = cells("| x \\| y | z |");
+out.inline = inline("**bold** `code` ~~gone~~ *it* [docs](https://ex.com/a?b=1&c=2) see https://ex.com/p. \"https://q.com\"");
+out.lists = blocks("1. one\n2. two\n   more\n- dot\n  - nested").map(b => [b.kind, b.marker, b.indent, b.text]);
+out.quote = blocks("> a\n> b")[0];
+out.heads = blocks("# H1\n## H2\n### H3").map(b => blockHtml(b, "k"));
+console.log(JSON.stringify(out));
+"""
+
+
+def node_markdown():
+    node = shutil.which("node")
+    if not node:
+        return None
+    with open(os.path.join(ROOT, "agent-reply.html"), encoding="utf-8") as f:
+        page = f.read()
+    keep = [l for l in page.splitlines() if l.startswith(("const esc =", "const CHEV ="))]
+    a = page.index("// ---------- Claude's markdown")
+    b = page.index("// ---------- drawing ----------")
+    import subprocess
+    r = subprocess.run([node, "-e", "\n".join(keep) + "\n" + page[a:b] + JS], capture_output=True, text=True,
+                       encoding="utf-8", timeout=30)
+    if r.returncode:
+        raise AssertionError(r.stderr)
+    return json.loads(r.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class Markdown(unittest.TestCase):
+    md = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.md = node_markdown()
+
+    def test_a_table_is_one_block_with_its_source(self):
+        self.assertEqual(self.md["kinds"], ["p", "table", "p"])
+        t = self.md["table"]
+        self.assertEqual(t["head"], ["Job", "Calls", "Tokens"])
+        self.assertEqual(t["align"], ["", "right", "center"])
+        self.assertEqual(t["rows"], [["News **scoring**", "63", "1,55 m"], ["Trend `cut`", "23", "485 k"]])
+        self.assertTrue(t["src"].startswith("| Job |") and t["src"].endswith("| 485 k |"))
+
+    def test_a_table_is_drawn_as_a_table(self):
+        h = self.md["tableHtml"]
+        self.assertIn("<table><thead><tr><th>Job</th>", h)
+        self.assertIn('<td style="text-align:right">63</td>', h)
+        self.assertIn("<td>News <b>scoring</b></td>", h)
+        self.assertIn("<td>Trend <code>cut</code></td>", h)
+        self.assertNotIn("|", h)
+
+    def test_pipes_without_a_dash_row_stay_as_written(self):
+        self.assertEqual(self.md["noSep"], ["pre"])
+
+    def test_a_table_without_outer_pipes(self):
+        self.assertEqual(self.md["loose"], [["table", ["a", "b"], [["1", "2"]]]])
+
+    def test_an_escaped_pipe_stays_in_its_cell(self):
+        self.assertEqual(self.md["pipe"], ["x | y", "z"])
+
+    def test_inline(self):
+        h = self.md["inline"]
+        for part in ("<b>bold</b>", "<code>code</code>", "<s>gone</s>", "<i>it</i>",
+                     '<a class="lnk" data-url="https://ex.com/a?b=1&amp;c=2" data-tip="https://ex.com/a?b=1&amp;c=2">docs</a>',
+                     '<a class="lnk" data-url="https://ex.com/p" data-tip="https://ex.com/p">https://ex.com/p</a>.',
+                     '&quot;<a class="lnk" data-url="https://q.com" data-tip="https://q.com">https://q.com</a>&quot;'):
+            self.assertIn(part, h)
+
+    def test_lists_quotes_headings(self):
+        self.assertEqual(self.md["lists"], [["li", "1.", 0, "one"], ["li", "2.", 0, "two more"], ["li", "•", 0, "dot"],
+                                            ["li", "•", 2, "nested"]])
+        self.assertEqual(self.md["quote"]["text"], "a\nb")
+        self.assertEqual(self.md["heads"], ['<div class="para h h1" data-key="k">H1</div>',
+                                            '<div class="para h h2" data-key="k">H2</div>',
+                                            '<div class="para h" data-key="k">H3</div>'])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

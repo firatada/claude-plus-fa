@@ -74,16 +74,16 @@ When a session starts waiting for your answer, this alert drops in at the top of
 
 Answer Claude's reply where you read it, paragraph by paragraph.
 
-<img src="docs/img/reply-window.png" alt="The reply window under the screenshot strip: session tabs on top, Claude's reply with one passage marked :1, an answer in blue under the first question, an empty answer box under the third, and the Copy and Send to Session buttons" width="880">
+<img src="docs/img/reply-window.png" alt="The reply window beside the screenshot strip: session tabs on top with the line naming the session under them, Claude's reply with one passage marked :1, a table, an answer in blue under the first question, and the Copy and Send to Session buttons" width="880">
 
-1. While a Claude Code session is open, the screenshot strip stretches to the left edge of the screen with a tab for each open session. The window under it shows every reply Claude gave since your last prompt in that session. It follows the session you last typed in; click a tab to see another.
-2. Rest the pointer on a paragraph or a list item. A box opens under it: type your answer. Code blocks show as one line; click one to open it.
+1. While a Claude Code session is open, the reply window opens at the top left of the screen, beside the screenshot strip, with a tab for each open session. It shows every reply Claude gave since your last prompt in that session, formatted as in the terminal (tables included). It follows the session you last typed in; click a tab to see another.
+2. Rest the pointer on a paragraph, a list item or a table. A box opens under it: type your answer. Code blocks show as one line; click one to open it.
 3. Click **Send to Session**. The session's terminal comes to the front with one line in its prompt, such as `:1 Monthly price :3 Wait for Thursday`. Read it, then press Enter.
 
 - Claude gets each paragraph you answered, with your answer.
 - Your answers are kept until you send them, even if you fold the window or restart.
 - **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.
-- The arrow at the top folds the window into the strip; click it or a tab to open it again.
+- The arrow at the top right folds the window to its tabs; click it or a tab to open it again. Drag the tabs' row to move the window and the strip together.
 - Send to Session types only into the session's own terminal window, at the cursor. Text already in the prompt stays as it is.
 - Codex sessions are not shown.
 
@@ -109,7 +109,7 @@ Answer any part of Claude's answer straight from the terminal, without retyping 
 
 - Every screenshot you take (`Win+Shift+S`, Snipping Tool, `PrintScreen`) is saved at once in a `screenshots` folder on your desktop, named after the window and the time.
 - Paste one into a Claude Code session and it moves into a `screenshots` folder in that project. The panel adds that folder to the project's `.gitignore`, so it never reaches git.
-- The strip at the top (pictures above) shows, on its right, your last three screenshots and the ones you **Pin**. Click a card to see it large. **Copy** on a card, or **Copy as Text** in the large view, puts the file's path and the text read from the picture on the clipboard, which costs Claude far fewer tokens than the picture. **Copy as Image** in the large view puts the picture itself on the clipboard, to paste into Paint, Word, a browser or a chat app.
+- The strip at the top (pictures above) shows your last three screenshots and the ones you **Pin**. Click a card to see it large. **Copy** on a card, or **Copy as Text** in the large view, puts the file's path and the text read from the picture on the clipboard, which costs Claude far fewer tokens than the picture. **Copy as Image** in the large view puts the picture itself on the clipboard, to paste into Paint, Word, a browser or a chat app.
 - While the panel runs, `Ctrl+V` or `Alt+V` in a Claude Code session pastes a copied picture at once, where the cursor is:
 
 <img src="docs/img/paste-image.png" alt="A prompt with [Image #1] and [Image #2] between words" width="825">

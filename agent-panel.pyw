@@ -238,8 +238,8 @@ SHOT_MOVE = 4          # logical pixels a press must travel before it drags the 
 REPLY_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-reply.py")
 REPLY_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-reply.html")
 REPLY_TITLE = "Field Agents Reply"
-REPLY_W = 820          # logical pixels: the reply window's width, under the strip's left part
-REPLY_MIN = REPLY_W    # logical pixels the strip's head keeps beside the screenshots (they wrap into rows first)
+REPLY_W = 820          # logical pixels: the reply window's width, left of the strip at the screen's left edge
+REPLY_MIN = REPLY_W    # logical pixels the reply window keeps beside the screenshots (they wrap into rows first)
 REPLY_BELOW = 8        # logical pixels the reply window keeps from the work area's bottom; taller, it scrolls inside
 SEND_WAIT = 4          # seconds Send to Session waits for the terminal to read the line it pastes
 QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
@@ -2132,6 +2132,19 @@ def err(t):
     return {"t": t, "err": True}
 
 
+def band_layout(room, n, head):
+    """Logical pixels. room: from the strip's right end to the screen's left edge (less SHOT_GAP with a head).
+    Returns (cols, rows, strip_w, reply_w): the columns and rows of a strip of n screenshots and its width (0 with
+    none), and the width of the reply window at the left edge (0 without a head). The reply window keeps REPLY_MIN
+    (the screenshots wrap into more rows first, one column at the least) and SHOT_GAP parts the two windows."""
+    fit = int((room - SHOT_PAD - (REPLY_MIN + SHOT_GAP if head else 0)) // (SHOT_W + SHOT_PAD))
+    cols = max(1, min(n, fit)) if n else 0
+    rows = -(-n // cols) if n else 0
+    strip_w = SHOT_PAD + cols * (SHOT_W + SHOT_PAD) if n else 0
+    reply_w = max(0, min(REPLY_W, int(room - (strip_w + SHOT_GAP if n else 0)))) if head else 0
+    return cols, rows, strip_w, reply_w
+
+
 def short(title, n=40, end=""):
     """A title cut to n characters; a cut one ends in "…" and takes no further ending."""
     return title + end if len(title) <= n else title[:n].rstrip() + "…"
@@ -2245,13 +2258,6 @@ class StripApi:
     def pin(self, at):
         self._p.events.put("pin:" + json.dumps(at))  # done on the poll loop's thread, as every other strip change
 
-    def tab(self, sid):
-        # a tab of the reply window's head: that session shown (done on the poll loop's thread)
-        self._p.events.put("tab:" + str(sid))
-
-    def fold(self):
-        self._p.events.put("fold")
-
 
 class ReplyApi:
     """What the reply window (agent-reply.html) may call."""
@@ -2261,6 +2267,29 @@ class ReplyApi:
 
     def ready(self):
         self._p.reply_up()
+
+    def press(self):
+        # a press on the head (tabs, the line naming the session): it may drag the reply window and the strip
+        return self._p.strip_press()
+
+    def release(self, n):
+        return self._p.strip_release(n)
+
+    def tab(self, sid):
+        # a tab: that session shown (done on the poll loop's thread)
+        self._p.events.put("tab:" + str(sid))
+
+    def fold(self):
+        self._p.events.put("fold")
+
+    def link(self, url):
+        # a link in a reply: opened in the default browser, only a web address
+        url = str(url)
+        if re.match(r"https?://", url, re.I):
+            try:
+                os.startfile(url)
+            except OSError:
+                pass
 
     def size(self, h):
         try:
@@ -2481,7 +2510,7 @@ class Panel:
         self.quote_mod, self.quote_seq = load_quote(), None
         self.qlists, self.quote_on, self.qreset = self.quote_load(), False, {}
         self.quote_before, self.qlock = None, threading.RLock()
-        # the reply window under the strip's left part (agent-reply.html): its rules (agent-reply.py), the drafts,
+        # the reply window left of the strip (agent-reply.html: the tabs, the line naming the session, its replies): its rules (agent-reply.py), the drafts,
         # each open session's transcript as read so far, the tabs and the session shown (followed: the one the user
         # last typed a prompt in; picked: (session id, when) of a tab pressed), whether it is open or folded, the
         # height its page asks for, what the head and the page were last sent
@@ -2495,12 +2524,12 @@ class Panel:
         self.reads, self.tabs, self.reply_sid, self.reply_pick = {}, [], None, None
         self.reply_open = local("reply_open") is not False
         self.reply_hwnd, self.reply_ready, self.reply_shown, self.reply_h = None, False, False, 0
-        self.reply_key, self.head_key, self.head_w, self.reply_now = None, None, 0, None
+        self.reply_key, self.head_key, self.reply_box, self.reply_now = None, None, None, None
         self.reply = None
         if self.reply_mod:
             with open(REPLY_HTML, encoding="utf-8") as f:
                 rhtml = f.read()
-            # shadow=True as the strip: DWM's frame, so the two read as one surface. Not focus=False: the user types
+            # shadow=True as the strip: DWM's frame, its own edged surface beside the strip's. Not focus=False: the user types
             # into it, so a click activates it (quiet_forms() keeps it from taking the keyboard when it is made)
             self.reply = webview.create_window(REPLY_TITLE, html=rhtml, js_api=ReplyApi(self), width=REPLY_W,
                                                height=200, min_size=(0, 0), frameless=True, easy_drag=False,
@@ -3644,53 +3673,58 @@ class Panel:
         GetMonitorInfo(mon, ctypes.byref(mi))
         return mi.rcWork
 
-    def strip_rect(self, n, head=False):
-        """Screen pixels (x, y, w, h) of a strip of n screenshots, and how many columns they take. With head (a
-        session is open: the reply window's tabs) the strip reaches from its right end to the screen's left edge,
-        less SHOT_GAP, its left part the head (at least REPLY_MIN wide while screenshots share the row; they wrap
-        into further rows first) and the screenshots on the right; n may be 0 then. Without, it is as wide as its
-        screenshots. Where the user dropped it, its top-right corner kept (so a strip of more pictures grows to the
-        left), pulled wholly back onto the nearest screen when it would leave it (a monitor gone, a smaller
-        resolution). Never dragged: at the top of the panel's screen, just left of the column when the panel is
-        docked on the right (it covers none of it), just under the bar on the right when it is docked on top. Only
-        asked while the panel shows: the strip is hidden with it. Sets self.head_w, the head's width in logical
-        pixels (0 without one)."""
+    def strip_anchor(self):
+        """(right, top, work area): the strip's top-right corner in screen pixels. Where the user dropped it, pulled
+        back onto the nearest screen when it would leave it (a monitor gone, a smaller resolution); never dragged: at
+        the top of the panel's screen, just left of the column when the panel is docked on the right (it covers none
+        of it), just under the bar on the right when it is docked on top."""
         s = self.scale()
         gap = int(round(SHOT_GAP * s))
         if self.strip_at:
             right, top = self.strip_at
             wa = self.work_area((right - 1, top, 1, 1))
-            right = min(max(right, wa.left + 1), wa.right)
+            return min(max(right, wa.left + 1), wa.right), top, wa
+        wa = self.work_area()
+        right, top = wa.right, wa.top
+        if self.opts["dock"] == "top":
+            top += int(round(STRIP * s))
         else:
-            wa = self.work_area()
-            right, top = wa.right, wa.top
-            if self.opts["dock"] == "top":
-                top += int(round(STRIP * s))
-            else:
-                r = wt.RECT()
-                user32.GetWindowRect(self.hwnd, ctypes.byref(r))
-                right = min(right, r.left)
-            right, top = right - gap, top + gap
+            r = wt.RECT()
+            user32.GetWindowRect(self.hwnd, ctypes.byref(r))
+            right = min(right, r.left)
+        return right - gap, top + gap, wa
+
+    def strip_rect(self, n, head=False):
+        """Screen pixels (x, y, w, h) of a strip of n screenshots (None with none), and how many columns they take.
+        It grows left from its top-right corner (strip_anchor()) and wraps into rows below. With head (a session is
+        open) the reply window stands at the screen's left edge, SHOT_GAP in, its top on the strip's: self.reply_box
+        = (x, y, w) in screen pixels (None without a head or room), laid out by band_layout(). Only asked while the
+        panel shows: the strip is hidden with it."""
+        s = self.scale()
+        gap = int(round(SHOT_GAP * s))
+        right, top, wa = self.strip_anchor()
         room = (right - wa.left - (gap if head else 0)) / s  # logical pixels from its right end to the left edge
-        fit = int((room - SHOT_PAD - (REPLY_MIN + SHOT_PAD if head else 0)) // (SHOT_W + SHOT_PAD))
-        cols = max(1, min(n, fit)) if n else 0
-        rows = max(1, -(-n // cols)) if n else 1
-        shots = cols * (SHOT_W + SHOT_PAD)
-        lw = room if head else SHOT_PAD + max(cols, 1) * (SHOT_W + SHOT_PAD)
-        self.head_w = lw - 2 * SHOT_PAD - shots if head else 0
-        w = int(math.ceil(lw * s))  # never a pixel short: the page would wrap early
-        h = int(math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD)) * s))
-        x, y = right - w, top
-        wa = self.work_area((x, y, w, h))
-        return (max(wa.left, min(x, wa.right - w)), max(wa.top, min(y, wa.bottom - h)), w, h), cols
+        cols, rows, sw, rw = band_layout(room, n, head)
+        rect = None
+        if n:
+            w = int(math.ceil(sw * s))  # never a pixel short: the page would wrap early
+            h = int(math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD)) * s))
+            x, y = right - w, top
+            wb = self.work_area((x, y, w, h))
+            rect = (max(wb.left, min(x, wb.right - w)), max(wb.top, min(y, wb.bottom - h)), w, h)
+        self.reply_box = None
+        if head and rw > 0:
+            rx = right - int(round(room * s))
+            self.reply_box = (rx, rect[1] if rect else max(wa.top, top), int(math.ceil(rw * s)))
+        return rect, cols
 
     def update_strip(self):
         """Draws the strip again when what it shows or where it sits has changed; hides it when it is switched off,
-        the keeper is off, nothing is left to show (no screenshot, no open session) or the panel is hidden. Left
+        the keeper is off, no screenshot is left or the panel is hidden. Left
         alone while it is being dragged. The strip is owned by the panel (GWLP_HWNDPARENT), so Windows keeps it
         directly above the panel in z-order: it sinks when another window covers the panel and comes forward with
         it (lift(), a click on the panel, Ctrl+Alt+C), never above a window the panel is under. Never topmost,
-        never activated. The reply window is placed under its left part each time (place_reply())."""
+        never activated. The reply window, left of it, is handed its head and placed each time (place_reply())."""
         if not self.strip_ready or not self.hwnd or (self.strip_drag and self.strip_drag["thread"].is_alive()):
             return
         if not self.strip_shown:
@@ -3712,11 +3746,10 @@ class Panel:
             counts[i["pin"]] += 1
             i["num"] = counts[i["pin"]]
             i["title"], i["when"] = shot_label(i["path"])  # in the key: "14:32" becomes "yesterday 14:32" at midnight
+        self.reply_box = None
         rect, cols = self.strip_rect(len(items), bool(head)) if items or head else (None, 0)
         key = (json.dumps(items), rect, cols)
-        if head != self.head_key:
-            self.head_key = head
-            self.strip.evaluate_js("shotStrip.head(%s)" % json.dumps(head))
+        self.push_head(head)
         if key == self.strip_key:
             self.place_reply()
             return
@@ -3750,11 +3783,13 @@ class Panel:
         if self.reply_hwnd:
             ex = user32.GetWindowLongW(self.reply_hwnd, -20)
             user32.SetWindowLongW(self.reply_hwnd, -20, (ex | 0x80) & ~0x40000 & ~0x08000000)
-            self.reply_ready, self.reply_key = True, None
+            self.reply_ready, self.reply_key, self.head_key = True, None, None
+            self.strip_seen = -1  # the poll loop hands it its head (update_strip()) on its next turn
             self.events.put("reply")
 
     def set_reply_open(self, on):
-        """The fold button: the reply window folded into the strip or opened again; kept in claude-plus.local.json."""
+        """The fold button: the reply window folded to its head (tabs and the line naming the session) or opened
+        again; kept in claude-plus.local.json."""
         self.reply_open = on
         try:
             save_local("reply_open", on)
@@ -3800,7 +3835,7 @@ class Panel:
 
     def update_reply(self):
         """Every live pass, scan and list change: the tabs and the session shown, and what the reply window shows
-        (the head goes to the strip with update_strip()). The tab followed is the session the user last typed a
+        (its head goes with update_strip()). The tab followed is the session the user last typed a
         prompt in; a tab pressed holds until a prompt is typed somewhere after the press."""
         if not self.reply_mod or not self.strip_ready:
             return
@@ -3813,7 +3848,7 @@ class Panel:
         self.push_reply()
 
     def head_state(self):
-        """The strip's head: a tab per open session, the shown one marked, and the line naming it; None when no
+        """The reply window's head: a tab per open session, the shown one marked, and the line naming it; None when no
         session is open."""
         if not self.reply_mod or not self.tabs:
             return None
@@ -3837,6 +3872,17 @@ class Panel:
                     line = "no reply since your prompt of %s" % pt if pt else "no reply yet"
                 meta = {"name": name, "where": where_of(s), "line": line}
         return {"tabs": tabs, "meta": meta, "open": self.reply_open}
+
+    def push_head(self, head):
+        """Hands the reply window its head when it changed (None: no session is open, or the strip is off)."""
+        if head == self.head_key or not self.reply_ready:
+            return
+        self.head_key = head
+        try:
+            h = self.reply.evaluate_js("reply.head(%s)" % json.dumps(head))
+            self.reply_h = max(0, int(h or 0)) or self.reply_h
+        except Exception:
+            pass
 
     def push_reply(self):
         """Hands the reply window what it shows of the session shown, when that changed."""
@@ -3871,13 +3917,14 @@ class Panel:
         self.place_reply()
 
     def place_reply(self):
-        """The reply window under the strip's left part, REPLY_W wide (less when the head is narrower), as tall as
-        its page asks up to REPLY_BELOW above the work area's bottom (then its replies scroll inside); hidden while
-        the strip has no head or is hidden, or the window is folded. Owned by the panel as the strip is."""
+        """The reply window at self.reply_box (strip_rect(): the screen's left edge, its top on the strip's), as tall
+        as its page asks up to REPLY_BELOW above the work area's bottom (then its replies scroll inside); hidden
+        while no session is open or the strip is off. Folded, its page is the head alone. Owned by the panel as the
+        strip is."""
         if not self.reply_ready or not self.hwnd:
             return
-        rect = self.strip_key[1] if self.strip_key else None
-        if not (rect and self.head_key and self.reply_open and self.reply_sid and self.head_w):
+        box = self.reply_box
+        if not (box and self.head_key and self.reply_sid):
             if self.reply_now:
                 user32.ShowWindow(self.reply_hwnd, 0)  # SW_HIDE
                 self.reply_now = None
@@ -3887,15 +3934,13 @@ class Panel:
             self.wake(self.reply_hwnd, False)
             self.reply_shown = True
         s = self.scale()
-        sx, sy, sw, sh = rect
-        wa = self.work_area(rect)
-        w = min(int(math.ceil(min(REPLY_W, self.head_w + 2 * SHOT_PAD) * s)), sw)
-        y = sy + sh
-        h = max(int(60 * s), min(int(math.ceil((self.reply_h or 120) * s)), wa.bottom - int(REPLY_BELOW * s) - y))
-        place = (sx, y, w, h)
+        x, y, w = box
+        wa = self.work_area((x, y, w, 1))
+        h = max(int(40 * s), min(int(math.ceil((self.reply_h or 120) * s)), wa.bottom - int(REPLY_BELOW * s) - y))
+        place = (x, y, w, h)
         if place != self.reply_now or not user32.IsWindowVisible(self.reply_hwnd):
             self.reply_now = place
-            user32.SetWindowPos(self.reply_hwnd, 0, sx, y, w, h, 0x0004 | 0x0010 | 0x0040)
+            user32.SetWindowPos(self.reply_hwnd, 0, x, y, w, h, 0x0004 | 0x0010 | 0x0040)
 
     def reply_send(self, sid, answers):
         """Send to Session: the answered paragraphs join the session's numbered ":N" list (as selections do, so
@@ -4059,7 +4104,7 @@ class Panel:
 
     # ----- dragging the strip -----
     def strip_press(self):
-        """A press anywhere on the strip. Returns its number, which the page hands back with strip_release()."""
+        """A press anywhere on the strip or on the reply window's head. Returns its number, which the page hands back with strip_release()."""
         d = self.strip_drag
         if d and d["thread"].is_alive():
             return d["n"]
@@ -4070,14 +4115,18 @@ class Panel:
         return d["n"]
 
     def strip_follow(self, d):
-        """While the button is held: once the pointer has gone SHOT_MOVE px, the strip moves with it (moved with
-        SWP_NOACTIVATE, so the keyboard stays in the window the user works in); where it is let go is kept in
-        claude-plus.local.json and used from then on."""
+        """While the button is held: once the pointer has gone SHOT_MOVE px, the strip and the reply window move with
+        it (moved with SWP_NOACTIVATE, so the keyboard stays where it was); where the strip's corner is let go is
+        kept in claude-plus.local.json and used from then on, also while the strip is hidden (no screenshot)."""
         button = 0x02 if user32.GetSystemMetrics(23) else 0x01  # SM_SWAPBUTTON: the primary button
         far = (SHOT_MOVE * self.scale()) ** 2
         p0, pt, r, rr = wt.POINT(), wt.POINT(), wt.RECT(), wt.RECT()
         user32.GetCursorPos(ctypes.byref(p0))
-        user32.GetWindowRect(self.strip_hwnd, ctypes.byref(r))
+        right, top, _ = self.strip_anchor()
+        strip = self.strip_hwnd if user32.IsWindowVisible(self.strip_hwnd) else None
+        if strip:
+            user32.GetWindowRect(strip, ctypes.byref(r))
+            right, top = r.right, r.top
         reply = self.reply_now and self.reply_hwnd  # the reply window moves with it
         if reply:
             user32.GetWindowRect(self.reply_hwnd, ctypes.byref(rr))
@@ -4092,19 +4141,20 @@ class Panel:
                 d["moved"] = True
                 self.view_close()
             if d["moved"]:
-                user32.SetWindowPos(self.strip_hwnd, 0, r.left + dx, r.top + dy, 0, 0, 0x0001 | 0x0004 | 0x0010)
+                if strip:
+                    user32.SetWindowPos(strip, 0, r.left + dx, r.top + dy, 0, 0, 0x0001 | 0x0004 | 0x0010)
                 if reply:
                     user32.SetWindowPos(self.reply_hwnd, 0, rr.left + dx, rr.top + dy, 0, 0, 0x0001 | 0x0004 | 0x0010)
             if held:
                 time.sleep(0.01)
         if d["moved"]:
-            self.strip_at = (r.right + dx, r.top + dy)
+            self.strip_at = (right + dx, top + dy)
             try:
                 save_local("shot_strip_at", list(self.strip_at))
             except OSError:
                 pass
             self.strip_seen = -1  # the poll loop places it again: pulled back onto the screen if it was let go off it
-            self.reply_now = None  # ... and the reply window under it
+            self.reply_now = None  # ... and the reply window beside it
 
     def strip_release(self, n):
         """The page's release: True when press n became a drag (then the page fires no click)."""

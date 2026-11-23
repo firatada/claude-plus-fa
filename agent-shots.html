@@ -30,15 +30,11 @@
      Pointing at a card shows the full file name in the panel's tooltip (agent-panel.html .tip: 400 ms, gone after
      3 s or on a press); the strip window is exactly the strip, so it sits inside it, over the card's title, its
      foot just above the time.
-     Reply window head (2026-11-23, replacing the reply band of 2026-11-19): while any session is open the strip
-     reaches from its right end to the screen's left edge, the screenshots kept on the right, and its left part
-     holds a tab per open session (the panel's state dot, its name, the time of its last reply), the session the
-     reply window shows outlined, a line naming that session, its folder and the times of its last reply and of the
-     prompt it answers, and a button that folds the reply window into the strip or opens it again. The reply
-     window (agent-reply.html, a window of its own) flows down from this part. A tab press released in place shows
-     that session; any press may still drag the strip. agent-panel.pyw sends the head with shotStrip.head(state)
-     and the screenshots' columns with shotStrip.update(items, cols). The selections for the ":" reply are marked
-     inside the reply window now, not listed here.
+     The strip holds the screenshots alone (2026-11-23): the session tabs and the line naming the session sit at
+     the top of the reply window (agent-reply.html), a window of its own left of the strip, so the two read as two
+     edged surfaces. While a session is open the strip's columns leave the reply window its width and the
+     screenshots wrap into rows (agent-panel.pyw sends the columns with shotStrip.update(items, cols)). The
+     selections for the ":" reply are marked inside the reply window, not listed here.
 -->
 <style>
 :root {
@@ -59,38 +55,8 @@ body.moving, body.moving * { cursor: grabbing !important; }
 /* a card: SHOT_W x SHOT_H (150 x 94; 150 so the top row holds a pinned 2-digit badge, Pin and "Reading…"). The
    whole card is the button that opens the preview; its text starts under the top row (6 + 20 + 4), the title up to
    3 lines of 14 px, the time on the last line, never cut */
-/* the reply window's head: the strip's left part, as wide as the screen leaves it; the screenshots keep their place
-   on the right (#shots, as many columns as agent-panel.pyw allows, wrapping into rows) */
-#strip { flex-wrap: nowrap; align-items: stretch; }
-#rhead { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 0 2px; }
-#rhead[hidden] { display: none; }
-#shots { flex: none; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; margin-left: auto; }
-#shots:empty { display: none; }
-.tabs { display: flex; gap: 6px; align-items: center; height: 34px; min-width: 0; }
-.tab {
-  flex: 0 1 auto; min-width: 0; max-width: 220px; height: 34px; padding: 0 12px; display: flex; align-items: center;
-  gap: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text);
-  font: 600 12px "Segoe UI", system-ui, sans-serif; transition: transform .16s ease-out;
-}
-.tab:hover { border-color: var(--blue); }
-.tab:active, #fold:active { transform: scale(.97); }
-.tab.on { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue), 0 0 0 3px rgba(27, 77, 245, .12); }
-.tab .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tab .at { flex: none; font-weight: 400; color: var(--muted); font-size: 11px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.5px var(--violet); }
-.dot.ask { background: var(--red); box-shadow: none; }
-.dot.work { width: 10px; height: 10px; box-shadow: none; border: 1.5px solid var(--green); border-right-color: transparent;
-  animation: turn 1s linear infinite; }
-@keyframes turn { to { transform: rotate(360deg); } }
-#fold { flex: none; margin-left: auto; width: 34px; height: 34px; border: 0; border-radius: 10px; background: none;
-  color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out; }
-#fold:hover { color: var(--blue); background: #eef2fb; }
-#fold svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
-  stroke-linejoin: round; transition: transform .16s ease-out; }
-#fold.shut svg { transform: rotate(180deg); }
-.meta { margin-top: auto; padding: 0 4px 4px; color: var(--muted); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.meta b { font-weight: 600; color: var(--text); }
+/* the screenshots: as many columns as agent-panel.pyw allows, wrapping into rows */
+#shots { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; }
 .shot { position: relative; flex: none; width: 150px; height: 94px; }
 .pic {
   width: 100%; height: 100%; padding: 30px 8px 6px; border: 1px solid var(--line); border-radius: 8px;
@@ -158,12 +124,12 @@ body.view #view { display: flex; }
 #big img { display: none; width: 100%; height: 100%; object-fit: contain; -webkit-user-drag: none; }
 #big img.on { display: block; }
 @media (prefers-reduced-motion: reduce) {
-  .pic, .tip, .tab, #fold, #fold svg, .dot.work { transition: none; animation: none; } .pic:active, .tab:active { transform: none; }
+  .pic, .tip { transition: none; animation: none; } .pic:active { transform: none; }
 }
 </style>
 </head>
 <body>
-<div id="strip"><div id="rhead" hidden><div class="tabs" id="rtabs"></div><div class="meta" id="rmeta"></div></div><div id="shots"></div></div>
+<div id="strip"><div id="shots"></div></div>
 <div id="view"><div id="head"><span id="badge" class="num" aria-hidden="true"></span><span id="name"></span><button type="button" id="del" aria-label="Delete: move it to the Recycle Bin">Delete</button><button type="button" id="copy">Copy as Text</button><button type="button" id="copyimg">Copy as Image</button><button type="button" id="open">Open</button></div><div id="big"></div></div>
 <script>
 /*MODE*/
@@ -174,7 +140,6 @@ const PIN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3H8v2h1v6l
 const badge = s => (s.pin ? PIN : "") + s.num;  // the badge's inside: a pin glyph for the pinned sequence
 const label = s => (s.pin ? "pinned " : "") + s.num + ", " + s.name;
 const shots = document.getElementById("shots");
-const UP = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4"/></svg>';
 
 // the strip's Copy and the preview's Copy as Text (how "copy": path and OCR text), the preview's Copy as Image
 // (how "copy_image": the picture itself): one feedback, then the button's own label back
@@ -209,23 +174,12 @@ window.shotStrip = {
     </div>`).join("");
     tipHide();
   },
-  // the reply window's head: {tabs: [{sid, name, dot: "ask"/"work"/"open", when, on, full}], meta: html-free
-  // {name, where, line}, open: the reply window shows}; null: no session is open, the strip is screenshots alone
-  head(h) {
-    const head = document.getElementById("rhead");
-    head.hidden = !h;
-    if (!h) return;
-    document.getElementById("rtabs").innerHTML = h.tabs.map(t => `<button type="button" class="tab${t.on ? " on" : ""}" data-sid="${esc(t.sid)}" data-full="${esc(t.full)}" aria-pressed="${t.on}"><span class="dot ${t.dot}" aria-hidden="true"></span><span class="nm">${esc(t.name)}</span>${t.when ? `<span class="at">${esc(t.when)}</span>` : ""}</button>`).join("") +
-      `<button type="button" id="fold" class="${h.open ? "" : "shut"}" data-full="${h.open ? "Folds the reply window into the strip" : "Opens the reply window under the strip"}" aria-label="${h.open ? "Fold the reply window" : "Open the reply window"}">${UP}</button>`;
-    document.getElementById("rmeta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · ${esc(h.meta.where)}${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
-    tipHide();
-  },
   open(at) {  // the picture the preview shows is outlined; null: none
     strip.querySelectorAll(".pic").forEach(b => b.classList.toggle("open", Number(b.dataset.at) === at));
   },
 };
 
-// ----- tooltip: the full file name (a tab: the session's name and folder), as the panel's (mindmap tooltip.md: opens on movement after ~400 ms, leaves by
+// ----- tooltip: the full file name, as the panel's (mindmap tooltip.md: opens on movement after ~400 ms, leaves by
 // itself after ~3 s or on any press); Pin and Copy name themselves, so pointing at them opens none -----
 let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
 function tipShow(el) {
@@ -237,7 +191,6 @@ function tipShow(el) {
   document.body.append(tip);
   // the window ends at the strip's edge: centred on the card, over the title it spells out in full, its foot just
   // above the time so that stays readable, kept inside
-  // a tab or the fold button: under it, over the line naming the session (nothing opens downward from them)
   const r = el.getBoundingClientRect(), t = el.querySelector(".w");
   const w = tip.offsetWidth, h = tip.offsetHeight;
   const x = Math.max(4, Math.min((r.left + r.right) / 2 - w / 2, innerWidth - w - 4));
@@ -255,7 +208,7 @@ function tipHide() {
 addEventListener("pointermove", e => {  // only a real mouse that really moved: not a card redrawn under a still pointer
   if (e.pointerType !== "mouse" || (e.clientX === lx && e.clientY === ly) || pressed) return;
   lx = e.clientX; ly = e.clientY;
-  const p = e.target.closest(".pin, .copy") ? null : e.target.closest(".shot, .tab, #fold");
+  const p = e.target.closest(".pin, .copy") ? null : e.target.closest(".shot");
   if (p !== tipDone) tipDone = null;
   if (p && p === tipTarget) return;
   tipHide();
@@ -270,7 +223,7 @@ let pressed = null;
 strip.addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
   e.preventDefault();
-  tipDone = tipTarget || e.target.closest(".shot, .tab, #fold");  // a press dismisses it, and it does not come back on that card
+  tipDone = tipTarget || e.target.closest(".shot");  // a press dismisses it, and it does not come back on that card
   tipHide();
   try { strip.setPointerCapture(e.pointerId); } catch (_) {}  // the release still arrives if the pointer leaves
   // release() waits for press()'s answer, so the two never cross on their way to agent-panel.pyw
@@ -287,9 +240,7 @@ strip.addEventListener("pointerup", e => {
     document.body.classList.remove("moving");
     if (moved || !b) return;
     const at = Number(b.dataset.at);
-    if (b.classList.contains("tab")) api().tab(b.dataset.sid);  // agent-panel.pyw shows it and redraws the head
-    else if (b.id === "fold") api().fold();
-    else if (b.classList.contains("copy")) copy(b, at);
+    if (b.classList.contains("copy")) copy(b, at);
     else if (b.classList.contains("pin")) pin(b, at);
     else api().enlarge(at);
   });

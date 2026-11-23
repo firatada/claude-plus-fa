@@ -43,7 +43,7 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 | `agent-shots.html` | `~/.claude` | the screenshot strip and its preview (one page, two windows) |
 | `agent-column.html` | `~/.claude` | an opened card's column of running work, right dock |
 | `agent-reply.py` | `~/.claude` | the reply window's rules (replies from a transcript, drafts, the line sent), loaded by the panel |
-| `agent-reply.html` | `~/.claude` | the reply window under the strip's left part |
+| `agent-reply.html` | `~/.claude` | the reply window (session tabs, replies, answers) left of the strip |
 | `agent-panel-paste.py` | `~/.claude` | the paste key and Send to Session's typing, a process of its own |
 | `mascot/` | `~/.claude/agent-panel-mascot` | hero strips, `agent-panel.ico`, `logo.png`, `knock.wav`; replaced whole on install |
 | `install.py`, `uninstall.py`, `copy_on_select.py` | repo only | installers; `copy_on_select.py` is imported by both from their own folder |
@@ -186,10 +186,10 @@ What is true now, nothing else. How it got here (test runs, measurements, fixes,
 - The screenshot keeper, the strip and its preview, Copy as Text's OCR, Copy as Image, and the paste key: [`memory/screenshots.md`](./memory/screenshots.md).
 
 ## Reply to passages and the reply window
-- The ":N" reply (markers, quoted text, the numbered lists, attribution) and the reply window under the strip (tabs, replies from the transcript, answer boxes, drafts, Copy, Send to Session): [`memory/reply.md`](./memory/reply.md).
+- The ":N" reply (markers, quoted text, the numbered lists, attribution) and the reply window beside the strip (tabs, replies from the transcript, markdown with tables, answer boxes, drafts, Copy, Send to Session): [`memory/reply.md`](./memory/reply.md).
 
 ## Tests
-- Unit tests (all pass, 2026-11-23): `python -I tools/test-quote-reply.py` (61, 7 on quoted markers), `python -I tools/test-reply.py` (19, the reply window's rules on made-up transcripts), `python -I tools/test-agent-panel-state.py` (23: mascot 6, strip frame 3), `python -I tools/test-peek.py` (24, the opened card's readers and when an agent has ended, on made-up files), `python -I tools/test-paste.py` (19; `--clipboard` adds Copy as Image's real clipboard round trip), `python -I tools/test-link-front.py` (15), `python -I tools/test-codex-move.py` (12, the move to Codex), `python -I tools/test-way-out.py` (16, the way-out window's gate and Codex's start), `python -I tools/test-codex-way-back.py` (16, the panel's GLM and Codex steps, `agent_ended()`), `python tools/test-ocr.py` (rendered pictures; `--unit` for the 7 `ocr_rows()` checks).
+- Unit tests (all pass, 2026-11-23): `python -I tools/test-quote-reply.py` (61, 7 on quoted markers), `python -I tools/test-reply.py` (30: the reply window's rules on made-up transcripts, `band_layout()` 4, the page's markdown 7 run in node when it is installed), `python -I tools/test-agent-panel-state.py` (23: mascot 6, strip frame 3), `python -I tools/test-peek.py` (24, the opened card's readers and when an agent has ended, on made-up files), `python -I tools/test-paste.py` (19; `--clipboard` adds Copy as Image's real clipboard round trip), `python -I tools/test-link-front.py` (15), `python -I tools/test-codex-move.py` (12, the move to Codex), `python -I tools/test-way-out.py` (16, the way-out window's gate and Codex's start), `python -I tools/test-codex-way-back.py` (16, the panel's GLM and Codex steps, `agent_ended()`), `python tools/test-ocr.py` (rendered pictures; `--unit` for the 7 `ocr_rows()` checks).
 - Reply window: `%TEMP%` harness page with `agent-shots.html` and `agent-reply.html` in iframes and a stub `pywebview`, Playwright at 1x and 2x; Send to Session end to end only into a `conhost.exe` window the test makes (`trials.md`, 2026-11-23).
 - Page checks: the repo's `agent-panel.html` with the mascot strips put in at `/*MASCOT*/`, served from 127.0.0.1 to Playwright with a stub `pywebview`, fed made-up sessions through `app.update()`.
 - Window checks: the repo's `agent-panel.pyw` run by a throwaway driver with its mutex and event names renamed (the live panel keeps running), on a temp profile (`USERPROFILE`/`HOME` on `%TEMP%`), the keeper built without `start()`; windows captured by their own handle (`PrintWindow`, `PW_RENDERFULLCONTENT`).

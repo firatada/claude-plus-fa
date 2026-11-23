@@ -3,10 +3,17 @@
 <head>
 <meta charset="utf-8">
 <title>Field Agents Reply</title>
-<!-- The reply window (the maintainer, 2026-11-23): it flows down from the left part of the screenshot strip, whose
-     tabs pick the session. It shows every reply Claude gave in that session since the prompt the user last typed
-     there, one under the other (agent-reply.py reads them from the transcript; agent-panel.pyw sends them with
-     reply.show()). Claude's text is never changed. Resting the pointer on a paragraph (a list item counts as one)
+<!-- The reply window (the maintainer, 2026-11-23): a window of its own at the screen's left edge, its top on the
+     screenshot strip's, edged by DWM as the strip and the panel are, so it reads as its own surface. Its head holds a
+     tab per open session (the panel's state dot, its name, the time of its last reply; the one shown outlined), a
+     button that folds the window to its head or opens it again, and right under the tabs a line naming the session
+     shown, its folder and the times of its last reply and of the prompt it answers (agent-panel.pyw sends it with
+     reply.head()). A tab press released in place shows that session; a press on the head may drag the window and
+     the strip together. Under the head it shows every reply Claude gave in that session since the prompt the user
+     last typed there, one under the other (agent-reply.py reads them from the transcript; agent-panel.pyw sends them with
+     reply.show()), its markdown drawn as Claude Code draws it: headings, bold, italics, strikethrough, inline code,
+     links (opened in the browser), lists, quotes, tables (a table is one paragraph) and rules. Claude's text is
+     never changed. Resting the pointer on a paragraph (a list item counts as one)
      opens a box under it, "Type your answer…"; what the user types there is theirs, in blue on a light blue ground
      with a blue rule on the left, kept per session (agent-panel.pyw stores it through api.draft) until it is sent.
      Code blocks show shut, as one line (language, lines, first line), and open on a click. The passages selected
@@ -21,7 +28,7 @@
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
   --faint: #687189; --violet: #5c3bcd; --blue: #1b4df5; --green: #16a34a; --red: #e11d48; --red-deep: #be123c;
   --hit: #dbe4ff; --ans-bg: #f5f8ff; --r-ctl: 10px; --r-small: 6px; --tip-bg: rgba(10, 26, 64, .88);
-  --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2); --snap: cubic-bezier(0.23, 1, 0.32, 1);
+  --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2); --snap: cubic-bezier(0.23, 1, 0.32, 1); --edge: 20px;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -29,16 +36,57 @@ body { background: var(--panel); color: var(--text); font: 400 14px/22px "Segoe 
   overflow: hidden; display: flex; flex-direction: column; }
 button, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
-#body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 28px 10px 28px;
+/* the head: the tabs, the fold button at their right, and right under them the line naming the session shown; the
+   head, the replies, the bottom bar and its text share one left edge (--edge) */
+#head { flex: none; padding: 8px 8px 8px var(--edge); border-bottom: 1px solid var(--line); user-select: none; cursor: default; }
+body.folded #head { border-bottom: 0; }
+body.folded #body, body.folded #miss, body.folded #foot { display: none; }
+body.moving, body.moving * { cursor: grabbing !important; }
+.tabrow { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.tabs { flex: 1 1 auto; display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; }
+.tab {
+  flex: 0 1 auto; min-width: 0; max-width: 220px; height: 34px; padding: 0 12px; display: flex; align-items: center;
+  gap: 8px; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel); color: var(--text);
+  font: 600 12px "Segoe UI", system-ui, sans-serif; transition: transform .16s ease-out;
+}
+.tab:hover { border-color: var(--blue); }
+.tab:active, #fold:active { transform: scale(.97); }
+.tab.on { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue), 0 0 0 3px rgba(27, 77, 245, .12); }
+.tab .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab .at { flex: none; font-weight: 400; color: var(--muted); font-size: 11px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.5px var(--violet); }
+.dot.ask { background: var(--red); box-shadow: none; }
+.dot.work { width: 10px; height: 10px; box-shadow: none; border: 1.5px solid var(--green); border-right-color: transparent;
+  animation: turn 1s linear infinite; }
+@keyframes turn { to { transform: rotate(360deg); } }
+#fold { flex: none; width: 34px; height: 34px; border: 0; border-radius: var(--r-ctl); background: none;
+  color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out; }
+#fold:hover { color: var(--blue); background: var(--surface2); }
+#fold svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+  stroke-linejoin: round; transition: transform .16s ease-out; }
+#fold.shut svg { transform: rotate(180deg); }
+.meta { margin-top: 6px; color: var(--muted); font: 400 12px/16px "Segoe UI", system-ui, sans-serif;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta b { font-weight: 600; color: var(--text); }
+.meta:empty { display: none; }
+#body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 28px 10px var(--edge);
   scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 /* one reply; several are parted by a hairline and the time each came */
 .reply + .reply { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
 .when { color: var(--faint); font: 400 11px/16px "Segoe UI", system-ui, sans-serif; margin-bottom: 2px; }
 .para { position: relative; padding: 4px 0; border-radius: 6px; overflow-wrap: anywhere; }
 .para.h { font-weight: 600; padding-top: 8px; }
-.para.h1 { font-size: 16px; }
+.para.h1 { font-size: 17px; line-height: 24px; }
+.para.h2 { font-size: 15px; }
 .para.quote { border-left: 2px solid var(--line); padding-left: 10px; color: var(--muted); }
-.para.table { font: 400 12px/18px "Cascadia Mono", Consolas, monospace; white-space: pre; overflow-x: auto; }
+/* a table: one paragraph (one answer box); wider than the window, it scrolls sideways on its own */
+.para.table { overflow-x: auto; padding: 6px 0; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.para.table table { border-collapse: collapse; font: 400 13px/20px "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+.para.table th, .para.table td { border: 1px solid var(--line); padding: 5px 12px; text-align: left; vertical-align: top; }
+.para.table th { background: var(--surface2); font-weight: 600; }
+.para.pre { font: 400 12px/18px "Cascadia Mono", Consolas, monospace; white-space: pre; overflow-x: auto; }
+a.lnk { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: rgba(27, 77, 245, .4); cursor: pointer; }
+a.lnk:hover { text-decoration-color: var(--blue); }
 .para.li { display: grid; grid-template-columns: 22px minmax(0, 1fr); }
 .para.li > .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .para.hov { background: rgba(27, 77, 245, .04); }
@@ -78,10 +126,10 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 #empty { color: var(--muted); padding: 6px 0; }
 #empty[hidden], #miss[hidden] { display: none; }
 /* selections that are not in the reply text */
-#miss { flex: none; padding: 6px 28px; border-top: 1px solid var(--line); color: var(--muted);
+#miss { flex: none; padding: 6px 28px 6px var(--edge); border-top: 1px solid var(--line); color: var(--muted);
   font: 400 12px/18px "Segoe UI", system-ui, sans-serif; overflow-wrap: anywhere; }
 #miss .qb { height: 16px; font-size: 10px; }
-#foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 16px 12px 28px; border-top: 1px solid var(--line); }
+#foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 16px 12px var(--edge); border-top: 1px solid var(--line); }
 #count { color: var(--muted); font: 400 12px "Segoe UI", system-ui, sans-serif; white-space: nowrap; }
 #count b { color: var(--text); font-weight: 600; }
 #say { flex: 1; min-width: 0; font: 400 12px/16px "Segoe UI", system-ui, sans-serif; color: var(--green); }
@@ -106,6 +154,7 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 </style>
 </head>
 <body>
+<div id="head"><div class="tabrow"><div class="tabs" id="tabs"></div><button type="button" id="fold"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4"/></svg></button></div><div class="meta" id="meta"></div></div>
 <div id="body"><div id="empty" hidden></div><div id="replies"></div></div>
 <div id="miss" hidden></div>
 <div id="foot"><span id="count"></span><span id="say" role="status"></span>
@@ -143,11 +192,22 @@ function blocks(text) {
     let m;
     if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flush(); out.push({kind: "h", level: m[1].length, src: line, text: m[2]}); i++; continue; }
     if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); out.push({kind: "hr"}); i++; continue; }
-    if (/^\s*\|/.test(line)) {
+    if (line.includes("|") && i + 1 < lines.length && SEP.test(lines[i + 1]) && lines[i + 1].includes("|")) {
+      // a table (GFM): a header row, the row of dashes (colons set each column's alignment), then every
+      // following line holding a "|"; the whole table is one paragraph, its source as Claude wrote it
+      flush();
+      const head = cells(line), align = cells(lines[i + 1]).map(c => /^:-+:$/.test(c) ? "center" : /-:$/.test(c) ? "right" : /^:-/.test(c) ? "left" : "");
+      const src = [line, lines[i + 1]], rows = [];
+      i += 2;
+      while (i < lines.length && lines[i].trim() && lines[i].includes("|")) { src.push(lines[i]); rows.push(cells(lines[i])); i++; }
+      out.push({kind: "table", src: src.join("\n"), head, align, rows});
+      continue;
+    }
+    if (/^\s*\|/.test(line)) {  // lines that start with "|" but are no table: kept as written, in monospace
       flush();
       const rows = [];
       while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
-      out.push({kind: "table", src: rows.join("\n")});
+      out.push({kind: "pre", src: rows.join("\n")});
       continue;
     }
     if ((m = line.match(/^\s*>\s?(.*)$/))) {
@@ -173,7 +233,25 @@ function blocks(text) {
   return out;
 }
 
-// inline markdown: code, bold, italics, links (their text); everything else stays as Claude wrote it
+// a table row's cells: the outer pipes dropped, split at every "|" not escaped as "\|"
+const SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+function cells(row) {
+  let r = row.trim();
+  if (r.startsWith("|")) r = r.slice(1);
+  if (r.endsWith("|") && !r.endsWith("\\|")) r = r.slice(0, -1);
+  const out = [];
+  let cur = "";
+  for (let i = 0; i < r.length; i++) {
+    if (r[i] === "\\" && r[i + 1] === "|") { cur += "|"; i++; }
+    else if (r[i] === "|") { out.push(cur.trim()); cur = ""; }
+    else cur += r[i];
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+// inline markdown: code, bold, italics, strikethrough, links (a markdown link and a bare web address, opened in the
+// browser by a click); everything else stays as Claude wrote it
 function inline(t) {
   const parts = String(t).split(/(`+)([\s\S]*?)\1/);
   let html = "";
@@ -182,7 +260,9 @@ function inline(t) {
       html += esc(parts[k])
         .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<b>$1</b>")
         .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\w)/g, "$1<i>$2</i>")
-        .replace(/\[([^\]\n]+)\]\((?:[^()\s]|\([^()\s]*\))+\)/g, "$1");
+        .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<s>$1</s>")
+        .replace(/\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g, '<a class="lnk" data-url="$2" data-tip="$2">$1</a>')
+        .replace(/(^|[\s(]|&quot;)(https?:\/\/(?:(?!&quot;|&[lg]t;)[^\s<])*?)(?=[.,;:!?)']*(?:$|[\s<]|&quot;|&[lg]t;))/g, '$1<a class="lnk" data-url="$2" data-tip="$2">$2</a>');
     } else if (k % 3 === 2) {
       html += "<code>" + esc(parts[k]) + "</code>";
     }
@@ -198,8 +278,13 @@ function blockHtml(b, key) {
     return `<div class="code"><button type="button" data-tip="${n === 1 ? "Shows the line" : "Shows the " + n + " lines"}">${CHEV}<span class="k">${esc(b.lang || "code")}</span><span>${n} line${n === 1 ? "" : "s"}</span><span class="first">${esc(first.trim())}</span></button><pre>${esc(b.lines.join("\n"))}</pre></div>`;
   }
   if (b.kind === "hr") return '<div class="hr"></div>';
-  if (b.kind === "h") return `<div class="para h${b.level === 1 ? " h1" : ""}" ${k}>${inline(b.text)}</div>`;
-  if (b.kind === "table") return `<div class="para table" ${k}>${esc(b.src)}</div>`;
+  if (b.kind === "h") return `<div class="para h${b.level <= 2 ? " h" + b.level : ""}" ${k}>${inline(b.text)}</div>`;
+  if (b.kind === "table") {
+    const al = j => b.align[j] ? ` style="text-align:${b.align[j]}"` : "";
+    const row = (cs, tag) => "<tr>" + b.head.map((_, j) => `<${tag}${al(j)}>${inline(cs[j] || "")}</${tag}>`).join("") + "</tr>";
+    return `<div class="para table" ${k}><table><thead>${row(b.head, "th")}</thead><tbody>${b.rows.map(r => row(r, "td")).join("")}</tbody></table></div>`;
+  }
+  if (b.kind === "pre") return `<div class="para pre" ${k}>${esc(b.src)}</div>`;
   if (b.kind === "quote") return `<div class="para quote" ${k}>${inline(b.text).replace(/\n/g, "<br>")}</div>`;
   if (b.kind === "li") return `<div class="para li" ${k} style="margin-left:${Math.min(b.indent, 8) * 6}px"><span class="n">${esc(b.marker)}</span><span>${inline(b.text)}</span></div>`;
   return `<div class="para" ${k}>${inline(b.src).replace(/\n/g, "<br>")}</div>`;
@@ -239,7 +324,7 @@ function textNodes() {
 function flatten(nodes, keepSpace) {
   let s = "", at = [], space = true, lastPara = null;
   for (const n of nodes) {
-    const para = n.parentElement.closest(".para");
+    const para = n.parentElement.closest("td, th, .para");
     if (para !== lastPara) { if (keepSpace && !space) { s += " "; at.push(null); space = true; } lastPara = para; }
     const t = n.nodeValue;
     for (let i = 0; i < t.length; i++) {
@@ -253,8 +338,8 @@ function flatten(nodes, keepSpace) {
   }
   return {s, at};
 }
-const squash = (t, keepSpace) => keepSpace ? t.replace(/[`*]/g, "").replace(/\s+/g, " ").trim()
-  : t.replace(/[`*]/g, "").replace(/\s+/g, "");
+const squash = (t, keepSpace) => keepSpace ? t.replace(/[`*\u2500-\u257f]/g, " ").replace(/\s+/g, " ").trim()
+  : t.replace(/[`*\u2500-\u257f]/g, "").replace(/\s+/g, "");
 function wrap(at, from, to, n) {
   // the range's characters, text node by text node, each run wrapped in a <mark>; the badge before the first
   const runs = [];
@@ -385,6 +470,8 @@ document.getElementById("body").addEventListener("pointerleave", () => {
   }, 400);
 });
 document.addEventListener("click", e => {
+  const a = e.target.closest("a.lnk");
+  if (a) { e.preventDefault(); tipHide(); api().link(a.dataset.url); return; }
   const row = e.target.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
   const code = e.target.closest(".code > button");
@@ -470,7 +557,8 @@ addEventListener("blur", tipHide);
 // ---------- size: the window grows with what it holds; agent-panel.pyw caps it at the screen ----------
 let sizeJob = null, sent = 0;
 function natural() {
-  return Math.ceil($("body").scrollHeight + ($("miss").hidden ? 0 : $("miss").offsetHeight) + $("foot").offsetHeight);
+  if (document.body.classList.contains("folded")) return Math.ceil($("head").offsetHeight);
+  return Math.ceil($("head").offsetHeight + $("body").scrollHeight + ($("miss").hidden ? 0 : $("miss").offsetHeight) + $("foot").offsetHeight);
 }
 function size() {
   if (sizeJob) return;
@@ -500,7 +588,47 @@ function apply() {
 window.reply = {
   // state: {sid, name, replies: [{id, when, text}], answers: {key: {text, passage}}, selections: [{n, text}], note}
   show(state) { S = state; apply(); return natural(); },
+  // h: {tabs: [{sid, name, dot: "ask"/"work"/"open", when, on, full}], meta: {name, where, line}, open}; null: no
+  // session is open (agent-panel.pyw hides the window then)
+  head(h) {
+    if (!h) return natural();
+    $("tabs").innerHTML = h.tabs.map(t => `<button type="button" class="tab${t.on ? " on" : ""}" data-sid="${esc(t.sid)}" data-tip="${esc(t.full)}" aria-pressed="${t.on}"><span class="dot ${t.dot}" aria-hidden="true"></span><span class="nm">${esc(t.name)}</span>${t.when ? `<span class="at">${esc(t.when)}</span>` : ""}</button>`).join("");
+    const f = $("fold");
+    f.classList.toggle("shut", !h.open);
+    f.dataset.tip = h.open ? "Folds the reply window to its tabs" : "Opens the reply window";
+    f.setAttribute("aria-label", h.open ? "Fold the reply window" : "Open the reply window");
+    $("meta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · ${esc(h.meta.where)}${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
+    document.body.classList.toggle("folded", !h.open);
+    tipHide();
+    size();
+    return natural();
+  },
 };
+
+// A press on the head: agent-panel.pyw follows the pointer and moves the window (and the strip) once it has gone a
+// few pixels. On release it says whether that happened; only a press released in place counts as a click.
+let pressed = null;
+$("head").addEventListener("pointerdown", e => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  try { $("head").setPointerCapture(e.pointerId); } catch (_) {}
+  pressed = {b: e.target.closest("button"), x: e.screenX, y: e.screenY, n: api().press()};
+});
+$("head").addEventListener("pointermove", e => {
+  if (pressed && Math.hypot(e.screenX - pressed.x, e.screenY - pressed.y) >= 4) document.body.classList.add("moving");
+});
+$("head").addEventListener("pointerup", e => {
+  if (!pressed || e.button !== 0) return;
+  const {b, n} = pressed;
+  pressed = null;
+  n.then(id => api().release(id)).then(moved => {
+    document.body.classList.remove("moving");
+    if (moved || !b) return;
+    if (b.classList.contains("tab")) api().tab(b.dataset.sid);  // agent-panel.pyw shows it and sends the head again
+    else if (b.id === "fold") api().fold();
+  });
+});
+$("head").addEventListener("lostpointercapture", () => { pressed = null; document.body.classList.remove("moving"); });
 addEventListener("pywebviewready", () => { ready = true; api().ready(); });
 addEventListener("resize", size);
 </script>
