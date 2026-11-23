@@ -1,8 +1,8 @@
 # Unit tests for agent-reply.py, the reply window's rules: which transcript lines are a reply (end_turn text of the
 # main thread; not tool_use narration, thinking, a subagent, <synthetic> or an API error), every reply since the
 # last typed prompt, two text blocks of one message joined, reading on from where the last read stopped; the
-# drafts kept per session; the pinned replies; the line Send to Session types and the text Copy puts on the
-# clipboard; which session's terminal came to the front (front_session, taken from agent-panel.pyw by ast).
+# drafts kept per session; the pinned replies; the text Send to Session pastes and Copy copies (each reply
+# answered, whole, with the answers inside it, and the hook taking no marker from it); which session's terminal came to the front (front_session, taken from agent-panel.pyw by ast).
 # Run: python -I tools/test-reply.py
 # Every transcript here is made up, in a temporary folder; the drafts file too. The prompt rule is the panel's own
 # typed_prompt(), taken out of agent-panel.pyw by ast (importing it would trip its one-instance mutex).
@@ -230,29 +230,140 @@ class Drafts(unittest.TestCase):
         self.assertEqual(ar.Drafts(self.file).data, {})
 
 
-class Line(unittest.TestCase):
-    def test_send_line(self):
-        self.assertEqual(ar.send_line([(1, "Monthly price,\n  billed yearly."), (4, "Wait for Thursday.")]),
-                         "My answers: :1 Monthly price, billed yearly. :4 Wait for Thursday.")
+PLAN = ("Here is the plan for the release.\n\n1. **Pricing:** monthly or yearly?\n2. Ship it on Thursday?\n"
+        "   It depends on QA.\n3. Tell the team.\n\n| Item | Owner |\n|---|---|\n| Docs | Ada |\n| Tests | Deniz |\n\n"
+        "Reply with :1 yes or :2 no if you like.")
+PLAN_ENDS = [0, 2, 4, 5, 10, 12]  # the last line of each block of PLAN, as the page's blocks() counts them (Markdown)
+PLAN_SENT = (
+    'My answers inside your reply of 17:42 (your reply is quoted with "> ", my answers are marked "My answer:"):\n'
+    "\n"
+    "> Here is the plan for the release.\n"
+    "\n"
+    "My answer: Both, monthly first.\n"
+    "\n"
+    "> 1. **Pricing:** monthly or yearly?\n"
+    "> 2. Ship it on Thursday?\n"
+    ">    It depends on QA.\n"
+    "\n"
+    "My answer: Yes,\n"
+    "if QA passes `:3` cases\n"
+    "\n"
+    "> 3. Tell the team.\n"
+    ">\n"
+    "> | Item | Owner |\n"
+    "> |---|---|\n"
+    "> | Docs | Ada |\n"
+    "> | Tests | Deniz |\n"
+    "\n"
+    "My answer: Add a row for Release notes.\n"
+    "\n"
+    "> Reply with :1 yes or :2 no if you like.")
+PLAN_ANSWERS = [(0, "Here is the plan for the release.", "Both, monthly first."),
+                (4, "2. Ship it on Thursday?\n   It depends on QA.", "  Yes,\nif QA passes :3 cases\n\n"),
+                (10, "| Item | Owner |\n|---|---|\n| Docs | Ada |\n| Tests | Deniz |", "Add a row for Release notes.")]
 
-    def test_empty_answers_left_out(self):
-        self.assertEqual(ar.send_line([(1, "  "), (2, "ok")]), "My answers: :2 ok")
-        self.assertEqual(ar.send_line([(1, "  ")]), "")
 
-    def test_a_typed_marker_inside_an_answer_goes_in_code(self):
-        line = ar.send_line([(1, "as in :3 before"), (2, "ok :x fine 10:30")])
-        self.assertEqual(line, "My answers: :1 as in `:3` before :2 ok :x fine 10:30")
-        spec = importlib.util.spec_from_file_location("qr", os.path.join(ROOT, "quote-reply.py"))
-        qr = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(qr)
-        self.assertEqual(qr.parse(line, {1, 2, 3})[0], [(1, "as in `:3` before"), (2, "ok :x fine 10:30")])
+def panel_methods(*names):
+    """Methods of agent-panel.pyw's Panel, in a class of their own (importing it would trip its one-instance mutex)."""
+    with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    panel = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Panel")
+    keep = [n for n in panel.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    ns = {"SEEN_MAX": 400}
+    exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+    return type("P", (), {n: ns[n] for n in names})
 
-    def test_copy_text(self):
-        self.assertEqual(ar.copy_text([("1. Should the yearly plan\n   show monthly?", "Monthly."), ("Skip", "  "),
-                                       ("Ship it today?", "Yes,\nbehind the flag.")]),
-                         "My answers: :1 Monthly. :2 Yes, behind the flag.\n\n:1\n> 1. Should the yearly plan\n>    show monthly?\n\n"
-                         ":2\n> Ship it today?\n")
-        self.assertEqual(ar.copy_text([("p", " ")]), "")
+
+class Sent(unittest.TestCase):
+    """What Send to Session pastes and Copy copies: each reply answered, whole, quoted, with the answers inside."""
+
+    def test_one_reply_three_answers_in_a_paragraph_a_list_item_and_a_table(self):
+        self.assertEqual(ar.answer_text([(PLAN, "17:42", PLAN_ANSWERS)]), PLAN_SENT)
+
+    def test_the_hook_takes_no_marker_from_the_pasted_reply(self):
+        # a live list holding :1 :2 :3 (terminal selections): the ":1" and ":2" of Claude's quoted text and the ":3"
+        # inside the answer are no markers, so the prompt goes untouched; a ":2" typed after the paste still is one
+        qr = load_quote_reply()
+        self.assertEqual(qr.parse(PLAN_SENT, {1, 2, 3}), ([], [], False))
+        answers, unknown, _ = qr.parse(PLAN_SENT + "\n\n:2 and this selection is fine", {1, 2, 3})
+        self.assertEqual((answers, unknown), ([(2, "and this selection is fine")], []))
+
+    def test_two_replies_each_its_own_block_in_order_unanswered_left_out(self):
+        text = ar.answer_text([("First reply.\n\nSecond paragraph.", "09:05", [(2, "Second paragraph.", "ok")]),
+                               ("Not answered.", "09:10", [(0, "Not answered.", "   ")]),
+                               ("Last one.", "", [(0, "Last one.", "fine")])])
+        self.assertEqual(text, 'My answers inside your reply of 09:05 (your reply is quoted with "> ", my answers are '
+                               'marked "My answer:"):\n\n> First reply.\n>\n> Second paragraph.\n\nMy answer: ok\n\n'
+                               'My answers inside your reply (your reply is quoted with "> ", my answers are marked '
+                               '"My answer:"):\n\n> Last one.\n\nMy answer: fine')
+        self.assertEqual(ar.answer_text([("x", "1", [(0, "x", " ")])]), "")
+
+    def test_a_block_found_by_its_text_when_the_line_does_not_match_and_one_not_found_goes_last(self):
+        text = ar.answer_block("A\n\nB\n\nC", "", [(0, "B", "b!"), (9, "Gone", "g!")])
+        self.assertEqual(text.split("\n")[2:], ["> A", ">", "> B", "", "My answer: b!", "", "> C", "", "> Gone", "",
+                                                "My answer: g!"])
+
+    def test_a_quoted_line_typed_in_an_answer_stays_the_users(self):
+        self.assertEqual(ar.mine("> not Claude's\nmine"), "\\> not Claude's\nmine")
+
+    def test_time_today_and_another_day(self):
+        import time as t
+        now = t.mktime((2026, 11, 23, 18, 0, 0, 0, 0, -1))
+        self.assertEqual(ar.when_of(t.mktime((2026, 11, 23, 17, 42, 0, 0, 0, -1)), now), "17:42")
+        self.assertEqual(ar.when_of(t.mktime((2026, 11, 22, 9, 5, 0, 0, 0, -1)), now), "22 Nov 09:05")
+        self.assertEqual(ar.when_of(None, now), "")
+
+    def test_the_panel_uses_the_text_the_window_was_handed_pinned_replies_too(self):
+        P = panel_methods("seen", "reply_text")
+        p = P()
+        p.reply_mod, p.reply_seen = ar, {}
+        p.seen("s1", "m1", PLAN, None)
+        p.seen("s1", "pin", "An old pinned reply.\n\nIts question?", None)
+        p.seen("s2", "m1", "another session's text", None)
+        answers = [{"key": "m1#%d" % [0, 2, 4][k], "passage": a[1], "text": a[2], "line": a[0]}
+                   for k, a in enumerate(PLAN_ANSWERS)]
+        answers.append({"key": "pin#1", "passage": "Its question?", "text": "Yes.", "line": 2})
+        text = p.reply_text("s1", answers)
+        self.assertTrue(text.startswith(PLAN_SENT.replace("reply of 17:42", "reply")))
+        self.assertTrue(text.endswith("> An old pinned reply.\n>\n> Its question?\n\nMy answer: Yes."))
+        self.assertNotIn("another session", text)
+
+    def test_the_store_keeps_the_newest(self):
+        P = panel_methods("seen")
+        p = P()
+        p.reply_seen = {}
+        for k in range(405):
+            p.seen("s", "m%d" % k, "t", None)
+        self.assertEqual(len(p.reply_seen), 400)
+        self.assertNotIn(("s", "m4"), p.reply_seen)
+        p.seen("s", "m5", "t", None)  # seen again: the newest, so the next to go is m6
+        p.seen("s", "m405", "t", None)
+        self.assertIn(("s", "m5"), p.reply_seen)
+        self.assertNotIn(("s", "m6"), p.reply_seen)
+
+    def test_a_300_line_reply(self):
+        lines = []
+        for k in range(100):
+            lines += ["Paragraph %d says :%d here." % (k, k % 7), "and goes on.", ""]
+        text = "\n".join(lines[:-1])  # 299 lines
+        text += "\n" + "Last line."   # 300
+        self.assertEqual(len(text.split("\n")), 300)
+        out = ar.answer_text([(text, "12:00", [(1, "Paragraph 0 says :0 here.\nand goes on.", "first"),
+                                               (151, "Paragraph 50 says :1 here.\nand goes on.", "middle"),
+                                               (299, "Last line.", "last")])])
+        quoted = [l[2:] if l.startswith("> ") else "" for l in out.split("\n") if l.startswith(">")]
+        self.assertEqual([l for l in quoted if l], [l for l in text.split("\n") if l])
+        self.assertEqual(out.count("My answer: "), 3)
+        self.assertTrue(out.endswith("> Last line.\n\nMy answer: last"))
+        self.assertIn("> and goes on.\n\nMy answer: middle\n\n> Paragraph 51", out)
+        self.assertEqual(load_quote_reply().parse(out, set(range(10))), ([], [], False))
+
+
+def load_quote_reply():
+    spec = importlib.util.spec_from_file_location("qr", os.path.join(ROOT, "quote-reply.py"))
+    qr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qr)
+    return qr
 
 
 def layout():
@@ -326,7 +437,8 @@ out.space = {hold: HOLD, tap: run([D, R, U]), hold2: run([D, R, T, R, R, U]), ro
 const ans = {"m2#0": {text: "six"}, "m1#9": {text: "table"}, "m1#0": {text: "intro"}, "pin#1": {text: "other chip"},
   "m1#6": {text: "item two"}, "m1#5": {text: "item one"}, "m1#7": {text: "  "}};
 const src = {"m1#0": "Intro.", "m1#5": "1. one", "m1#6": "2. two", "m1#7": "3. three", "m1#9": "| a |\n|---|\n| 1 |", "m2#0": "Second."};
-out.send = sendList(ans, src, ["m1#0", "m1#5", "m1#6", "m1#7", "m1#9", "m2#0"]);
+out.send = sendList(ans, src, ["m1#0", "m1#5", "m1#6", "m1#7", "m1#9", "m2#0"], {"m1#0": 0, "m1#5": 7, "m1#9": 12});
+out.planEnds = blocks(PLAN).map(b => b.last);
 out.sendUnordered = sendList(ans, src, []).length;
 console.log(JSON.stringify(out));
 """
@@ -342,6 +454,7 @@ def node_markdown():
     a = page.index("// ---------- Claude's markdown")
     b = page.index("// ---------- drawing ----------")
     import subprocess
+    keep.append("const PLAN = %s;" % json.dumps(PLAN))
     r = subprocess.run([node, "-e", "\n".join(keep) + "\n" + page[a:b] + JS], capture_output=True, text=True,
                        encoding="utf-8", timeout=30)
     if r.returncode:
@@ -417,6 +530,10 @@ class Markdown(unittest.TestCase):
                          [("m1#0", "intro", "Intro."), ("m1#5", "item one", "1. one"), ("m1#6", "item two", "2. two"),
                           ("m1#9", "table", "| a |\n|---|\n| 1 |"), ("m2#0", "six", "Second.")])
         self.assertEqual(self.md["sendUnordered"], 5)  # the bar's count: the same answers
+        self.assertEqual([a["line"] for a in self.md["send"]], [0, 7, -1, 12, -1])  # -1: no line known
+
+    def test_each_block_names_its_last_line_where_its_answer_goes(self):
+        self.assertEqual(self.md["planEnds"], PLAN_ENDS)
 
     def test_tab_goes_to_the_next_block_and_shift_tab_back_ending_at_either_end(self):
         self.assertEqual(self.md["tab"], [1, 4, -1, 3, -1, -1, -1])

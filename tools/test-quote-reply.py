@@ -196,24 +196,25 @@ class Hook(unittest.TestCase):
         self.assertEqual(qr.reply(": hi", A), {"systemMessage": "Reply: nothing to quote (no selection is listed)"})
         self.assertFalse(os.path.exists(qr.reset_path(A)))
 
-    def test_the_line_send_to_session_types(self):
-        # agent-reply.send_line(): "My answers:" first, then the markers; answers across paragraphs, list items and a
-        # table, as the reply window sends them. The label is no marker and no answer; every answer goes, each named
-        # <user_answer> with its own passage.
-        self.write({1: "Intro paragraph.", 2: "1. **Cover ratio:** in the product.", 3: "| a | b |\n|---|---|\n| 1 | 2 |",
-                    4: "Second reply."})
+    def test_the_reply_send_to_session_pastes(self):
+        # agent-reply.answer_text(): Claude's whole reply quoted with "> ", the answers unquoted inside it, as the
+        # reply window pastes it. With terminal selections listed as :1 :2 :3, the ":N" in Claude's quoted text (a
+        # pinned reply too old for said()) and the one typed inside an answer are no markers: the prompt goes
+        # untouched. A ":N" typed after the paste for a selection keeps the passage form.
+        self.write({1: "first selection", 2: "second selection", 3: "third selection"})
         spec = importlib.util.spec_from_file_location("ar", os.path.join(HERE, "..", "agent-reply.py"))
         ar = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ar)
-        line = ar.send_line([(1, "keep it"), (2, "move it to D3"), (3, "add a column"), (4, "fine")])
-        self.assertTrue(line.startswith("My answers: :1 keep it"))
-        out = qr.reply(line, A)
-        self.assertEqual(out["systemMessage"], "Quoted: :1 :2 :3 :4")
-        c = self.ctx(out)
-        for n, a in ((1, "keep it"), (2, "move it to D3"), (3, "add a column"), (4, "fine")):
-            self.assertIn("<user_answer>\n%s\n</user_answer>" % a, c)
-        self.assertIn("| a | b |", c)
-        self.assertNotIn("My answers", c)
+        reply = "Pick one:\n\n- :1 keep it\n- :2 drop it\n\n| a | b |\n|---|---|\n| :3 | x |\n\nThen reply."
+        text = ar.answer_text([(reply, "10:00", [(2, "- :1 keep it", "keep, as in :2"), (8, "| :3 | x |", "fine")])])
+        self.assertIn("> - :1 keep it\n\nMy answer: keep, as in `:2`\n\n> - :2 drop it", text)
+        self.assertIsNone(qr.reply(text, A))
+        self.assertEqual(self.reset_of(), {"gen": 7, "upto": 3})
+        self.write({1: "first selection", 2: "second selection", 3: "third selection"})
+        out = qr.reply(text + "\n\n:3 and this one too", A)
+        self.assertEqual(out["systemMessage"], "Quoted: :3")
+        self.assertIn("<passage>\nthird selection\n</passage>\n<user_answer>\nand this one too\n</user_answer>",
+                      self.ctx(out))
 
     def test_numbered_with_unknown(self):
         self.write({1: "Q1", 2: "Q2"})

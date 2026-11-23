@@ -40,6 +40,7 @@ SAID_MAX = 40   # ... of which the last 40 text blocks are compared
 QUOTED = re.compile('"[^"\n]*"|“[^”\n]*”|«[^»\n]*»')  # "...", curly, guillemets: one line
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")    # a line opening (or closing) a fenced code block
 TICKS = re.compile(r"`+")                       # a run of backticks: opens or closes inline code
+QUOTE_LINE = re.compile(r"^ {0,3}>.*$", re.M)  # a quoted line ("> ..."), as Send to Session pastes Claude's reply
 BARE = re.compile(r"\s*:(?!\d)")           # a prompt starting with ":" that is not a ":N" marker
 # Formats a password manager (or any app) sets to keep a copy out of clipboard history, cloud sync and monitors:
 # the first by being there at all, the other two when their DWORD is 0.
@@ -343,11 +344,13 @@ def parse(prompt, known, sources=()):
     prompt starts with a ":" that is not a marker. A reply runs from its marker to the next known marker or the
     end; a marker with nothing after it before the next one shares that one's reply (":1 :3 no").
     Not a marker, but text the user quotes: a ":N" inside code (inline or fenced), inside quotation marks on one
-    line ("...", curly or guillemets), or inside a passage pasted from the conversation (echoed(): it and its
-    neighbours stand word for word in one of sources, the texts the user could have copied it from)."""
+    line ("...", curly or guillemets), on a quoted line ("> ...", as Send to Session pastes Claude's reply), or
+    inside a passage pasted from the conversation (echoed(): it and its neighbours stand word for word in one of
+    sources, the texts the user could have copied it from)."""
     hits, unknown = [], []
     code = code_spans(prompt) if "`" in prompt or "~~~" in prompt else []
     code += [m.span() for m in QUOTED.finditer(prompt)]
+    code += [m.span() for m in QUOTE_LINE.finditer(prompt)] if ">" in prompt else []
     seen = [norm(s)[0] for s in sources if s]
     shown = norm(prompt) if seen else None
     for m in MARK.finditer(prompt):

@@ -1,9 +1,9 @@
 # The Field Agents reply window's rules, loaded by agent-panel.pyw (importlib): Claude's replies in a session since
 # the prompt the user last typed there, read from its transcript a piece at a time; the answers drafted under them,
-# kept per session until they are sent; the replies pinned per session; the one line Send to Session types into the
-# session's prompt, and the text Copy puts on the clipboard; Windows voice typing for an answer box held with Space
-# (Voice, the one part that sends keys: Win+H, only while the reply window is in front). tools/test-reply.py tests
-# the rest on made-up transcripts.
+# kept per session until they are sent; the replies pinned per session; the text Send to Session pastes into the
+# session's prompt (each reply answered, whole, with the answers inside it), which Copy puts on the clipboard;
+# Windows voice typing for an answer box held with Space (Voice, the one part that sends keys: Win+H, only while the
+# reply window is in front). tools/test-reply.py tests the rest on made-up transcripts.
 #
 # A reply is the text of one main-thread assistant message that ended its turn (stop_reason "end_turn"): its text
 # blocks, joined. Not a reply: thinking, tool calls and their results, the text Claude writes between tool calls
@@ -20,7 +20,8 @@ DRAFTS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel"
 PINS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-pins.json")
 PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
-LABEL = "My answers:"  # leads the line Send to Session types (and the line Copy puts first)
+HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers are marked "My answer:"):'
+ANSWER = "My answer:"  # leads each answer inside the quoted reply
 
 
 def stamp(ts):
@@ -283,31 +284,86 @@ def pin_label(text, words=5, cap=32):
     return "Reply"
 
 
-# ---------- the line sent, the text copied ----------
-def one_line(text):
-    """An answer as one line: lines joined with a space, whitespace collapsed. A ":N" the user typed inside it goes
-    in backticks, so quote-reply.py never takes it for a marker of its own (code is never a marker)."""
-    return MARKER.sub(lambda m: "`%s`" % m.group(0), " ".join((text or "").split()))
-
-
-def send_line(pairs):
-    """The one line typed into the session's prompt: LABEL, then ":N answer" for each (number in the session's list,
-    answer). The label says in the prompt itself that what follows is the user's own answers; it holds no ":N", so
-    quote-reply.py reads the markers after it as before. Empty when no answer has text."""
-    body = " ".join(":%d %s" % (n, one_line(a)) for n, a in pairs if one_line(a))
-    return "%s %s" % (LABEL, body) if body else ""
-
-
-def copy_text(answers):
-    """Copy: the same line, numbered 1, 2, ... in the window's order, then each passage under its number, for a
-    prompt or a message anywhere else. answers: [(passage, answer)]."""
-    answers = [(p, a) for p, a in answers if one_line(a)]
-    if not answers:
+# ---------- the text sent, the text copied ----------
+def when_of(at, now=None):
+    """A reply's time as its heading names it: "17:42" today, "22 Nov 17:42" another day; "" when unknown."""
+    if not at:
         return ""
-    out = [send_line((k + 1, a) for k, (_, a) in enumerate(answers)), ""]
-    for k, (p, _) in enumerate(answers):
-        out += [":%d" % (k + 1)] + ["> " + line if line.strip() else ">" for line in p.strip().splitlines()] + [""]
-    return "\n".join(out).rstrip() + "\n"
+    lt, now = time.localtime(at), time.localtime(now if now is not None else time.time())
+    return time.strftime("%H:%M" if lt[:3] == now[:3] else "%d %b %H:%M", lt)
+
+
+def mine(text):
+    """An answer as it goes inside the reply: its lines as typed (trailing spaces and blank lines at either end
+    left out). A ":N" in it goes in backticks and a line starting with ">" gets a backslash, so quote-reply.py
+    never takes it for a marker and nobody takes it for a quoted line of the reply."""
+    lines = [l.rstrip() for l in (text or "").replace("\r\n", "\n").split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        lines[0] = lines[0].lstrip()  # it follows "My answer: "
+    lines =["\\" + l if l.lstrip().startswith(">") else l for l in lines]
+    return MARKER.sub(lambda m: "`%s`" % m.group(0), "\n".join(lines))
+
+
+def place(lines, line, passage):
+    """Where an answer goes: after line (the index of its block's last line, as the page's blocks() counted it)
+    when that line is the passage's last; else after the first line that is; None when no line is."""
+    want = [l for l in (passage or "").split("\n") if l.strip()]
+    if not want:
+        return None
+    key = lambda l: l.strip().lstrip(">").strip()
+    if isinstance(line, int) and 0 <= line < len(lines) and key(lines[line]) == key(want[-1]):
+        return line
+    return next((k for k, l in enumerate(lines) if l.strip() and key(l) == key(want[-1])), None)
+
+
+def quote(lines):
+    return ["> " + l if l.strip() else ">" for l in lines]
+
+
+def answer_block(text, when, answers):
+    """One reply with the user's answers inside it, as Send to Session pastes it: a heading line, then the reply's
+    lines exactly as stored, each quoted with "> ", and each answer unquoted right after the line that ends the block
+    it answers, led by "My answer:" and parted from the quoted lines by a blank line (the quoted blank lines that
+    stood there are left out). answers: [(line, passage, answer)]. An answer whose block is not found in text (a
+    reply no longer stored) goes at the end after its own passage, quoted. "" when no answer has text."""
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    at, loose = {}, []
+    for line, passage, a in answers:
+        a = mine(a)
+        if not a:
+            continue
+        k = place(lines, line, passage)
+        if k is None:
+            loose.append((passage, a))
+        else:
+            at.setdefault(k, []).append(a)
+    if not at and not loose:
+        return ""
+    out = [HEAD % ("your reply of " + when if when else "your reply"), ""]
+    gap = True  # after the heading or an answer: the reply's blank lines there are left out
+    for k, l in enumerate(lines if text else []):
+        if gap and not l.strip():
+            continue
+        gap = False
+        out += quote([l])
+        for a in at.get(k, []):
+            out += ["", ANSWER + " " + a, ""]
+            gap = True
+    for passage, a in loose:
+        out += [""] + quote(passage.strip("\n").split("\n")) + ["", ANSWER + " " + a, ""]
+    while out and out[-1] in ("", ">"):
+        out.pop()
+    return "\n".join(out)
+
+
+def answer_text(replies):
+    """Send to Session's paste and Copy's text: answer_block() of each reply answered, in order, a blank line
+    between them. replies: [(text, when, answers)]."""
+    return "\n\n".join(b for b in (answer_block(*r) for r in replies) if b)
 
 
 def set_clipboard_text(text):
