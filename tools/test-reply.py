@@ -476,6 +476,10 @@ const src = {"m1#0": "Intro.", "m1#5": "1. one", "m1#6": "2. two", "m1#7": "3. t
 out.send = sendList(ans, src, ["m1#0", "m1#5", "m1#6", "m1#7", "m1#9", "m2#0"], {"m1#0": 0, "m1#5": 7, "m1#9": 12});
 out.planEnds = blocks(PLAN).map(b => b.last);
 out.sendUnordered = sendList(ans, src, []).length;
+// links: a markdown link to a file shows its text, a bare file:/// address, a Windows path in text and in inline code
+// (candidates until agent-panel.pyw says they exist), and what is not a path
+out.links = inline("See [the shot](file:///C:/Users/x/a%20b/shot.png), file:///C:/Users/x/a%20b/shot.png. Also " +
+  "C:\\Users\\x\\plain.txt and (C:/Users/x/notes.md). Code `C:\\Users\\x\\a b\\shot.png` and `npm run C:` and https://ex.com/q");
 console.log(JSON.stringify(out));
 """
 
@@ -538,6 +542,19 @@ class Markdown(unittest.TestCase):
                      '<a class="lnk" data-url="https://ex.com/p" data-tip="https://ex.com/p">https://ex.com/p</a>.',
                      '&quot;<a class="lnk" data-url="https://q.com" data-tip="https://q.com">https://q.com</a>&quot;'):
             self.assertIn(part, h)
+
+    def test_file_links_and_windows_paths(self):
+        h = self.md["links"]
+        u = "file:///C:/Users/x/a%20b/shot.png"
+        for part in (f'<a class="lnk" data-url="{u}" data-tip="{u}">the shot</a>,',  # its text, not the address
+                     f' <a class="lnk" data-url="{u}" data-tip="{u}">{u}</a>.',  # bare, the full stop left out
+                     '<span class="cand" data-path="C:\\Users\\x\\plain.txt">C:\\Users\\x\\plain.txt</span> and',
+                     '(<span class="cand" data-path="C:/Users/x/notes.md">C:/Users/x/notes.md</span>).',
+                     '<span class="cand" data-path="C:\\Users\\x\\a b\\shot.png"><code>C:\\Users\\x\\a b\\shot.png</code></span>',
+                     '<code>npm run C:</code>',  # not a path
+                     '<a class="lnk" data-url="https://ex.com/q" data-tip="https://ex.com/q">https://ex.com/q</a>'):
+            self.assertIn(part, h)
+        self.assertEqual(h.count('class="cand"'), 3)  # nothing inside a link's address became a path
 
     def test_lists_quotes_headings(self):
         self.assertEqual(self.md["lists"], [["li", "1.", 0, "one"], ["li", "2.", 0, "two more"], ["li", "•", 0, "dot"],
@@ -974,6 +991,187 @@ class SendFront(unittest.TestCase):
         self.assertEqual(self.f(10, 10, 10, "✳ beta", "alpha", True), "another tab is showing")
         self.assertEqual(self.f(10, 10, 10, "✳ beta", "alpha", False), "")  # its only session, whatever its title
         self.assertEqual(self.f(10, 10, 10, "Windows PowerShell", "alpha", False), "it shows no Claude Code tab")
+
+
+class Links(unittest.TestCase):
+    """open_link(), link_path(), existing_paths(): what a click on a link in a reply opens. Nothing is opened: the
+    open call, File Explorer and the foreground grant are stand-ins; the files are made up in a temporary folder."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.sub = os.path.join(self.dir, "a b")
+        os.makedirs(self.sub)
+        self.shot = os.path.join(self.sub, "shot 1.png")
+        self.tool = os.path.join(self.sub, "run.cmd")
+        for p in (self.shot, self.tool):
+            open(p, "w").close()
+        self.opened, self.shown = [], []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def url(self, path):
+        return "file:///" + path.replace("\\", "/").replace(" ", "%20")
+
+    def go(self, url):
+        return ar.open_link(url, startfile=self.opened.append, show=self.shown.append, front=lambda: None)
+
+    def test_decoding(self):
+        self.assertEqual(ar.link_path("file:///C:/Users/x/a%20b/shot%231.png"), "C:\\Users\\x\\a b\\shot#1.png")
+        self.assertEqual(ar.link_path("file://localhost/D:/q"), "D:\\q")
+        self.assertEqual(ar.link_path("file:////C:/x"), "C:\\x")
+        self.assertEqual(ar.link_path("file://server/share/d%20x"), "\\\\server\\share\\d x")
+        self.assertEqual(ar.link_path("C:/Users/x"), "C:\\Users\\x")
+        self.assertEqual(ar.link_path("C:\\Users\\x"), "C:\\Users\\x")
+        for no in ("https://ex.com", "./memory.md", "memory.md", "C:", "\\\\server", "", None, "file:///etc/passwd"):
+            self.assertIsNone(ar.link_path(no), no)
+
+    def test_a_web_address_goes_to_the_browser(self):
+        self.assertEqual(self.go("https://ex.com/a?b=1"), {"ok": True})
+        self.assertEqual(self.opened, ["https://ex.com/a?b=1"])
+
+    def test_a_file_link_with_escapes_opens_the_file_and_a_folder_opens_too(self):
+        self.assertEqual(self.go(self.url(self.shot)), {"ok": True})
+        self.assertEqual(self.go(self.url(self.sub) + "/"), {"ok": True})
+        self.assertEqual(self.go(self.shot), {"ok": True})  # a Windows path as written
+        self.assertEqual([os.path.normcase(p.rstrip("\\")) for p in self.opened],
+                         [os.path.normcase(self.shot), os.path.normcase(self.sub), os.path.normcase(self.shot)])
+        self.assertEqual(self.shown, [])
+
+    def test_a_missing_file_is_a_note_and_opens_nothing(self):
+        self.assertEqual(self.go(self.url(os.path.join(self.sub, "gone.png"))), {"note": "File not found"})
+        self.assertEqual(self.go(os.path.join(self.dir, "nope", "x.txt")), {"note": "File not found"})
+        self.assertEqual(self.opened, [])
+
+    def test_a_program_or_script_is_shown_in_explorer_not_run(self):
+        self.assertEqual(self.go(self.url(self.tool)), {"ok": True})
+        self.assertEqual(self.opened, [])
+        self.assertEqual([os.path.normcase(p) for p in self.shown], [os.path.normcase(self.tool)])
+
+    def test_anything_else_is_a_note(self):
+        self.assertEqual(self.go("./memory.md"), {"note": ar.LINK_UNKNOWN})
+        self.assertEqual(self.go("javascript:alert(1)"), {"note": ar.LINK_UNKNOWN})
+        self.assertEqual(self.opened, [])
+
+    def test_a_failed_open_is_a_note(self):
+        def boom(_):
+            raise OSError("no handler")
+        self.assertEqual(ar.open_link(self.shot, startfile=boom, front=lambda: None), {"note": ar.LINK_FAILED})
+
+    def test_only_paths_that_exist_are_named(self):
+        fwd = self.shot.replace("\\", "/")
+        got = ar.existing_paths([self.shot, fwd, os.path.join(self.dir, "gone.txt"), "C:", "https://ex.com", 5, None])
+        self.assertEqual(got, [self.shot, fwd])
+
+
+EDGE = next((p for p in (os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+                         os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")) if os.path.exists(p)), None)
+
+# The real page in headless Edge (no window): agent-reply.html with a stand-in for agent-panel.pyw's API before its
+# script (paths() says which paths exist, link() records the address and answers "File not found" for one), and a
+# test after it that shows a reply, waits for the paths, clicks links and a paragraph and writes what it saw.
+PAGE_STUB = r"""<script>
+window.T = {links: [], asked: []};
+const T_API = {
+  paths(ps) { T.asked.push(ps); return Promise.resolve(ps.filter(p => /shot|plain/.test(p))); },
+  link(u) { T.links.push(u); return Promise.resolve(/gone/.test(u) ? {note: "File not found"} : {ok: true}); },
+};
+window.pywebview = {api: new Proxy(T_API, {get: (t, k) => k in t ? t[k] : () => Promise.resolve(null)})};
+</script>
+"""
+PAGE_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const R = "See [the shot](file:///C:/x/a%20b/shot.png) or file:///C:/x/a%20b/shot.png.\n\n" +
+    "Path `C:\\x\\a b\\shot.png`, C:\\x\\plain.txt and C:\\x\\missing.txt.\n\n- an item [gone](file:///C:/x/gone.png)\n\n" +
+    "| file |\n|---|\n| [cell](file:///C:/x/a%20b/shot.png) |";
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: R}], answers: {}, selections: [], note: "",
+    pins: [{id: "p1", label: "pinned", when: "09:00", text: "Pinned [old](file:///C:/x/shot-old.png) and `C:\\x\\plain.txt`"}]});
+  await later(50);
+  const o = {};
+  const links = () => [...document.querySelectorAll("#replies a.lnk")].map(a => [a.textContent, a.dataset.url, a.closest("td, .li") ? a.closest("td, .li").tagName + (a.closest(".li") ? ".li" : "") : ""]);
+  o.links = links();
+  o.cands = document.querySelectorAll("#replies span.cand").length;
+  o.asked = T.asked;
+  const boxes = () => document.querySelectorAll("#replies .ansrow").length;
+  for (const a of document.querySelectorAll("#replies a.lnk")) a.click();
+  await later(50);
+  o.opened = T.links.slice();
+  o.boxesAfterLinks = boxes();
+  o.note = [...document.querySelectorAll("#replies .lnote")].map(n => [n.textContent, n.previousElementSibling.textContent]);
+  document.querySelector("#replies .lnote").click();
+  await later(20);
+  o.boxesAfterNote = boxes();
+  document.querySelector("#replies .para").click();
+  await later(20);
+  o.boxesAfterPara = boxes();
+  document.activeElement.blur();  // the box opened has the keyboard: nothing is redrawn until it is left
+  showView("p1");
+  await later(50);
+  o.pinned = links();
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+def page_run():
+    with open(os.path.join(ROOT, "agent-reply.html"), encoding="utf-8") as f:
+        page = f.read()
+    at = page.index("<script>")
+    page = page[:at] + PAGE_STUB + page[at:]
+    at = page.rindex("</body>")
+    page = page[:at] + PAGE_TEST + page[at:]
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "page.html")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(page)
+        import subprocess
+        r = subprocess.run([EDGE, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+                            "--user-data-dir=" + os.path.join(d, "profile"), "--virtual-time-budget=3000", "--dump-dom",
+                            "file:///" + path.replace("\\", "/")], capture_output=True, text=True, encoding="utf-8",
+                           timeout=90)
+        m = re.search(r'<pre id="tout">(.*?)</pre>', r.stdout, re.S)
+        if not m or not m.group(1):
+            raise AssertionError("the page wrote nothing: " + r.stderr[-2000:])
+        import html
+        return json.loads(html.unescape(m.group(1)))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class Page(unittest.TestCase):
+    """The links as the reply window draws them and what a click on one does, in the real page."""
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run()
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_links_show_their_text_and_only_paths_that_exist_become_links(self):
+        u = "file:///C:/x/a%20b/shot.png"
+        self.assertEqual(self.o["links"], [["the shot", u, ""], [u, u, ""], ["C:\\x\\a b\\shot.png", "C:\\x\\a b\\shot.png", ""],
+                                           ["C:\\x\\plain.txt", "C:\\x\\plain.txt", ""],
+                                           ["gone", "file:///C:/x/gone.png", "DIV.li"], ["cell", u, "TD"]])
+        self.assertEqual(self.o["cands"], 0)  # the missing path is plain text again
+        self.assertEqual(sorted(self.o["asked"][0]), ["C:\\x\\a b\\shot.png", "C:\\x\\missing.txt", "C:\\x\\plain.txt"])
+
+    def test_a_click_opens_through_the_panel_and_never_opens_an_answer_box(self):
+        self.assertEqual(self.o["opened"], [l[1] for l in self.o["links"]])
+        self.assertEqual(self.o["boxesAfterLinks"], 0)
+        self.assertEqual(self.o["boxesAfterNote"], 0)
+        self.assertEqual(self.o["boxesAfterPara"], 1)  # a click elsewhere in the paragraph still opens its box
+
+    def test_a_missing_file_shows_one_short_note_at_its_link(self):
+        self.assertEqual(self.o["note"], [["File not found", "gone"]])
+
+    def test_links_work_in_a_pinned_reply(self):
+        self.assertEqual(self.o["pinned"], [["old", "file:///C:/x/shot-old.png", ""], ["C:\\x\\plain.txt", "C:\\x\\plain.txt", ""]])
 
 
 if __name__ == "__main__":

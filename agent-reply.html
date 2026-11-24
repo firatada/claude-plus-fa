@@ -12,7 +12,8 @@
      the strip together. Under the head it shows every reply Claude gave in that session since the prompt the user
      last typed there, one under the other (agent-reply.py reads them from the transcript; agent-panel.pyw sends them with
      reply.show()), its markdown drawn as Claude Code draws it: headings, bold, italics, strikethrough, inline code,
-     links (opened in the browser), lists, quotes, tables (a table is one paragraph) and rules. Claude's text is
+     links (web addresses in the browser; file:/// links and Windows paths found on disk with Windows' own handler,
+     since Ctrl+click in the terminal opens only half of a wrapped file link), lists, quotes, tables (a table is one paragraph) and rules. Claude's text is
      never changed. A click on a paragraph (a list item and a table count as one) opens a box under it,
      "Type your answer…", with the caret in it; another click on that paragraph closes it while it is empty, and a
      box holding text stays open (2026-11-23: resting the pointer only tints the paragraph and, after a moment, says
@@ -132,6 +133,8 @@ body.moving, body.moving * { cursor: grabbing !important; }
 .para.pre { font: 400 12px/18px "Cascadia Mono", Consolas, monospace; white-space: pre; overflow-x: auto; }
 a.lnk { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: rgba(27, 77, 245, .4); cursor: pointer; }
 a.lnk:hover { text-decoration-color: var(--blue); }
+a.lnk code { color: var(--blue); }
+.lnote { margin-left: 6px; font-size: 12px; color: #92400e; }  /* a link that could not open: "File not found" */
 .para.li { display: grid; grid-template-columns: 22px minmax(0, 1fr); }
 .para.li > .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 #replies .para:hover { background: rgba(27, 77, 245, .04); }  /* with its tooltip, the hint that a click answers it */
@@ -325,8 +328,11 @@ function cells(row) {
   return out;
 }
 
-// inline markdown: code, bold, italics, strikethrough, links (a markdown link and a bare web address, opened in the
-// browser by a click); everything else stays as Claude wrote it
+// inline markdown: code, bold, italics, strikethrough, links (a markdown link showing its text, and a bare http(s) or
+// file:/// address; a click opens it through agent-panel.pyw: the browser, or Windows' handler for a file or folder);
+// a Windows path (C:\… or C:/…) in the text or as a whole inline code is a candidate (span.cand), made a link by
+// linkPaths() only when agent-panel.pyw finds it on disk; everything else stays as Claude wrote it
+const WPATH = /^[A-Za-z]:[\\/][^<>"|?*\n]*$/;  // a whole inline code that is a Windows path
 function inline(t) {
   const parts = String(t).split(/(`+)([\s\S]*?)\1/);
   let html = "";
@@ -337,9 +343,12 @@ function inline(t) {
         .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\w)/g, "$1<i>$2</i>")
         .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<s>$1</s>")
         .replace(/\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g, '<a class="lnk" data-url="$2" data-tip="$2">$1</a>')
-        .replace(/(^|[\s(]|&quot;)(https?:\/\/(?:(?!&quot;|&[lg]t;)[^\s<])*?)(?=[.,;:!?)']*(?:$|[\s<]|&quot;|&[lg]t;))/g, '$1<a class="lnk" data-url="$2" data-tip="$2">$2</a>');
+        .replace(/(^|[\s(]|&quot;)((?:https?|file):\/\/(?:(?!&quot;|&[lg]t;)[^\s<])*?)(?=[.,;:!?)']*(?:$|[\s<]|&quot;|&[lg]t;))/g, '$1<a class="lnk" data-url="$2" data-tip="$2">$2</a>')
+        .replace(/(^|[\s(]|&quot;)([A-Za-z]:[\\/](?:(?!&quot;|&[lg]t;)[^\s<|?*])*?)(?=[.,;:!?)']*(?:$|[\s<]|&quot;|&[lg]t;))/g, '$1<span class="cand" data-path="$2">$2</span>');
     } else if (k % 3 === 2) {
-      html += "<code>" + esc(parts[k]) + "</code>";
+      const c = parts[k].trim();
+      html += WPATH.test(c) ? `<span class="cand" data-path="${esc(c)}"><code>${esc(parts[k])}</code></span>`
+        : "<code>" + esc(parts[k]) + "</code>";
     }
   }
   return html;
@@ -551,6 +560,46 @@ function draw() {
   }
   mark();
   count();
+  linkPaths();
+}
+
+// The Windows paths in the replies (span.cand from inline()): agent-panel.pyw says which exist on this PC; those
+// become links (a.lnk, opened as a file link is), the rest plain text again. An answer is kept for the page's life
+// when the path exists, for PATH_RECHECK ms when it does not (a file written later becomes a link at a redraw).
+const pathSeen = new Map(), PATH_RECHECK = 10000;  // path -> {ok, at}
+function linkPaths() {
+  const now = Date.now(), all = [...$("replies").querySelectorAll("span.cand")].map(s => s.dataset.path);
+  const want = [...new Set(all)].filter(p => { const k = pathSeen.get(p); return !k || (!k.ok && k.at && now - k.at > PATH_RECHECK); });
+  const settle = () => {
+    for (const s of $("replies").querySelectorAll("span.cand")) {
+      const k = pathSeen.get(s.dataset.path);
+      if (!k || k.ok === undefined) continue;
+      if (!k.ok) { s.replaceWith(...s.childNodes); continue; }
+      const a = document.createElement("a");
+      a.className = "lnk";
+      a.dataset.url = a.dataset.tip = s.dataset.path;
+      a.append(...s.childNodes);
+      s.replaceWith(a);
+    }
+  };
+  if (!want.length || !window.pywebview) return settle();
+  want.forEach(p => pathSeen.set(p, {ok: undefined}));
+  Promise.resolve(api().paths(want)).then(ok => {
+    const hit = new Set(ok || []), at = Date.now();
+    want.forEach(p => pathSeen.set(p, {ok: hit.has(p), at}));
+    settle();
+  }, () => want.forEach(p => pathSeen.delete(p)));
+}
+// a link that could not open: one short line at it ("File not found"), gone after LINK_NOTE_MS or at the next click
+const LINK_NOTE_MS = 4000;
+function linkNote(a, text) {
+  document.querySelectorAll("#replies .lnote").forEach(n => n.remove());
+  const n = document.createElement("span");
+  n.className = "lnote";
+  n.setAttribute("role", "status");
+  n.textContent = text;
+  a.after(n);
+  setTimeout(() => n.remove(), LINK_NOTE_MS);
 }
 
 // The passages listed for the ":N" reply, marked where they stand in the replies; the rest listed at the bottom.
@@ -559,7 +608,7 @@ function draw() {
 function textNodes() {
   const out = [];
   const walk = document.createTreeWalker($("replies"), NodeFilter.SHOW_TEXT, {acceptNode: n =>
-    n.parentElement.closest("pre, .code, .ansrow, .rtop, .qb") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
+    n.parentElement.closest("pre, .code, .ansrow, .rtop, .qb, .lnote") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
   for (let n = walk.nextNode(); n; n = walk.nextNode()) out.push(n);
   return out;
 }
@@ -1068,7 +1117,13 @@ document.addEventListener("click", e => {
   if (e.target.closest("#ask [data-cancel]")) { askHide(); return; }
   const a = e.target.closest("a.lnk");
   if (a && a.dataset.settings) { e.preventDefault(); tipHide(); api().settings(a.dataset.settings); return; }  // its box stays
-  if (a) { e.preventDefault(); tipHide(); api().link(a.dataset.url); return; }
+  if (a) {  // never opened in the page itself; its paragraph's box is not opened or toggled
+    e.preventDefault(); tipHide();
+    document.querySelectorAll("#replies .lnote").forEach(n => n.remove());
+    Promise.resolve(api().link(a.dataset.url)).then(r => { if (r && r.note && a.isConnected) linkNote(a, r.note); }, () => {});
+    return;
+  }
+  if (e.target.closest("#replies .lnote")) return;
   const row = e.target.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
   const hit = e.target.closest("#replies .para");

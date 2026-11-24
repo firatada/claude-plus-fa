@@ -2404,13 +2404,21 @@ class ReplyApi:
         self._p.events.put("fold")
 
     def link(self, url):
-        # a link in a reply: opened in the default browser, only a web address
-        url = str(url)
-        if re.match(r"https?://", url, re.I):
-            try:
-                os.startfile(url)
-            except OSError:
-                pass
+        # a link in a reply: a web address in the default browser, a file or folder with Windows' handler for it;
+        # {ok} or {note} (agent-reply.py open_link: "File not found" and the like, shown at the link)
+        m = self._p.reply_mod
+        try:
+            return m.open_link(str(url)) if m else {"note": "Links cannot open here"}
+        except Exception:
+            return {"note": "Could not open this"}
+
+    def paths(self, paths):
+        # the Windows paths the page found in a reply's text: those that exist become links (agent-reply.py)
+        m = self._p.reply_mod
+        try:
+            return m.existing_paths(paths) if m else []
+        except Exception:
+            return []
 
     def size(self, h):
         try:

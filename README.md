@@ -83,6 +83,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 
 - Claude gets each paragraph you answered, with your answer.
 - Hold **Space** in an answer box to speak your answer, as in Claude Code: a space appears, then *Listening…* with a level meter; your words appear at the cursor while you speak (the newest ones dim until they settle), and when you let go the rest is filled in. A quick tap still types a space. The speech is turned into text on your own PC by a local speech-to-text server (see [Dictation](#dictation)); nothing is kept. When the microphone or the server is missing, the note under the box says so, with a link that helps.
+- Links work here even when the terminal wraps them: click one to open it. Web links open in your browser; `file:///` links, and Windows paths such as `C:\Users\you\shot.png` that exist on your PC, open with the app Windows uses for that file or folder (a program or script is shown in File Explorer instead of being run). A missing file says *File not found* next to the link.
 - Your answers are kept until you send them, even if you fold the window or restart.
 - Click **Pin** at the top right of a reply to keep it: it becomes a chip under the tabs, still there after newer prompts and restarts. Click the chip to read and answer it again, **Latest** to go back, its x to unpin it. A session keeps 8 pins.
 - **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.

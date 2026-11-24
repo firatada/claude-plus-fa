@@ -11,7 +11,7 @@
 # of its own); every one since the prompt is kept, in order. A prompt the user types starts the list afresh.
 #
 # Part of claude-plus. Edit the copy in the claude-plus-fa folder and rerun install.cmd.
-import ctypes, datetime, json, os, re, threading, time
+import ctypes, datetime, json, os, re, subprocess, threading, time, urllib.parse
 
 TAIL = 4 * 1048576     # bytes read from a transcript's end at the first read; MORE when no prompt is in them
 MORE = 32 * 1048576
@@ -599,3 +599,85 @@ def open_settings(uri, app=None):
     except OSError:
         return False
     return True
+
+
+# ---------- links in a reply ----------
+# Claude Code prints a markdown link to a file as "text (url)" and wraps long lines itself, so Ctrl+click in Windows
+# Terminal opens only the half of a long file:/// address on the first line. The reply window shows the same replies,
+# so its links open here instead (ReplyApi.link): a web address in the default browser, a file or folder with
+# Windows' own handler for it (os.startfile), never inside the WebView. A Windows path Claude wrote as text or inline
+# code is a link only when it exists, checked here (existing_paths), never guessed by the page.
+LINK_MISSING = "File not found"
+LINK_FAILED = "Could not open this"
+LINK_UNKNOWN = "Only web and file links open here"
+# a file of these kinds is shown selected in File Explorer instead of being run: a click on a reply's text never
+# starts a program or a script
+RUN_EXT = {".exe", ".com", ".bat", ".cmd", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta",
+           ".msi", ".msp", ".scr", ".pif", ".lnk", ".url", ".reg", ".py", ".pyw", ".jar", ".cpl", ".appref-ms"}
+WIN_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/][^\\/\s]+)")  # C:\ or C:/, or \\host\share
+PATHS_MAX = 200        # paths checked in one call
+
+
+def link_path(url):
+    r"""The file or folder a link names, as a Windows path: file:///C:/a%20b/x.png -> C:\a b\x.png (escapes
+    decoded), file://host/share/x -> \\host\share\x, a Windows path as written (C:\x, C:/x, \\host\share)
+    with its slashes turned; None for anything else (a web address, a relative path, a bare name)."""
+    u = str(url or "").strip()
+    if u[:7].lower() == "file://":
+        host, _, rest = u[7:].partition("/")
+        rest = urllib.parse.unquote(rest)
+        host = urllib.parse.unquote(host)
+        u = rest if not host or host.lower() == "localhost" else "\\\\" + host + "\\" + rest
+        if re.match(r"/[A-Za-z]:", u):  # file:////C:/x
+            u = u[1:]
+    if not WIN_PATH.match(u) or "\0" in u:
+        return None
+    return u.replace("/", "\\")
+
+
+def existing_paths(paths):
+    """Those of the paths (as the page found them in a reply) that name a file or folder on this PC."""
+    out = []
+    for p in list(paths or [])[:PATHS_MAX]:
+        q = link_path(p) if isinstance(p, str) else None
+        try:
+            if q and os.path.exists(q):
+                out.append(p)
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def reveal(path):
+    """File Explorer with the file selected (a program or script is shown, not run)."""
+    subprocess.Popen(["explorer.exe", "/select,", path])
+
+
+def let_front():
+    """The click on the link made the reply window the foreground; what it opens may take the front (ASFW_ANY)."""
+    ctypes.WinDLL("user32").AllowSetForegroundWindow(-1)
+
+
+def open_link(url, startfile=None, show=reveal, front=let_front):
+    """A click on a link in a reply: {"ok": True} when it was handed on, or {"note": ...}, the short line the page
+    shows at the link (LINK_MISSING when the file or folder is not there)."""
+    startfile = startfile or os.startfile
+    u = str(url or "").strip()
+    try:
+        if re.match(r"https?://", u, re.I):
+            front()
+            startfile(u)
+            return {"ok": True}
+        p = link_path(u)
+        if not p:
+            return {"note": LINK_UNKNOWN}
+        if not os.path.exists(p):
+            return {"note": LINK_MISSING}
+        front()
+        if os.path.isfile(p) and os.path.splitext(p)[1].lower() in RUN_EXT:
+            show(p)
+        else:
+            startfile(p)
+        return {"ok": True}
+    except (OSError, ValueError):
+        return {"note": LINK_FAILED}
