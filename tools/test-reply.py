@@ -381,7 +381,7 @@ def layout():
 
 
 class Layout(unittest.TestCase):
-    """The reply window at the screen's left edge and the strip of screenshots right of it, SHOT_GAP apart."""
+    """The reply window at the screen's left edge and the strip of screenshots right of it, SHOT_GAP apart, one width."""
     ns = layout()
 
     def check(self, room, n, head):
@@ -390,9 +390,14 @@ class Layout(unittest.TestCase):
             self.assertLessEqual(rw + self.ns["SHOT_GAP"] + sw, room)  # never overlapping, the gap kept
         return cols, rows, sw, rw
 
-    def test_screenshots_wrap_before_the_reply_window_narrows(self):
-        self.assertEqual(self.check(1600, 6, True), (4, 2, 630, 820))
-        self.assertEqual(self.check(1000, 3, True), (1, 3, 162, 820))
+    def test_a_full_row_is_as_wide_as_the_reply_window(self):
+        self.assertEqual(self.check(1624, 6, True), (5, 2, 808, 808))  # 1920 screen, panel docked right
+        self.assertEqual(self.check(1624, 5, True), (5, 1, 808, 808))
+        self.assertEqual(self.check(2400, 7, True), (5, 2, 820, 820))  # room to spare: both REPLY_W
+        self.assertEqual(self.check(1000, 3, True), (3, 1, 496, 496))
+
+    def test_fewer_than_a_row_keep_their_width_and_the_reply_window_its_own(self):
+        self.assertEqual(self.check(1624, 3, True), (3, 1, 474, 808))
 
     def test_no_screenshot_leaves_the_reply_window_alone(self):
         self.assertEqual(self.check(1600, 0, True), (0, 0, 0, 820))

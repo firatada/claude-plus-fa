@@ -256,7 +256,7 @@ REPLY_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-reply
 REPLY_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-reply.html")
 REPLY_TITLE = "Field Agents Reply"
 REPLY_W = 820          # logical pixels: the reply window's width, left of the strip at the screen's left edge
-REPLY_MIN = REPLY_W    # logical pixels the reply window keeps beside the screenshots (they wrap into rows first)
+REPLY_MIN = REPLY_W    # logical pixels the reply window keeps beside a one-column strip on a narrow screen
 REPLY_BELOW = 8        # logical pixels the reply window keeps from the work area's bottom; taller, it scrolls inside
 SEND_WAIT = 4          # seconds Send to Session waits for the terminal to read the line it pastes
 SEND_FRONT = 1.5       # seconds it gives the terminal to be in front, on top and showing the session's tab
@@ -2256,12 +2256,22 @@ def err(t):
 def band_layout(room, n, head):
     """Logical pixels. room: from the strip's right end to the screen's left edge (less SHOT_GAP with a head).
     Returns (cols, rows, strip_w, reply_w): the columns and rows of a strip of n screenshots and its width (0 with
-    none), and the width of the reply window at the left edge (0 without a head). The reply window keeps REPLY_MIN
-    (the screenshots wrap into more rows first, one column at the least) and SHOT_GAP parts the two windows."""
-    fit = int((room - SHOT_PAD - (REPLY_MIN + SHOT_GAP if head else 0)) // (SHOT_W + SHOT_PAD))
+    none), and the width of the reply window at the left edge (0 without a head). With a head and screenshots the
+    two windows share one width (REPLY_W, or half the room less SHOT_GAP when that is narrower): a full row of the
+    strip is exactly as wide as the reply window (the page spreads its cards over it), fewer screenshots than a row
+    holds keep their own width, and more wrap into rows. When that width holds fewer than two columns, the strip
+    takes one column and the reply window the rest (REPLY_MIN kept first). SHOT_GAP parts the two windows."""
+    step = SHOT_W + SHOT_PAD
+    if head and n:
+        w = int(min(REPLY_W, (room - SHOT_GAP) // 2))
+        fit = int((w - SHOT_PAD) // step)
+        if fit >= 2:
+            cols = min(n, fit)
+            return cols, -(-n // cols), (w if n >= fit else SHOT_PAD + cols * step), w
+    fit = int((room - SHOT_PAD - (REPLY_MIN + SHOT_GAP if head else 0)) // step)
     cols = max(1, min(n, fit)) if n else 0
     rows = -(-n // cols) if n else 0
-    strip_w = SHOT_PAD + cols * (SHOT_W + SHOT_PAD) if n else 0
+    strip_w = SHOT_PAD + cols * step if n else 0
     reply_w = max(0, min(REPLY_W, int(room - (strip_w + SHOT_GAP if n else 0)))) if head else 0
     return cols, rows, strip_w, reply_w
 
