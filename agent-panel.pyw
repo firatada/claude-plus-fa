@@ -53,6 +53,23 @@ def local(key):
         return None
 
 
+HEADLESS_HOURS = 24    # hours a finished headless run (`claude -p`) stays in the panel after its transcript last changed;
+                       # "headless_hours" in claude-plus.local.json overrides it
+
+
+def headless_hours():
+    """HEADLESS_HOURS, or the user's "headless_hours" (a number of hours, 0 or more) from claude-plus.local.json."""
+    v = local("headless_hours")
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else HEADLESS_HOURS
+
+
+def shown(s, now, hours):
+    """Whether the panel lists a session at all. A headless run that is not running and whose transcript last
+    changed more than `hours` ago is left out everywhere (list, set-aside section, dropdown, counts); a running one
+    always shows. A display rule only: the transcript stays on disk and every other feature still sees it."""
+    return not s.get("headless") or bool(s.get("status")) or now - s["mtime"] <= hours * 3600
+
+
 def strip_wanted():
     """The strip of the last three screenshots: shown unless claude-plus.local.json says "shot_strip": false."""
     return local("shot_strip") is not False
@@ -4660,7 +4677,7 @@ class Panel:
         return min(known) if len(known) == len(bg) else min(known + [first])
 
     def state(self):
-        lim, now = read_limits(), time.time()
+        lim, now, hours = read_limits(), time.time(), headless_hours()
         turns, seen = {}, {}
 
         def usage(v, fmt):
@@ -4680,7 +4697,7 @@ class Panel:
                              "via": (self.returns.get(s["id"]) or {}).get("via"),
                              "viaOpen": bool((self.returns.get(s["id"]) or {}).get("open")),
                              "bg": [{"kind": w["kind"], "what": w["what"], "for": lasted(w["since"])} for w in s.get("bg", [])]}
-                            for s in self.sessions],
+                            for s in self.sessions if shown(s, now, hours)],
                "limits": {"five_hour": usage(lim.get("five_hour"), "%H:%M"),
                           "seven_day": usage(lim.get("seven_day"), "%a %H:%M")},
                "scanned": self.scanned, "error": self.error or self.update_note, "dbl": user32.GetDoubleClickTime(),

@@ -322,5 +322,75 @@ class StripFrame(unittest.TestCase):
         self.assertIn("padding: 6px", rule)  # SHOT_PAD: the cards keep their place
 
 
+class HeadlessShown(unittest.TestCase):
+    """A headless run (`claude -p`) that is not running leaves the panel once its transcript is older than
+    HEADLESS_HOURS: out of the set-aside section, the strip's dropdown and the link's count. Hidden and
+    folder-deleted sessions keep showing. Panel.state() is run with stubs, then the page's own `aside` counts."""
+    NOW = 2_000_000_000
+
+    def setUp(self):
+        ns = pyw_functions("shown", "headless_hours", cls_methods=("state",))
+        ns.update(HEADLESS_HOURS=24, local=lambda k: None, read_limits=lambda: {}, where_of=lambda s: s["cwd"],
+                  folder_exists=lambda s: s["cwd"] != "C:/gone", ago=lambda t: "", lasted=lambda t: "",
+                  user32=type("U", (), {"GetDoubleClickTime": staticmethod(lambda: 500)}))
+        ns["time"] = type("T", (), {"time": staticmethod(lambda: self.NOW), "strftime": time.strftime,
+                                    "localtime": time.localtime})
+        self.ns = ns
+        H = 3600
+        mk = lambda sid, **kw: dict({"id": sid, "title": sid, "folder": "f", "cwd": "C:/w", "status": None,
+                                     "distro": None, "headless": False, "mtime": self.NOW - 60}, **kw)
+        self.sessions = [
+            mk("plain"),                                                         # main list
+            mk("old-plain", mtime=self.NOW - 30 * 24 * H),                       # main list, however old
+            mk("run-old", headless=True, status="busy", pid=1, mtime=self.NOW - 50 * H),  # running: always shown
+            mk("done-new", headless=True, mtime=self.NOW - 23 * H),              # finished under 24 h: shown
+            mk("done-edge", headless=True, mtime=self.NOW - 24 * H),             # exactly 24 h: still shown
+            mk("done-old", headless=True, mtime=self.NOW - 25 * H),              # finished over 24 h: gone
+            mk("done-old-hidden", headless=True, mtime=self.NOW - 49 * H),       # headless rule wins over hidden
+            mk("hidden-old", mtime=self.NOW - 90 * 24 * H),                      # hidden: unchanged
+            mk("deleted-old", cwd="C:/gone", mtime=self.NOW - 90 * 24 * H),     # folder deleted: unchanged
+        ]
+
+        class P:
+            state = ns["state"]
+            hidden = {"hidden-old", "done-old-hidden"}
+            returns, update_note, error, scanned, claude_status, strip_on = {}, None, None, True, None, None
+            turn_start = lambda self, s, turns: None
+            bg_start = lambda self, s, seen: None
+            keeping = lambda self: False
+        self.p = P()
+        self.p.sessions = self.sessions
+
+    def ids(self):
+        return [s["id"] for s in self.p.state()["sessions"]]
+
+    def test_shown(self):
+        self.assertEqual(self.ids(), ["plain", "old-plain", "run-old", "done-new", "done-edge", "hidden-old",
+                                      "deleted-old"])
+
+    def test_nothing_dropped_from_the_panels_own_list(self):
+        self.p.state()
+        self.assertEqual(len(self.p.sessions), 9)  # child runs, alerts, reply tabs still see every session
+
+    def test_override(self):
+        self.ns["local"] = lambda k: 48 if k == "headless_hours" else None
+        self.assertIn("done-old", self.ids())
+        self.assertNotIn("done-old-hidden", self.ids())  # 49 h: still past 48
+        self.ns["local"] = lambda k: 0
+        self.assertEqual([i for i in self.ids() if i.startswith(("run", "done"))], ["run-old"])
+        for bad in ("12", True, -1, None):
+            self.ns["local"] = lambda k, bad=bad: bad
+            self.assertEqual(self.ns["headless_hours"](), 24)
+
+    def test_link_count_is_what_the_section_shows(self):
+        with open(os.path.join(ROOT, "agent-panel.html"), encoding="utf-8") as f:
+            html = f.read()
+        aside = re.search(r"const aside = [^\n]*", html).group(0)
+        pushed = json.dumps(self.p.state()["sessions"])
+        js = aside + "\nconst all = " + pushed + ";\nconsole.log(JSON.stringify(all.filter(aside).map(s => s.id)));"
+        out = subprocess.run(["node", "-e", js], capture_output=True, encoding="utf-8", check=True)
+        self.assertEqual(json.loads(out.stdout), ["run-old", "done-new", "done-edge", "hidden-old", "deleted-old"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
