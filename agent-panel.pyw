@@ -291,6 +291,7 @@ STATUS_API = "https://status.claude.com/api/v2/summary.json"  # Statuspage's pub
 STATUS_EVERY = 180     # seconds between reads of STATUS_API
 LAUNCH_WAIT = 8        # seconds a session opened from the panel is not opened again while Claude Code starts
 LIFT_AGAIN = (0.1, 0.2, 0.4, 0.8)  # seconds between looks after a session's window comes to the front (stay_over)
+MIN_FRONT_WAIT = 0.5  # seconds a minimised session window is given to hand the foreground on (stay_on_screen)
 LINK_WAIT = 3          # seconds from a Ctrl+click in a session's terminal to the flash of the window Windows refused
                        # the foreground to; a later flash is left alone (link_raise)
 CLICK_EVERY = 0.02     # seconds between looks at Ctrl and the primary mouse button while a session window is in front
@@ -3160,11 +3161,18 @@ class Panel:
         def on_move(hook, event, hwnd, obj, child, thread, ms):
             if obj == 0 and hwnd == self.front and not self.beneath(hwnd):  # OBJID_WINDOW
                 self.lift(hwnd)
+
+        def on_min(hook, event, hwnd, obj, child, thread, ms):
+            # a session window the panel rides under is being minimised: the panel stays on screen
+            if obj == 0 and self.visible and hwnd in set(self.wins.values()) and self.beneath(hwnd):
+                threading.Thread(target=self.stay_on_screen, args=(hwnd,), daemon=True).start()
         self.front_proc, self.move_proc = WINEVENTPROC(on_front), WINEVENTPROC(on_move)  # kept alive with the hooks
+        self.min_proc = WINEVENTPROC(on_min)
         fg = user32.GetForegroundWindow()
         self.front = None if not fg or own(fg) else fg
         if not SetWinEventHook(3, 3, None, self.front_proc, 0, 0, 0):  # EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT
             return
+        SetWinEventHook(0x16, 0x16, None, self.min_proc, 0, 0, 0)  # EVENT_SYSTEM_MINIMIZESTART
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
@@ -3192,6 +3200,42 @@ class Panel:
                 return
             if not self.beneath(hwnd):
                 self.lift(hwnd)
+
+    def stay_on_screen(self, hwnd):
+        """A session window the panel rode under is being minimised (the caption button, its taskbar button,
+        Win+Down): only that window goes to the taskbar. Windows makes the next window the foreground and raises it
+        over the panel, which is not topmost, so the panel would vanish with the terminal. Wait for that window,
+        then put the panel (and the strip, the reply window and the shadow it owns) over it, not activated, and
+        look again as stay_over() does. Nothing is done when the panel itself or another session window comes
+        forward (lift() puts the panel under that one), or once the user has moved on to yet another window."""
+        end = time.time() + MIN_FRONT_WAIT
+        while user32.GetForegroundWindow() == hwnd and time.time() < end:
+            time.sleep(0.01)
+        fg = user32.GetForegroundWindow()
+        if not fg or fg == hwnd or own(fg) or fg in set(self.wins.values()):
+            return
+        for wait in (0,) + LIFT_AGAIN:
+            time.sleep(wait)
+            if not self.visible or self.dragging or user32.GetForegroundWindow() != fg:
+                return
+            if not self.over(fg):
+                self.surface()
+
+    def over(self, hwnd):
+        """The panel is somewhere above this window."""
+        h = user32.GetWindow(self.hwnd, 2)  # GW_HWNDNEXT
+        while h:
+            if h == hwnd:
+                return True
+            h = user32.GetWindow(h, 2)
+        return False
+
+    def surface(self):
+        """The panel over every ordinary window without being activated: HWND_TOP is refused to a process not in
+        front, so topmost for a moment, then back."""
+        flags = 0x0001 | 0x0002 | 0x0010  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        user32.SetWindowPos(self.hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
+        user32.SetWindowPos(self.hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
 
     def beneath(self, hwnd):
         """The panel is directly under this window: below it, with nothing between them but this process's own
