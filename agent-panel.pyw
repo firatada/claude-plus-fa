@@ -726,6 +726,16 @@ def note_terminal(recent, hwnd, wins):
     return [hwnd] + [h for h in recent if h != hwnd][:RECENT_TERMINALS - 1]
 
 
+def tray_stale(at, used, front_own, before_own):
+    """A tray click (made at `at`) waits in the queue until the poll loop takes it. True when it is to be dropped
+    because the user has used the panel since: a card clicked or opened, or one of the panel's windows brought to the
+    front after the click (used: when that last happened), or one of them in front now (front_own) when none was at
+    the click (before_own), as a click on a card makes the panel the foreground window before the card's own call
+    comes in. Acted on then, the click would hide the panel under the pointer (the panel in front: the toggle hides
+    it) or raise the last terminal over the window the card just brought forward."""
+    return used > at or (front_own and not before_own)
+
+
 def last_terminal(recent, alive):
     """The terminal a tray click brings back: the newest in recent that alive(window) still holds (the window exists
     and still shows an open session), else None. A minimised one counts; bring_front() restores it."""
@@ -2110,8 +2120,9 @@ def tray(events, opts):
 
         def __call__(self):
             """A left click on the icon (pystray calls this on WM_LBUTTONUP): the panel and the terminal last in front
-            (tray_click()). The menu's own Show or Hide stays the plain toggle."""
-            events.put("tray")
+            (tray_click()), with when it was made and the window in front then (see tray_stale()). The menu's own
+            Show or Hide stays the plain toggle."""
+            events.put("tray:%.3f:%d" % (time.time(), user32.GetForegroundWindow() or 0))
     menu = pystray.Menu(
         pystray.MenuItem("Show or Hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
@@ -2701,6 +2712,7 @@ class Panel:
         self.reads, self.tabs, self.reply_sid, self.reply_pick = {}, [], None, None
         self.front_key = None  # (window, shown name) in front at the last poll turn (follow_terminal)
         self.terminals = []  # session terminals, newest in front first (note_terminal(), read by tray_click())
+        self.used = 0.0  # when the panel was last used: a card clicked or opened, one of its windows in front (tray_stale)
         # every reply the page was handed, {(session id, message id): (text, at)}, newest last, SEEN_MAX at most: Send
         # to Session and Copy put in exactly the text the window showed, even one held while an answer box was typed in
         self.reply_seen = {}
@@ -2783,14 +2795,16 @@ class Panel:
         self.icon = tray(self.events, self.opts)
         self.shots = load_shots()
         self.last_scan = self.last_live = 0
+        woke = []  # the event that woke the loop from its wait, handled first
         while True:
             try:
                 while True:
-                    ev = self.events.get_nowait()
+                    ev = woke.pop() if woke else self.events.get_nowait()
                     if ev == "toggle":
                         self.toggle()
-                    elif ev == "tray":
-                        self.tray_click()
+                    elif ev.startswith("tray:"):
+                        at, before = ev[5:].split(":")
+                        self.tray_click(float(at), int(before))
                     elif ev == "refresh":
                         self.last_scan = 0
                     elif ev == "quit":
@@ -2868,7 +2882,10 @@ class Panel:
             front = (fg, shown_name(title)) if fg else None
             if self.follow_terminal((fg, title), front) | self.quote_poll(front):
                 self.update_reply()  # a passage selected, or a ":" prompt used it: marked in the reply window
-            time.sleep(0.2)
+            try:  # 0.2 s between turns, but an event (a tray click, Ctrl+Alt+C) is taken at once
+                woke.append(self.events.get(timeout=0.2))
+            except queue.Empty:
+                pass
 
     # ----- placement -----
     def scale(self):
@@ -3018,12 +3035,15 @@ class Panel:
             self.raise_panel()
         self.update_strip()  # shown beside the panel, hidden with it
 
-    def tray_click(self):
-        """A left click on the tray icon: as Ctrl+Alt+C, then, while the panel shows, the session terminal last in
-        front comes back too (restored if minimised; with several tabs only the window, no key is sent), so the user
-        is back where they were typing. The click gave this process the right to take the foreground: it is used
-        here, in the same event, before any other input can take it away. The panel goes right under the terminal
-        (lift(), as after a card click), the strip and the reply window with it."""
+    def tray_click(self, at, before):
+        """A left click on the tray icon, made at `at` with the window `before` in front: as Ctrl+Alt+C, then, while
+        the panel shows, the session terminal last in front comes back too (restored if minimised; with several tabs
+        only the window, no key is sent), so the user is back where they were typing. The click gave this process the
+        right to take the foreground: the poll loop wakes for it at once, so it is used before other input can take
+        it away. The panel goes right under the terminal (lift(), as after a card click), the strip and the reply
+        window with it. A click the user has already moved on from (a card clicked since) is dropped: tray_stale()."""
+        if tray_stale(at, self.used, own(user32.GetForegroundWindow()), own(before)):
+            return
         self.toggle()
         if not self.visible:
             return
@@ -3114,15 +3134,20 @@ class Panel:
         moves = [None]  # the hook on the front session window's moves, while one is in front
 
         def on_front(hook, event, hwnd, obj, child, thread, ms):
-            if not hwnd or own(hwnd):
+            if not hwnd:
+                return
+            if own(hwnd):
+                self.used = time.time()  # one of the panel's windows came forward: a tray click made before is stale
                 return
             self.front = hwnd
+            wins = set(self.wins.values())
+            self.terminals = note_terminal(self.terminals, hwnd, wins)  # at once, not at the next poll turn
             if getattr(self, "shots", None):
                 self.shots.front(hwnd)  # a Desktop screenshot is named after the window in front
             if moves[0]:
                 user32.UnhookWinEvent(moves[0])
                 moves[0] = None
-            if hwnd in self.wins.values():
+            if hwnd in wins:
                 self.lift(hwnd)
                 threading.Thread(target=self.stay_over, args=(hwnd,), daemon=True).start()
                 # maximising, restoring or dragging the window already in front can raise it again without a
@@ -4060,7 +4085,8 @@ class Panel:
         until a prompt is typed after it. The panel's own windows (the panel, the strip, the reply window) and
         windows that are no session's terminal leave the tab alone; nothing is focused. True when the tab changed."""
         before, self.front_key = self.front_key, front
-        self.terminals = note_terminal(self.terminals, raw[0], set(self.wins.values()))  # for tray_click()
+        # for tray_click(): follow_front() notes a terminal as it comes forward; this catches one found only later
+        self.terminals = note_terminal(self.terminals, raw[0], set(self.wins.values()))
         if not self.reply_mod or not self.tabs:
             return False
         s = front_session(raw, before, self.sessions, lambda o: self.wins.get(o.get("pid")), own)
@@ -4756,6 +4782,7 @@ class Panel:
 
     # ----- what the page asks for -----
     def click(self, sid):
+        self.used = time.time()
         s = self.find(sid)
         if not s:
             return None
@@ -4780,6 +4807,7 @@ class Panel:
         one call per key repeat (about 30 a second), so a launch under way blocks every further call for the same
         session until Claude Code registers it in ~/.claude/sessions (read here afresh, not the list's status, which
         can be LIVE_EVERY old) or LAUNCH_WAIT passes."""
+        self.used = time.time()
         s = self.find(sid)
         if not s or not folder_exists(s):
             return None

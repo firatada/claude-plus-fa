@@ -1,7 +1,9 @@
 # Unit tests for the tray click bringing back the last session terminal: which terminal is remembered
-# (note_terminal()), which one a tray click picks (last_terminal()), what the click does (Panel.tray_click()), that
-# bring_front() restores a minimised window, and that only a left click on the icon (not the menu's Show or Hide)
-# asks for it (tray()).
+# (note_terminal(), at once as a window comes forward: follow_front()), which one a tray click picks
+# (last_terminal()), what the click does (Panel.tray_click()), that a click the user moved on from (a card clicked
+# before the poll loop took it) is dropped (tray_stale()), that bring_front() restores a minimised window, and that
+# only a left click on the icon (not the menu's Show or Hide) asks for it, with its time and the window then in front
+# (tray()).
 # Run: python -I tools/test-tray-front.py
 # The .pyw is never imported (that would trip its one-instance mutex and raise the running panel): the functions are
 # taken from it by ast and run against fake windows and a fake user32, so no window is raised or focused and no key
@@ -53,10 +55,14 @@ class User32:
         self.calls.append(("SetWindowPos", h, after))
 
 
-ns = take({"RECENT_TERMINALS", "note_terminal", "last_terminal", "bring_front"}, {}, ("tray_click",))
+ns = take({"RECENT_TERMINALS", "note_terminal", "last_terminal", "bring_front", "tray_stale"}, {},
+          ("tray_click", "follow_front"))
 note_terminal, last_terminal, RECENT_TERMINALS = ns["note_terminal"], ns["last_terminal"], ns["RECENT_TERMINALS"]
+tray_stale = ns["tray_stale"]
 
-TERM, TERM2, TERM3, CHROME, TASKBAR = 10, 11, 12, 20, 30
+TERM, TERM2, TERM3, CHROME, TASKBAR, PANEL = 10, 11, 12, 20, 30, 40
+OWN = {PANEL}  # the panel's own windows
+ns["own"] = OWN.__contains__
 SESSIONS = {TERM, TERM2, TERM3}
 
 
@@ -122,9 +128,9 @@ class BringFront(unittest.TestCase):
 class Panel:
     """A stand-in for the panel: what tray_click() reads and calls."""
 
-    def __init__(self, terminals, wins, visible_after=True):
+    def __init__(self, terminals, wins, visible_after=True, used=0.0):
         self.terminals, self.wins, self.visible, self.log = terminals, wins, False, []
-        self.visible_after = visible_after
+        self.visible_after, self.used = visible_after, used
 
     def toggle(self):
         self.log.append("toggle")
@@ -135,10 +141,10 @@ class Panel:
 
 
 class TrayClick(unittest.TestCase):
-    def click(self, panel, u):
+    def click(self, panel, u, at=100.0, before=CHROME):
         ns["user32"] = u
         ns["bring_front"] = lambda h: panel.log.append(("bring_front", h))
-        ns["tray_click"](panel)
+        ns["tray_click"](panel, at, before)
         return panel.log
 
     def test_panel_first_then_the_last_terminal(self):
@@ -166,6 +172,86 @@ class TrayClick(unittest.TestCase):
         self.assertEqual(self.click(p, User32(windows={TERM})), ["toggle"])
 
 
+class Stale(unittest.TestCase):
+    """tray_stale(): a tray click the poll loop takes after the user has moved on is dropped."""
+
+    def test_taken_at_once(self):
+        self.assertFalse(tray_stale(100.0, 99.0, False, False))
+
+    def test_card_clicked_after_the_tray(self):
+        self.assertTrue(tray_stale(100.0, 100.4, False, False))
+
+    def test_panel_in_front_by_the_card_click_before_its_call(self):
+        self.assertTrue(tray_stale(100.0, 99.0, True, False))
+
+    def test_panel_in_front_at_the_click_still_toggles(self):
+        self.assertFalse(tray_stale(100.0, 99.0, True, True))  # the toggle hides it, as before
+
+
+class TrayThenCard(unittest.TestCase):
+    """The reported sequence: a tray click (panel and terminal TERM come forward), then at once a click on TERM2's
+    card. However late the poll loop takes the tray click, TERM2 stays in front."""
+
+    def tray(self, panel, fg, at=100.0, before=CHROME):
+        u = User32(windows={TERM, TERM2}, fg=fg)
+        ns["user32"] = u
+        ns["bring_front"] = lambda h: panel.log.append(("bring_front", h))
+        ns["tray_click"](panel, at, before)
+        return panel.log
+
+    def test_taken_after_the_card_brought_its_terminal(self):
+        p = Panel([TERM], {1: TERM, 2: TERM2}, used=100.5)  # the card's click() came after the tray click
+        self.assertEqual(self.tray(p, fg=TERM2), [])  # TERM is not raised over TERM2, the panel not toggled
+
+    def test_taken_between_the_card_press_and_its_call(self):
+        p = Panel([TERM], {1: TERM, 2: TERM2})  # the press made the panel the foreground, the hook not heard yet
+        self.assertEqual(self.tray(p, fg=PANEL), [])  # not hidden under the pointer
+
+    def test_taken_in_time_brings_the_terminal(self):
+        p = Panel([TERM], {1: TERM, 2: TERM2}, used=90.0)
+        self.assertEqual(self.tray(p, fg=CHROME), ["toggle", ("bring_front", TERM), ("lift", TERM)])
+
+    def test_card_click_marks_the_panel_used(self):
+        """Panel.click() (and open()) note the time first, so a tray click taken after it is stale."""
+        c = take(set(), {"time": types.SimpleNamespace(time=lambda: 100.5)}, ("click", "open"))
+        p = types.SimpleNamespace(used=0.0, find=lambda sid: None)
+        c["click"](p, "x")
+        self.assertEqual(p.used, 100.5)
+        p.used = 0.0
+        c["open"](p, "x")
+        self.assertEqual(p.used, 100.5)
+        self.assertTrue(tray_stale(100.0, p.used, False, False))
+
+    def test_card_terminal_is_the_last_at_once(self):
+        """follow_front(): a card click brings TERM2 forward; it is first in the list at once, so a tray click
+        right after (before the next poll turn) brings TERM2, not TERM."""
+        procs = []
+
+        class P:
+            visible, dragging, shots, wins, terminals, used = True, False, None, {1: TERM, 2: TERM2}, [TERM], 0.0
+
+            def lift(self, h):
+                pass
+
+            def stay_over(self, h):
+                pass
+
+        p = P()
+        u = User32(windows={TERM, TERM2}, fg=CHROME)
+        u.GetWindowThreadProcessId = lambda h, ref: 0
+        u.UnhookWinEvent = lambda h: None
+        ns.update(user32=u, WINEVENTPROC=lambda f: f, threading=types.SimpleNamespace(
+            Thread=lambda target, args, daemon: types.SimpleNamespace(start=lambda: None)),
+            SetWinEventHook=lambda *a: procs.append(a[3]) or 0, ctypes=types.SimpleNamespace(byref=lambda x: x),
+            wt=types.SimpleNamespace(DWORD=lambda: types.SimpleNamespace(value=0)), time=__import__("time"))
+        ns["follow_front"](p)  # the hook is refused (0): it returns without a message loop
+        on_front = procs[0]
+        on_front(None, 3, PANEL, 0, 0, 0, 0)  # the press on the card: the panel's own window
+        self.assertGreater(p.used, 0)
+        on_front(None, 3, TERM2, 0, 0, 0, 0)  # the card brought TERM2 forward
+        self.assertEqual(p.terminals, [TERM2, TERM])
+
+
 class TrayIcon(unittest.TestCase):
     """tray() with a fake pystray: a left click (pystray calls the icon) asks for "tray", the menu's Show or Hide
     still for "toggle"."""
@@ -189,11 +275,12 @@ class TrayIcon(unittest.TestCase):
         saved = {k: sys.modules.get(k) for k in ("pystray", "pystray._util")}
         sys.modules["pystray"], sys.modules["pystray._util"] = fake, util
         try:
-            t = take({"tray"}, {"tray_key": lambda: 1, "tray_look": lambda k: (None, "tip")})
+            t = take({"tray"}, {"tray_key": lambda: 1, "tray_look": lambda k: (None, "tip"),
+                                "user32": User32(fg=CHROME), "time": types.SimpleNamespace(time=lambda: 123.25)})
             events = queue.Queue()
             icon = t["tray"](events, {"dock": "right", "alerts": True, "sound": True})
             icon()
-            self.assertEqual(events.get_nowait(), "tray")
+            self.assertEqual(events.get_nowait(), "tray:123.250:%d" % CHROME)  # when, and the window in front then
             [show] = [m for m in icon.menu if m.text.startswith("Show or Hide")]
             show.action()
             self.assertEqual(events.get_nowait(), "toggle")
