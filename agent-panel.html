@@ -1344,8 +1344,8 @@ addEventListener("click", e => { if (swallow) { swallow = false; e.stopPropagati
 // An open session comes forward on a single click; a closed one opens only on a double click,
 // so a stray click never starts a session.
 // the answer to a single click waits a moment, so a double click never flashes "Double-click to open it." first
-// A click on an open session whose window is already in front minimises it, so the second click of a double
-// click is ignored: a double click counts as one click there, not as raise and minimise.
+// A second click on an open session's card minimises the window its first click raised (the panel decides), so the
+// second click of a double click is ignored: a double click counts as one click there, not as raise and minimise.
 let dblAt = 0, firstClick = null;
 for (const box of [list, $("drop")]) {
 box.addEventListener("click", e => {

@@ -737,6 +737,16 @@ def tray_stale(at, used, front_own, before_own):
     return used > at or (front_own and not before_own)
 
 
+def put_away(raised, sid, hwnd, shown):
+    """A click on an open session's card minimises its window only as the second click of the card's own toggle:
+    raised is (session id, window) the last card click brought forward, kept while nothing else comes to the front
+    (follow_front() drops it), and shown() says that window is still showing in front (shown_in_front()). A window
+    that came forward any other way (a tray click bringing back the last terminal, the taskbar, Alt+Tab, Windows
+    after another window was minimised) is raised by the first click on its card: minimised then, it went to the
+    taskbar and Windows handed the foreground to the window under it (the browser), so no terminal was left."""
+    return bool(hwnd) and raised == (sid, hwnd) and shown()
+
+
 def last_terminal(recent, alive):
     """The terminal a tray click brings back: the newest in recent that alive(window) still holds (the window exists
     and still shows an open session), else None. A minimised one counts; bring_front() restores it."""
@@ -2714,6 +2724,7 @@ class Panel:
         self.front_key = None  # (window, shown name) in front at the last poll turn (follow_terminal)
         self.terminals = []  # session terminals, newest in front first (note_terminal(), read by tray_click())
         self.used = 0.0  # when the panel was last used: a card clicked or opened, one of its windows in front (tray_stale)
+        self.raised = None  # (session id, window) the last card click raised, while nothing else came forward (put_away)
         # every reply the page was handed, {(session id, message id): (text, at)}, newest last, SEEN_MAX at most: Send
         # to Session and Copy put in exactly the text the window showed, even one held while an answer box was typed in
         self.reply_seen = {}
@@ -3141,6 +3152,8 @@ class Panel:
                 self.used = time.time()  # one of the panel's windows came forward: a tray click made before is stale
                 return
             self.front = hwnd
+            if self.raised and self.raised[1] != hwnd:
+                self.raised = None  # another window came forward: a click on the card is a first click again
             wins = set(self.wins.values())
             self.terminals = note_terminal(self.terminals, hwnd, wins)  # at once, not at the next poll turn
             if getattr(self, "shots", None):
@@ -4835,14 +4848,18 @@ class Panel:
         if sid in self.returns and self.returns[sid]["open"]:
             return self.raise_return(sid)
         if s["status"]:
-            # a second click on the card of a window already in front puts it away again
+            # a second click on the card puts away the window its first click raised (put_away()); a window that
+            # came forward any other way (the tray, the taskbar) is raised by this click, never minimised by it
             hwnd = self.window_for(s)
-            if hwnd and self.shown_in_front(s, hwnd):
+            if put_away(self.raised, sid, hwnd, lambda: self.shown_in_front(s, hwnd)):
+                self.raised = None
                 user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
                 return None
             if not focus_session(s, self.other_names(s)):
                 return err("Already open, but its window was not found. Look for it on the taskbar.")
-            self.lift(hwnd or self.window_for(s))  # the window was just put on top: the panel goes right under it
+            hwnd = hwnd or self.window_for(s)
+            self.raised = (sid, hwnd) if hwnd else None
+            self.lift(hwnd)  # the window was just put on top: the panel goes right under it
             return None
         return ok("Double-click to open it.")
 

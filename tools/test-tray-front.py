@@ -55,10 +55,10 @@ class User32:
         self.calls.append(("SetWindowPos", h, after))
 
 
-ns = take({"RECENT_TERMINALS", "note_terminal", "last_terminal", "bring_front", "tray_stale"}, {},
+ns = take({"RECENT_TERMINALS", "note_terminal", "last_terminal", "bring_front", "tray_stale", "put_away"}, {},
           ("tray_click", "follow_front"))
 note_terminal, last_terminal, RECENT_TERMINALS = ns["note_terminal"], ns["last_terminal"], ns["RECENT_TERMINALS"]
-tray_stale = ns["tray_stale"]
+tray_stale, put_away = ns["tray_stale"], ns["put_away"]
 
 TERM, TERM2, TERM3, CHROME, TASKBAR, PANEL = 10, 11, 12, 20, 30, 40
 OWN = {PANEL}  # the panel's own windows
@@ -228,7 +228,7 @@ class TrayThenCard(unittest.TestCase):
         procs = []
 
         class P:
-            visible, dragging, shots, wins, terminals, used = True, False, None, {1: TERM, 2: TERM2}, [TERM], 0.0
+            visible, dragging, shots, wins, terminals, used, raised = True, False, None, {1: TERM, 2: TERM2}, [TERM], 0.0, None
 
             def lift(self, h):
                 pass
@@ -250,6 +250,129 @@ class TrayThenCard(unittest.TestCase):
         self.assertGreater(p.used, 0)
         on_front(None, 3, TERM2, 0, 0, 0, 0)  # the card brought TERM2 forward
         self.assertEqual(p.terminals, [TERM2, TERM])
+
+
+class CardAfterTray(unittest.TestCase):
+    """The reported sequence: a tray click brings back the last terminal, then a click on that terminal's own card.
+    It is the first click on that card: the window stays in front (raised again); minimised, it went to the taskbar
+    and Windows handed the foreground to the browser under it, so no terminal was left on screen. Only a second
+    click on the card, while the window its first click raised is still in front, puts it away. Panel.click() and
+    the foreground hook (follow_front()) run on a fake user32; focus_session() only records."""
+
+    SID = {TERM: "a", TERM2: "b", TERM3: "c"}
+
+    def setUp(self):
+        self.procs, self.raised_by = [], []
+        u = User32(windows={TERM, TERM2, TERM3}, fg=CHROME)
+        u.GetWindowThreadProcessId = lambda h, ref: 0
+        u.UnhookWinEvent = lambda h: None
+        self.u, self.top = u, CHROME
+        c = take({"put_away", "note_terminal", "RECENT_TERMINALS"}, {}, ("click", "shown_in_front", "shared", "follow_front"))
+        c.update(user32=u, own=OWN.__contains__, top_window=lambda: self.top, window_title=lambda h: "",
+                 folder_exists=lambda s: True, ok=lambda t: t, err=lambda t: ("err", t),
+                 focus_session=self.focus, WINEVENTPROC=lambda f: f, SetWinEventHook=lambda *a: self.procs.append(a[3]) or 0,
+                 threading=types.SimpleNamespace(Thread=lambda target, args, daemon: types.SimpleNamespace(start=lambda: None)),
+                 ctypes=types.SimpleNamespace(byref=lambda x: x),
+                 wt=types.SimpleNamespace(DWORD=lambda: types.SimpleNamespace(value=0)), time=__import__("time"))
+        sessions = {sid: {"id": sid, "status": "idle", "pid": h, "name": sid} for h, sid in self.SID.items()}
+        p = types.SimpleNamespace(visible=True, dragging=False, shots=None, wins={h: h for h in self.SID}, terminals=[],
+                                  used=0.0, raised=None, front=CHROME, returns={})
+        p.find = sessions.get
+        p.window_for = lambda s: s["pid"]
+        p.other_names = lambda s: set()
+        p.lift = p.stay_over = lambda h: None
+        for m in ("click", "shown_in_front", "shared", "follow_front"):
+            setattr(p, m, types.MethodType(c[m], p))
+        p.follow_front()  # the hook is refused (0): it returns without a message loop
+        self.p, self.on_front = p, self.procs[0]
+
+    def focus(self, s, others=()):
+        self.raised_by.append(s["pid"])
+        self.come_forward(s["pid"])
+        return True
+
+    def come_forward(self, h):
+        """Window h becomes the foreground and the top window, and the hook hears of it."""
+        self.u.fg = h
+        if h not in OWN:
+            self.top = h
+        self.on_front(None, 3, h, 0, 0, 0, 0)
+
+    def card(self, h):
+        """A click on the card of the session in window h: the press makes the panel the foreground first."""
+        self.come_forward(PANEL)
+        return self.p.click(self.SID[h])
+
+    def minimised(self):
+        return [c[1] for c in self.u.calls if c[0] == "ShowWindow" and c[2] == 6]
+
+    def test_card_of_the_terminal_the_tray_brought_keeps_it_in_front(self):
+        self.come_forward(TERM)    # the tray click's bring_front()
+        self.card(TERM)
+        self.assertEqual(self.minimised(), [])
+        self.assertEqual(self.raised_by, [TERM])
+        self.assertEqual(self.u.fg, TERM)
+
+    def test_second_click_on_that_card_puts_it_away(self):
+        self.come_forward(TERM)
+        self.card(TERM)
+        self.card(TERM)
+        self.assertEqual(self.minimised(), [TERM])
+
+    def test_third_click_brings_it_back(self):
+        self.card(TERM)
+        self.card(TERM)
+        self.u.iconic.add(TERM)
+        self.come_forward(CHROME)  # Windows hands the foreground on
+        self.top = CHROME
+        self.card(TERM)
+        self.assertEqual(self.minimised(), [TERM])
+        self.assertEqual(self.raised_by, [TERM, TERM])
+
+    def test_terminal_windows_activated_after_a_minimise_then_the_tray_then_its_card(self):
+        self.come_forward(TERM2)   # Windows made TERM2 the foreground when TERM was minimised
+        self.come_forward(CHROME)  # the user went to the browser
+        self.come_forward(TERM2)   # the tray brought TERM2 back as the last terminal
+        self.card(TERM2)
+        self.assertEqual(self.minimised(), [])
+        self.assertEqual(self.u.fg, TERM2)
+
+    def test_tray_terminal_then_another_card_brings_that_one(self):
+        self.come_forward(TERM)
+        self.card(TERM2)
+        self.assertEqual(self.minimised(), [])
+        self.assertEqual(self.raised_by, [TERM2])
+        self.assertEqual(self.u.fg, TERM2)
+
+    def test_raised_by_its_card_then_another_window_then_back_is_a_first_click(self):
+        self.card(TERM)
+        self.come_forward(CHROME)
+        self.come_forward(TERM)    # back by the taskbar
+        self.card(TERM)
+        self.assertEqual(self.minimised(), [])
+
+    def test_raised_by_another_card_is_a_first_click(self):
+        self.card(TERM2)
+        self.card(TERM)
+        self.card(TERM2)
+        self.assertEqual(self.minimised(), [])
+        self.assertEqual(self.raised_by, [TERM2, TERM, TERM2])
+
+    def test_covered_window_is_raised_not_minimised(self):
+        self.card(TERM)
+        self.top = CHROME          # another window covers it, the foreground unchanged
+        self.card(TERM)
+        self.assertEqual(self.minimised(), [])
+
+
+class PutAway(unittest.TestCase):
+    def test_rule(self):
+        self.assertTrue(put_away(("a", TERM), "a", TERM, lambda: True))
+        self.assertFalse(put_away(None, "a", TERM, lambda: True))
+        self.assertFalse(put_away(("b", TERM), "a", TERM, lambda: True))   # another tab's card raised it
+        self.assertFalse(put_away(("a", TERM2), "a", TERM, lambda: True))
+        self.assertFalse(put_away(("a", TERM), "a", TERM, lambda: False))  # no longer in front
+        self.assertFalse(put_away(("a", None), "a", None, lambda: True))
 
 
 class TrayIcon(unittest.TestCase):
