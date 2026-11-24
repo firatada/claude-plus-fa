@@ -368,13 +368,16 @@ def load_quote_reply():
 
 
 def layout():
-    """band_layout() and the constants it reads, taken out of agent-panel.pyw by ast."""
+    """band_layout(), Panel.card_h() (as a function of a stub) and the constants they read, taken out of
+    agent-panel.pyw by ast."""
     with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
-    names = {"SHOT_W", "SHOT_H", "SHOT_PAD", "SHOT_GAP", "REPLY_W", "REPLY_MIN"}
+    names = {"SHOT_W", "SHOT_H", "SHOT_MIN", "SHOT_PAD", "SHOT_GAP", "REPLY_W", "REPLY_MIN"}
     keep = [n for n in tree.body if isinstance(n, ast.Assign) and any(
         getattr(t, "id", "") in names or any(getattr(e, "id", "") in names for e in getattr(t, "elts", [])) for t in n.targets)]
     keep += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "band_layout"]
+    keep += [m for n in tree.body if isinstance(n, ast.ClassDef) for m in n.body
+             if isinstance(m, ast.FunctionDef) and m.name == "card_h"]
     ns = {}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
     return ns
@@ -407,6 +410,20 @@ class Layout(unittest.TestCase):
 
     def test_a_narrow_screen_narrows_the_reply_window(self):
         self.assertEqual(self.check(600, 2, True), (1, 2, 162, 430))
+
+    def card(self, head_h, head=True):
+        return self.ns["card_h"](type("P", (), {"head_h": head_h})(), head)
+
+    def test_a_row_of_the_strip_is_as_tall_as_the_reply_windows_head(self):
+        pad = self.ns["SHOT_PAD"]
+        for head_h in (85, 84, 119, 137, 171):  # one tab row; folded; with pins; two tab rows; both
+            self.assertEqual(pad + self.card(head_h) + pad, head_h)
+        self.assertEqual(self.ns["SHOT_H"] + 2 * pad, 85)  # without a session: the head's usual height
+
+    def test_without_a_measured_head_the_card_keeps_its_own_height(self):
+        self.assertEqual(self.card(0), self.ns["SHOT_H"])
+        self.assertEqual(self.card(137, head=False), self.ns["SHOT_H"])
+        self.assertEqual(self.card(20), self.ns["SHOT_MIN"])
 
 
 # The reply page's markdown (blocks(), cells(), inline(), blockHtml()), run in node when it is installed: the part of

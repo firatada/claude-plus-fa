@@ -1286,7 +1286,7 @@ document.documentElement.addEventListener("mouseleave", tipHide);
 addEventListener("blur", tipHide);
 
 // ---------- size: the window grows with what it holds; agent-panel.pyw caps it at the screen ----------
-let sizeJob = null, sent = 0;
+let sizeJob = null, sent = 0, sentHead = 0;
 function natural() {
   if (document.body.classList.contains("folded")) return Math.ceil($("head").offsetHeight);
   // the replies' own height, not #body's scrollHeight: that is never less than the window gives it, so a shorter
@@ -1300,8 +1300,9 @@ function size() {
   if (sizeJob) return;
   sizeJob = requestAnimationFrame(() => {
     sizeJob = null;
-    const h = natural();
-    if (ready && h !== sent) { sent = h; api().size(h); }
+    // with the head's own height: one row of the screenshot strip beside it is made exactly as tall
+    const h = natural(), hh = Math.ceil($("head").offsetHeight);
+    if (ready && (h !== sent || hh !== sentHead)) { sent = h; sentHead = hh; api().size(h, hh); }
   });
 }
 
@@ -1395,6 +1396,7 @@ function nameFit(nm) {
   nm.className = "nm cut";
 }
 new ResizeObserver(() => { tabFit(); size(); }).observe($("tabs"));
+new ResizeObserver(size).observe($("head"));  // pins or a wrapped tab row change the head's height
 
 // The head's buttons work by pointer alone, so they are out of the keyboard's order (tabindex -1): Tab never lands on
 // a session tab, the fold button or a chip.

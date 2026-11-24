@@ -33,8 +33,11 @@
      The strip holds the screenshots alone (2026-11-23): the session tabs and the line naming the session sit at
      the top of the reply window (agent-reply.html), a window of its own left of the strip, so the two read as two
      edged surfaces. While a session is open the strip's columns leave the reply window its width and the
-     screenshots wrap into rows (agent-panel.pyw sends the columns with shotStrip.update(items, cols)); a full row
-     is as wide as the reply window, its cards spread over it. The
+     screenshots wrap into rows (agent-panel.pyw sends the columns with shotStrip.update(items, cols, h)); a full row
+     is as wide as the reply window, its cards spread over it. A row is as tall as the reply window's head (the
+     maintainer, 2026-11-25: the tabs and the line under them), so the two windows' edges line up top and bottom:
+     agent-panel.pyw sends the card's height h, and every row, wrapped or not, takes it. The card is compact: its
+     top row, the name under it, the time small right under the name. The
      selections for the ":" reply are marked inside the reply window, not listed here.
 -->
 <style>
@@ -53,25 +56,27 @@ button { font: inherit; cursor: pointer; }
   height: 100%; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 6px;
 }  /* no edge of its own: the window's DWM frame draws it, square with its shadow, as the panel's */
 body.moving, body.moving * { cursor: grabbing !important; }
-/* a card: SHOT_W x SHOT_H (150 x 94; 150 so the top row holds a pinned 2-digit badge, Pin and "Reading…"). The
-   whole card is the button that opens the preview; its text starts under the top row (6 + 20 + 4), the title up to
-   3 lines of 14 px, the time on the last line, never cut */
+/* a card: SHOT_W x --h (150 wide so the top row holds a pinned 2-digit badge, Pin and "Reading…"; --h from
+   agent-panel.pyw, 73 for a reply window head of 85). The whole card is the button that opens the preview; its text
+   starts under the top row (6 + 20 + 3): the title on as many 13 px lines as the height leaves (--lines, 2 at 73),
+   then the time small right under it, never cut */
 /* the screenshots: as many columns as agent-panel.pyw allows, wrapping into rows; a window wider than the columns
    (a full row matched to the reply window's width) spreads them over it, every row on the same columns */
 #shots { flex: 1 1 100%; display: grid; grid-template-columns: repeat(var(--cols, 1), 150px); justify-content: space-between; align-content: start; gap: 6px; }
-.shot { position: relative; flex: none; width: 150px; height: 94px; }
+.shot { position: relative; flex: none; width: 150px; height: var(--h, 73px); }
 .pic {
-  width: 100%; height: 100%; padding: 30px 8px 6px; border: 1px solid var(--line); border-radius: 8px;
+  width: 100%; height: 100%; padding: 29px 8px 5px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--text); text-align: left; display: flex; flex-direction: column;
   transition: transform .16s ease-out;
 }
 .pic:hover, .pic.open { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue); }
 .pic:active { transform: scale(.97); }
 .pic .t {
-  font: 600 11px/14px "Segoe UI", system-ui, sans-serif; overflow-wrap: anywhere; overflow: hidden;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; max-height: 42px;
+  flex: none; font: 600 11px/13px "Segoe UI", system-ui, sans-serif; overflow-wrap: anywhere; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--lines, 2);
+  max-height: calc(var(--lines, 2) * 13px);
 }
-.pic .w { margin-top: auto; color: var(--muted); font: 400 11px/14px "Segoe UI", system-ui, sans-serif;
+.pic .w { flex: none; color: var(--muted); font: 400 10px/12px "Segoe UI", system-ui, sans-serif;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the top row: badge, Pin, then Copy at the right; a press between them is a press on the card */
 .bar { position: absolute; top: 6px; left: 6px; right: 6px; height: 20px; display: flex; align-items: center;
@@ -164,10 +169,14 @@ function pin(btn, at) {  // shown at once; agent-panel.pyw stores it and redraws
 }
 
 // items: [{at, name, pin, num, title, when}] (no picture: the preview alone shows one), the pinned ones first by pin order, then the recent ones newest first; num
-// counts within each group from 1; agent-panel.pyw sizes the window
+// counts within each group from 1; agent-panel.pyw sizes the window; h: a card's height (the reply window's head less
+// the strip's padding), the title taking the lines left under the top row (29) above the time (12) and the foot (5)
 window.shotStrip = {
-  update(items, cols) {
+  update(items, cols, h) {
     shots.style.setProperty("--cols", Math.max(1, cols || 0));
+    h = h || 73;
+    shots.style.setProperty("--h", h + "px");
+    shots.style.setProperty("--lines", Math.max(1, Math.floor((h - 29 - 12 - 5) / 13)));
     shots.innerHTML = items.map(s => `<div class="shot" data-full="${esc(s.name)}">
       <button type="button" class="pic" data-at="${s.at}" aria-label="Enlarge ${esc(label(s))}"><span class="t">${esc(s.title)}</span><span class="w">${esc(s.when)}</span></button>
       <div class="bar"><span class="num" aria-hidden="true">${badge(s)}</span>

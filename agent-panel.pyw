@@ -247,8 +247,10 @@ ALERT_TITLE = "Field Agents Alert"
 ALERT_W = 420          # logical pixels; the height follows the rows, as agent-alert.html lays them out
 ALERT_ROWS = 4         # sessions listed in the alert; the rest are counted
 SHOTS_TITLE = "Field Agents Screenshots"
-SHOT_W, SHOT_H, SHOT_PAD = 150, 94, 6  # logical pixels: a strip card (text only, no picture) and the space around
-                       # and between them, as agent-shots.html lays them out
+SHOT_W, SHOT_H, SHOT_PAD = 150, 73, 6  # logical pixels: a strip card (text only, no picture) and the space around
+                       # and between them, as agent-shots.html lays them out. SHOT_H is the height without a session open;
+                       # with one, a row is as tall as the reply window's head (card_h()): 85 with one row of tabs, so 73
+SHOT_MIN = 60          # logical pixels: the shortest card (its top row, one line of name and the time)
 SHOT_N = 3             # unpinned screenshots in the strip (the pinned ones come on top of these)
 SHOT_GAP = 8           # logical pixels between the strip and the screen's edge or the panel
 SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
@@ -2452,11 +2454,17 @@ class ReplyApi:
         except Exception:
             return []
 
-    def size(self, h):
+    def size(self, h, head=0):
+        # h: the page's natural height; head: its head's (tabs, pins, the line naming the session), which one row of
+        # the strip matches (card_h())
         try:
             self._p.reply_h = max(0, int(h))
+            head = max(0, int(head or 0))
         except (TypeError, ValueError):
             return
+        if head and head != self._p.head_h:
+            self._p.head_h = head
+            self._p.events.put("reply-head")
         self._p.events.put("reply")
 
     def draft(self, sid, key, passage, text):
@@ -2743,6 +2751,7 @@ class Panel:
                 self.dictation = None
         self.reply_open = local("reply_open") is not False
         self.reply_hwnd, self.reply_ready, self.reply_shown, self.reply_h = None, False, False, 0
+        self.head_h = 0  # logical pixels: the reply window's head as its page measured it (ReplyApi.size)
         self.reply_key, self.head_key, self.reply_box, self.reply_now = None, None, None, None
         self.reply = None
         if self.reply_mod:
@@ -2836,6 +2845,8 @@ class Panel:
                         self.set_reply_open(not self.reply_open)
                     elif ev == "reply":
                         self.place_reply()
+                    elif ev == "reply-head":
+                        self.update_strip()  # a row of the strip follows the head's height
                     elif ev == "reply-state":
                         self.update_reply()
                     elif ev.startswith("dock:"):
@@ -3997,6 +4008,12 @@ class Panel:
             right = min(right, r.left)
         return right - gap, top, wa
 
+    def card_h(self, head):
+        """Logical pixels: a strip card's height. With a session open one row of the strip (SHOT_PAD above and below
+        the cards) is exactly as tall as the reply window's head, so the two windows' edges line up; it follows the
+        head when its tabs wrap or its pin chips come and go. Without one, SHOT_H."""
+        return max(SHOT_MIN, self.head_h - 2 * SHOT_PAD) if head and self.head_h else SHOT_H
+
     def strip_rect(self, n, head=False):
         """Screen pixels (x, y, w, h) of a strip of n screenshots (None with none), and how many columns they take.
         It grows left from its top-right corner (strip_anchor()) and wraps into rows below. With head (a session is
@@ -4011,7 +4028,7 @@ class Panel:
         rect = None
         if n:
             w = int(math.ceil(sw * s))  # never a pixel short: the page would wrap early
-            h = int(math.ceil((SHOT_PAD + rows * (SHOT_H + SHOT_PAD)) * s))
+            h = int(math.ceil((SHOT_PAD + rows * (self.card_h(head) + SHOT_PAD)) * s))
             x, y = right - w, top
             wb = self.work_area((x, y, w, h))
             rect = (max(wb.left, min(x, wb.right - w)), max(wb.top, min(y, wb.bottom - h)), w, h)
@@ -4051,18 +4068,19 @@ class Panel:
             i["title"], i["when"] = shot_label(i["path"])  # in the key: "14:32" becomes "yesterday 14:32" at midnight
         self.reply_box = None
         rect, cols = self.strip_rect(len(items), bool(head)) if items or head else (None, 0)
-        key = (json.dumps(items), rect, cols)
+        ch = self.card_h(bool(head))
+        key = (json.dumps(items), rect, cols, ch)
         self.push_head(head)
         if key == self.strip_key:
             self.place_reply()
             return
-        fresh = self.strip_key is None or key[0] != self.strip_key[0] or key[2] != self.strip_key[2]
+        fresh = self.strip_key is None or key[0] != self.strip_key[0] or key[2:] != self.strip_key[2:]
         self.strip_key, self.strip_items, self.strip_now = key, items, rect
         # the page first, hidden or not: a strip shown again later must not bring back cards it no longer has
         if fresh:
             data = [{"at": i["at"], "name": os.path.basename(i["path"]), "pin": i["pin"],
                      "num": i["num"], "title": i["title"], "when": i["when"]} for i in items]
-            self.strip.evaluate_js("shotStrip.update(%s, %d)" % (json.dumps(data), cols))
+            self.strip.evaluate_js("shotStrip.update(%s, %d, %d)" % (json.dumps(data), cols, ch))
             self.strip.evaluate_js("shotStrip.open(%s)" % json.dumps(self.view_at))
         if not items:
             self.view_close()
