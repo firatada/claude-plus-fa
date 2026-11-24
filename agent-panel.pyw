@@ -2398,13 +2398,14 @@ class ReplyApi:
         except Exception:
             return {"note": "Voice to Text could not be reached."}
 
-    def dictate(self, audio, mime):
-        # Space let go: the recording (base64) to the server; answers {text} or {note}
+    def dictate(self, audio, mime, kind="whole", context=""):
+        # what was said (base64), a piece while Space is held or the rest when it is let go, to the server; answers
+        # {text} or {note} (agent-reply.py Dictation.transcribe: kind, context)
         d = self._p.dictation
         if not d:
             return {"note": "Dictation is not available here."}
         try:
-            return d.transcribe(base64.b64decode(str(audio)), str(mime))
+            return d.transcribe(base64.b64decode(str(audio)), str(mime), str(kind), str(context or ""))
         except Exception:
             return {"note": "Voice to Text could not be reached."}
 

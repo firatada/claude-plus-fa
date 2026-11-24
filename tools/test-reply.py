@@ -433,6 +433,39 @@ const D = {type: "down", repeat: false}, R = {type: "down", repeat: true}, U = {
 out.space = {consts: [WARM, START, HOLD_MS], tap: run([D, U]), tapRepeat: run([D, R, U]), hold: run([D, R, R, R, R, R, U]),
   noRepeat: run([D, T, U]), roll: run([D, K]), rollWarm: run([D, R, K]), lateTimer: run([D, U, T]), blurWarm: run([D, R, B]),
   blurRec: run([D, T, B]), fail: run([D, T, F, R, U]), recKey: run([D, T, K]), stray: run([R])};
+// text while Space is held: the commit rule (agreement, the tail rewritten only), cuts at a pause, the last pass
+const Z = n => new Array(n).fill(0), V = (ms, x) => new Array(Math.round(ms / 20)).fill(x);  // frames of quiet / speech
+let pc = {done: [], prev: []};
+const a1 = agreeStep(pc, "Yes, please merge"); pc = a1.piece;
+const a2 = agreeStep(pc, "Yes, please merge the pull"); pc = a2.piece;
+const a3 = agreeStep(pc, "yes please merge the pull request then"); pc = a3.piece;
+const a4 = agreeStep(pc, "Yes, plead merge the pull request, then deploy"); const pc4 = a4.piece;
+const c1 = closeStep(pc4, "Yes, please merge the pull request, then deploy it.");
+const c2 = closeStep({done: ["Evet", "bunu"], prev: []}, "Evet, bunu yapalım.");
+const c3 = closeStep({done: ["Evet", "bunu"], prev: []}, "Peki evet bunu yapalım.");
+out.agree = {a1: [a1.commit, a1.interim], a2: [a2.commit, a2.interim], a3: [a3.commit, a3.interim],
+  a4: [a4.commit, a4.interim, pc4.done], c1: [c1.commit, c1.interim, c1.piece], c2: c2.commit, c3: c3.commit,
+  shrink: agreeStep({done: ["a", "b", "c"], prev: ["a", "b", "c", "d"]}, "a b").commit,
+  keys: [wordKey("Request,"), wordKey("İstek."), wordKey("—")]};
+const P = (lv, o) => planPass(Object.assign({lv, thr: 0.01, cut: 0, n: lv.length, lastTo: -1, since: 1e9}, o));
+const talk4 = Z(10).concat(V(4000, 0.1));
+out.plan = {
+  quiet: P(Z(40)), silence: P(Z(60)), early: P(Z(10).concat(V(1000, 0.1))),
+  part: P(talk4), tooSoon: P(talk4, {since: 500}), nothingNew: P(talk4, {lastTo: talk4.length - 1}),
+  hush: P(talk4.concat(Z(12))), endQuiet: P(talk4.concat(Z(16)), {since: 500}), earlyPause: P(Z(10).concat(V(2000, 0.1), Z(30))),
+  close: P(Z(10).concat(V(3500, 0.1), Z(30), V(500, 0.1))),
+  closeLater: P(Z(10).concat(V(1000, 0.1), Z(30), V(2500, 0.1), Z(30))),
+  fromCut: P(Z(200).concat(V(3500, 0.1), Z(30)), {cut: 190}),
+  long: P(V(10000, 0.1).concat(V(400, 0.02), V(11000, 0.1))),
+  quietest: quietest(V(10000, 0.1).concat(V(400, 0.02), V(11000, 0.1)), 500, 1030)};
+out.final = [finalPlan({last: null, cut: 100, n: 300, lastSpeech: 90}), finalPlan({last: null, cut: 0, n: 300, lastSpeech: 250}),
+  finalPlan({last: {from: 0, to: 270, text: "x"}, cut: 0, n: 300, lastSpeech: 250}),
+  finalPlan({last: {from: 0, to: 255, text: "x"}, cut: 0, n: 300, lastSpeech: 250}),
+  finalPlan({last: {from: 0, to: 260, text: "x"}, cut: 0, n: 260, lastSpeech: 259}),
+  finalPlan({last: {from: 50, to: 290, text: "x"}, cut: 0, n: 300, lastSpeech: 250})];
+const H = lvs => { const c = new Array(BINS).fill(0); lvs.forEach(v => c[levelBin(v)]++); return c; };
+out.line = [quietLine(H([])), quietLine(H(Z(50).concat(V(3000, 0.1)))), quietLine(H(V(1000, 0.003).concat(V(3000, 0.1)))),
+  quietLine(H(V(1000, 0.003).concat(V(3000, 0.1), [0.9, 0.9, 0.9]))), quietLine(H(V(3000, 0.05)))];
 out.join = [joinDictation("", "", "merhaba"), joinDictation("abc", "", "x"), joinDictation("abc ", "def", "x"),
   joinDictation("abc", " def", "x"), joinDictation("abc\n", "", "x")];
 // the answers Send to Session takes: paragraphs, list items, a table, two replies; one under another chip and an
@@ -569,6 +602,58 @@ class Markdown(unittest.TestCase):
                                            {"s": "x ", "caret": 1}, {"s": " x", "caret": 2}, {"s": "x", "caret": 1}])
 
 
+    def test_words_two_passes_agree_on_are_committed_and_only_the_tail_changes(self):
+        ag = self.md["agree"]
+        self.assertEqual(ag["a1"], [[], ["Yes,", "please", "merge"]])  # the first pass is all interim
+        # "Yes, please merge" agreed (its last word too: this pass heard past it) go in; the rest stays dim
+        self.assertEqual(ag["a2"], [["Yes,", "please", "merge"], ["the", "pull"]])
+        # case and punctuation do not break agreement; the newest pass's last word stays dim (cut at the edge)
+        self.assertEqual(ag["a3"], [["the", "pull"], ["request", "then"]])
+        # a later pass that hears a committed word differently ("plead") rewrites nothing before the tail
+        self.assertEqual(ag["a4"], [["request,", "then"], ["deploy"],
+                                    ["Yes,", "please", "merge", "the", "pull", "request,", "then"]])
+        self.assertEqual(ag["shrink"], [])  # a shorter pass commits nothing and takes nothing back
+        self.assertEqual(ag["keys"], ["request", "istek", ""])  # marks dropped too: İ and I read alike
+
+    def test_a_closing_pass_commits_the_rest_of_its_piece_after_the_committed_words(self):
+        ag = self.md["agree"]
+        self.assertEqual(ag["c1"], [["deploy", "it."], [], {"done": [], "prev": []}])
+        self.assertEqual(ag["c2"], ["yapalım."])
+        self.assertEqual(ag["c3"], ["yapalım."])  # an extra word in front: found again by the last committed word
+
+    def test_a_pass_is_sent_while_speaking_and_a_piece_is_cut_at_a_pause(self):
+        pl, n = self.md["plan"], lambda ms: int(ms / 20 + 0.5)  # as Math.round
+        self.assertEqual(pl["quiet"], {"kind": "", "to": 0})  # under a second of quiet: wait
+        self.assertEqual(pl["silence"], {"kind": "skip", "to": 60 - n(300)})  # quiet only: dropped, the last 300 ms kept
+        self.assertEqual(pl["early"]["kind"], "")  # under FIRST_MS of speech
+        self.assertEqual(pl["part"], {"kind": "part", "to": 10 + n(4000)})  # the open piece up to the newest sound
+        self.assertEqual(pl["tooSoon"]["kind"], "")  # TICK_MS since the last pass not yet passed
+        self.assertEqual(pl["nothingNew"]["kind"], "")  # no speech newer than the last pass
+        self.assertEqual(pl["hush"]["kind"], "")  # HUSH_MS into a quiet spell: a pause may be coming
+        # END_MS into a quiet spell: a part pass at once (TICK_MS or not), so letting go soon after needs none
+        self.assertEqual(pl["endQuiet"], {"kind": "part", "to": 10 + n(4000) + 16})
+        # a pause too early in the piece to close it: a part pass at once, over all of it
+        self.assertEqual(pl["earlyPause"], {"kind": "part", "to": 10 + n(2000) + 30})
+        # a pause MIN_CLOSE_MS into the piece closes it in its middle; the speech after it waits for the next piece
+        self.assertEqual(pl["close"], {"kind": "close", "to": 10 + n(3500) + n(250)})
+        self.assertEqual(pl["closeLater"], {"kind": "close", "to": 10 + n(1000) + 30 + n(2500) + n(250)})
+        self.assertEqual(pl["fromCut"], {"kind": "close", "to": 200 + n(3500) + n(250)})  # counted from the cut
+        # no pause in MAX_PIECE_MS: cut at the quietest QUIET_WIN after half of it
+        self.assertEqual(pl["long"], {"kind": "close", "to": n(10000) + 7})  # the quiet 300 ms (15 frames) starts at 10 s
+        self.assertEqual(pl["quietest"], n(10000) + 7)
+
+    def test_letting_go_sends_one_pass_only_when_the_last_did_not_hear_it_all(self):
+        self.assertEqual(self.md["final"], ["none", "send", "use", "send", "use", "send"])
+
+    def test_the_quiet_line_follows_the_floor_and_the_speech_not_one_loud_frame(self):
+        ln = self.md["line"]
+        self.assertAlmostEqual(ln[0], 0.004)  # nothing heard yet: QUIET_MIN
+        self.assertAlmostEqual(ln[1], 0.004, places=4)  # digital silence: QUIET_MIN
+        self.assertTrue(0.008 < ln[2] < 0.013, ln[2])  # a 0.003 floor: about 10 dB over it
+        self.assertAlmostEqual(ln[3], ln[2])  # a knock does not move it
+        self.assertTrue(ln[4] < 0.05 * 0.35, ln[4])  # speech alone: at most QUIET_SPEECH_X of it, so speech stays speech
+
+
 class Stub(http.server.BaseHTTPRequestHandler):
     """A stand-in for the speech-to-text server, with its contract: GET /api/health, POST /api/dictate."""
     answer = (200, {"text": "merhaba deploy", "language": "tr", "ms": 12})
@@ -649,6 +734,25 @@ class Dictation(unittest.TestCase):
         Stub.answer = (500, {"error": "could not decode the audio"})
         self.assertEqual(d.transcribe(b"x", "audio/wav"),
                          {"note": "Voice to Text could not turn this into text: could not decode the audio"})
+
+    def test_a_piece_while_speaking_goes_without_the_terms_and_with_the_words_so_far(self):
+        from urllib.parse import parse_qs, urlparse
+        d = self.client(dictation_terms=["deploy", "memory.md"])
+        Stub.answer = (200, {"text": "", "language": "tr", "ms": 3})
+        # a part pass (cut mid-speech): no term list, the hold's words as the prompt; empty is no note
+        self.assertEqual(d.transcribe(b"RIFF", "audio/wav", "part", "Evet,  bunu\nyapalım"), {"text": ""})
+        self.assertEqual(parse_qs(urlparse(Stub.seen[-1][0]).query), {"language": ["tr"], "prompt": ["Evet, bunu yapalım"]})
+        self.assertEqual(d.transcribe(b"RIFF", "audio/wav", "part"), {"text": ""})
+        self.assertNotIn("prompt=", Stub.seen[-1][0])
+        # a closing pass: the terms, then the words so far; empty is no note either
+        self.assertEqual(d.transcribe(b"RIFF", "audio/wav", "close", "Evet"), {"text": ""})
+        self.assertEqual(parse_qs(urlparse(Stub.seen[-1][0]).query)["prompt"], ["deploy, memory.md. Evet"])
+        # the words so far are cut to their last DICTATE_CONTEXT characters
+        d.transcribe(b"RIFF", "audio/wav", "close", "x" * 50 + "y" * ar.DICTATE_CONTEXT)
+        self.assertEqual(parse_qs(urlparse(Stub.seen[-1][0]).query)["prompt"],
+                         ["deploy, memory.md. " + "y" * ar.DICTATE_CONTEXT])
+        # all of a hold in one pass (nothing put in the box while speaking): empty is the note, as before
+        self.assertEqual(d.transcribe(b"RIFF", "audio/wav", "whole"), {"note": ar.DICTATE_EMPTY})
 
     def test_a_server_that_is_down_and_not_set_up_to_start_is_a_note(self):
         self.tearDown()

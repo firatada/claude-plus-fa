@@ -421,6 +421,7 @@ DICTATE_OPEN = " Open Voice to Text to see why, then hold Space again."  # after
 DICTATE_START = " Start it, then hold Space again."  # after DICTATE_NOT_RUNNING without it
 DICTATE_FAILED = "Voice to Text could not turn this into text: {why}"
 DICTATE_EMPTY = "Nothing was heard. Hold Space and speak again."
+DICTATE_CONTEXT = 200      # characters of the words already in the box sent with a piece as the prompt
 # What a note's link may open (open_settings): the two Windows Settings pages the page's microphone notes name, and
 # APP_LINK, the "dictation_app" the user set (its words in the note: "Open Voice to Text").
 APP_LINK = "app:voice-to-text"
@@ -439,12 +440,18 @@ def dictation_settings(local):
             lang if isinstance(lang, str) and lang else DICTATE_LANGUAGE, terms)
 
 
-def dictate_query(language, terms):
-    """The query string of a dictation request: the language, and the term list joined by ", " as the prompt."""
+def dictate_query(language, terms, context=""):
+    """The query string of a dictation request: the language, and as the prompt the term list joined by ", ", then
+    `context` (the words this hold already put in the box, its last DICTATE_CONTEXT characters), so a piece sent while
+    Space is still held reads on from them."""
     from urllib.parse import urlencode
     q = {"language": language}
-    if terms:
-        q["prompt"] = ", ".join(terms)
+    context = " ".join(str(context or "").split())[-DICTATE_CONTEXT:]
+    prompt = ", ".join(terms) if terms else ""
+    if context:
+        prompt = (prompt + ". " if prompt else "") + context
+    if prompt:
+        q["prompt"] = prompt
     return urlencode(q)
 
 
@@ -537,8 +544,13 @@ class Dictation:
                 return self.note(DICTATE_NOT_STARTED, app)
             time.sleep(0.25)
 
-    def transcribe(self, audio, mime):
-        """One recording (bytes) to {"text"} or the note; starts the server, or waits for it, when it is down."""
+    def transcribe(self, audio, mime, kind="whole", context=""):
+        """One recording (bytes) to {"text"} or the note; starts the server, or waits for it, when it is down. `kind`:
+        "whole" (all that was said in one hold, as before text came while speaking), "part" (the open piece while Space
+        is held, cut in the middle of speech: sent without the term list, which with a few seconds of Turkish cut
+        mid-word made the recogniser loop for 6 to 32 s and answer garbage, trials.md 2026-11-24) or "close" (a piece
+        that ends in a pause or where Space was let go). Only "whole" turns an empty text into the "Nothing was heard"
+        note; the others answer {"text": ""}. `context`: see dictate_query()."""
         from urllib.request import Request, urlopen
         from urllib.error import HTTPError
         url, _, app, language, terms = self.settings()
@@ -548,7 +560,8 @@ class Dictation:
                 w = self.wait()
             if not w.get("up"):
                 return w
-        req = Request(url + "/api/dictate?" + dictate_query(language, terms), data=audio, method="POST",
+        req = Request(url + "/api/dictate?" + dictate_query(language, [] if kind == "part" else terms, context),
+                      data=audio, method="POST",
                       headers={"Content-Type": mime or "application/octet-stream"})
         try:
             with urlopen(req, timeout=DICTATE_WAIT) as r:
@@ -564,7 +577,7 @@ class Dictation:
             return {"note": DICTATE_FAILED.format(why=str(v))}
         except Exception:
             return self.note(DICTATE_NOT_RUNNING.format(url=url), app)
-        return {"text": text} if text else {"note": DICTATE_EMPTY}
+        return {"text": text} if text or kind != "whole" else {"note": DICTATE_EMPTY}
 
 
 def open_settings(uri, app=None):

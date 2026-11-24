@@ -159,7 +159,7 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
   font-variant-numeric: tabular-nums; }
 /* the user's answer under a paragraph: their text in blue on a light blue ground with a blue rule; Claude's text is
    never touched. Empty, it is the place an answer goes, opened under a paragraph by a click on it */
-.ansrow { margin: 2px 0 6px 22px; }
+.ansrow { position: relative; margin: 2px 0 6px 22px; }
 .ansrow.new { animation: drop .16s var(--snap); }
 .ans { display: block; width: 100%; resize: none; overflow: hidden; min-height: 34px; padding: 5px 10px;
   border: 1px dashed #c3cdea; border-radius: var(--r-small); background: var(--panel); color: var(--blue);
@@ -183,6 +183,12 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .vline.busy span { animation: busy 2s ease-in-out infinite; }
 @keyframes busy { 50% { opacity: .45; } }
 .vline.note { color: #92400e; }
+/* while Space is held: the words heard but not yet committed, dim at the caret (ghost() draws the box's text over a
+   clear box, so two colours can show in one textarea) */
+.ans.ghosted { color: transparent; caret-color: var(--blue); }
+.ghost { position: absolute; pointer-events: none; border-style: solid; border-color: transparent; color: var(--blue);
+  white-space: pre-wrap; overflow-wrap: break-word; }
+.ghost .tail { opacity: .5; }
 #empty { color: var(--muted); padding: 6px 0; }
 #empty[hidden], #miss[hidden] { display: none; }
 /* selections that are not in the reply text */
@@ -414,6 +420,101 @@ function spaceRule(s, ev) {
 function joinDictation(before, after, text) {
   const pre = before && !/\s$/.test(before) ? " " : "", post = after && !/^\s/.test(after) ? " " : "";
   return {s: pre + text + post, caret: pre.length + text.length};
+}
+// Text while Space is still held: rolling re-transcription ("LocalAgreement", as whisper_streaming does it). The
+// sound since the last cut (the open "piece") is sent again every TICK_MS, one pass at a time, never queued, always up
+// to the newest sound; the words two passes in a row agree on as a prefix are committed (put in the box, never
+// rewritten), the rest of the newest pass shows dim at the caret. The server answers text without word times, so
+// committed sound cannot be cut at a word: a piece is closed at a pause (PAUSE_MS of quiet on the level meter, at
+// least MIN_CLOSE_MS into the piece, cut in its middle; the closing pass's words are all committed) or, past
+// MAX_PIECE_MS without one, at its quietest QUIET_WIN. Levels are FRAME_MS frames; a frame is quiet below the quiet
+// line, quietLine(): QUIET_FLOOR_X over the hold's floor (its 10th percentile level) but at most QUIET_SPEECH_X of
+// its speech (90th percentile), never below QUIET_MIN; percentiles, not the loudest frame, so one knock or cough
+// does not turn speech into quiet (a piece judged silent is dropped). A part pass waits for FIRST_MS since the piece's speech
+// began and SPEECH_MS of speech, and needs speech newer than the last pass; it goes every TICK_MS while speech goes on
+// (not HUSH_MS into a quiet spell: a pause may be coming, and the closing pass then finds the server free) and at once
+// END_MS into a quiet spell that cannot close the piece (yet), so a pass hears the speech up to it: letting go after a
+// short silence then often needs no pass at all. Let go: the
+// last part pass is the final text when it reached TAIL_MS past the last speech, else one closing pass over the rest.
+// Pure, so tools/test-reply.py runs them in node.
+const FRAME_MS = 20, TICK_MS = 1500, FIRST_MS = 2500, SPEECH_MS = 300, PAUSE_MS = 500, MIN_CLOSE_MS = 3000,
+  HUSH_MS = 200, END_MS = 300, TAIL_MS = 200, MAX_PIECE_MS = 20000, QUIET_WIN = 300, SKIP_MS = 1000, SLOW_MS = 6000,
+  QUIET_MIN = 0.004, QUIET_FLOOR_X = 3.2, QUIET_SPEECH_X = 0.3, BINS = 50;
+const frames = ms => Math.round(ms / FRAME_MS);
+// Levels counted in BINS bins of 2 dB from -100 dB (levelBin()); quietLine(counts) the line between quiet and speech.
+function levelBin(lv) { return Math.max(0, Math.min(BINS - 1, Math.floor((20 * Math.log10(Math.max(lv, 1e-6)) + 100) / 2))); }
+function quietLine(counts) {
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (!total) return QUIET_MIN;
+  const at = q => { let n = 0; for (let i = 0; i < BINS; i++) { n += counts[i]; if (n >= q * total) return 10 ** ((i * 2 - 99) / 20); } return 1; };
+  return Math.max(QUIET_MIN, Math.min(at(0.1) * QUIET_FLOOR_X, at(0.9) * QUIET_SPEECH_X));
+}
+function wordsOf(text) { return String(text || "").split(/\s+/).filter(Boolean); }
+function wordKey(w) { return w.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ""); }
+// What to send now. p: {lv: frame levels, thr, cut: the open piece's first frame, n: frames heard, lastTo: the frame
+// the last part pass on this piece reached (-1: none), since: ms since the last pass was sent}. Answers {kind, to}:
+// "close" (the piece from cut to `to`, its words final), "part" (cut to n, a guess), "skip" (no speech: move the cut
+// to `to`) or "" (nothing yet).
+function planPass(p) {
+  let speech = 0, first = -1, last = -1, run = 0, runAt = -1, pause = -1;
+  for (let i = p.cut; i < p.n; i++) {
+    if (p.lv[i] >= p.thr) { if (first < 0) first = i; speech++; last = i; run = 0; continue; }
+    if (first < 0) continue;
+    if (!run) runAt = i;
+    run++;
+    if (pause < 0 && run === frames(PAUSE_MS) && speech >= frames(SPEECH_MS) && runAt - p.cut >= frames(MIN_CLOSE_MS))
+      pause = runAt + frames(PAUSE_MS / 2);
+  }
+  if (first < 0) return p.n - p.cut > frames(SKIP_MS) ? {kind: "skip", to: p.n - frames(QUIET_WIN)} : {kind: "", to: p.cut};
+  if (pause >= 0) return {kind: "close", to: pause};
+  if (p.n - p.cut > frames(MAX_PIECE_MS))
+    return {kind: "close", to: quietest(p.lv, p.cut + frames(MAX_PIECE_MS / 2), p.n - frames(PAUSE_MS))};
+  const ready = p.n - first >= frames(FIRST_MS) && speech >= frames(SPEECH_MS) && last > p.lastTo;
+  if (ready && (run >= frames(END_MS) || p.since >= TICK_MS && run < frames(HUSH_MS))) return {kind: "part", to: p.n};
+  return {kind: "", to: p.cut};
+}
+function quietest(lv, a, b) {  // the middle of the quietest QUIET_WIN in frames a..b
+  const w = frames(QUIET_WIN);
+  if (b - a <= w) return a;
+  let sum = 0, best = Infinity, at = a;
+  for (let i = a; i < b; i++) {
+    sum += lv[i];
+    if (i - a >= w) sum -= lv[i - w];
+    if (i - a >= w - 1 && sum < best) { best = sum; at = i - w + 1; }
+  }
+  return at + Math.floor(w / 2);
+}
+// Where a pass's words go on from the piece's committed words: after as many words as were committed, or, when the
+// pass reads them differently, one or two words either side, where its word matches the last committed one.
+function alignAt(done, W) {
+  const k = done.length;
+  if (!k || done.every((w, i) => i < W.length && wordKey(w) === wordKey(W[i]))) return k;
+  for (const j of [k - 1, k + 1, k - 2, k + 2]) if (j >= 1 && j <= W.length && wordKey(W[j - 1]) === wordKey(done[k - 1])) return j;
+  return k;
+}
+// A part pass's text on the open piece {done: committed words, prev: the last part pass's words}: after the committed
+// words, what it and the last pass agree on as a prefix, less this pass's last word (cut at the edge of the sound), is
+// committed; the rest is interim. Only the words after the committed ones are compared, so a committed word heard
+// differently later stalls nothing.
+function agreeStep(piece, text) {
+  const W = wordsOf(text), j = alignAt(piece.done, W), jp = alignAt(piece.done, piece.prev);
+  let a = 0;
+  while (j + a < W.length && jp + a < piece.prev.length && wordKey(W[j + a]) === wordKey(piece.prev[jp + a])) a++;
+  const keep = Math.max(j, Math.min(j + a, W.length - 1)), commit = W.slice(j, keep);
+  return {commit, interim: W.slice(keep), piece: {done: piece.done.concat(commit), prev: W}};
+}
+// A closing pass's text: every word after the committed ones goes in; the next piece starts empty.
+function closeStep(piece, text) {
+  const W = wordsOf(text);
+  return {commit: W.slice(alignAt(piece.done, W)), interim: [], piece: {done: [], prev: []}};
+}
+// Space let go. f: {last: the last part pass on the open piece {from, to, text} or null, cut, n, lastSpeech (the last
+// frame above the quiet line, -1: none)}. "none": nothing said since the cut; "use": the last part pass heard it all;
+// "send": one closing pass over cut..n.
+function finalPlan(f) {
+  if (f.lastSpeech < f.cut) return "none";
+  if (f.last && f.last.from === f.cut && f.last.to >= Math.min(f.n, f.lastSpeech + frames(TAIL_MS))) return "use";
+  return "send";
 }
 
 // Copy and Send to Session take every answer under what is shown, the same ones the bar counts, in the order their
@@ -657,42 +758,116 @@ function stopMic(me) {
   if (me.ctx) me.ctx.close().catch(() => {});
   if (me.stream) me.stream.getTracks().forEach(k => k.stop());
 }
-function meter(me, bars) {  // the five bars follow the microphone's level (root mean square, eased down)
+// The microphone as 16 kHz mono samples (Web Audio, an AudioWorklet; a ScriptProcessor where that cannot load), kept
+// in memory for the hold, so any stretch of it can be sent as a WAV of its own; and its level per FRAME_MS frame, for
+// the meter and for planPass(). A context that will not run at 16 kHz records at its own rate (the server reads any).
+const TAP = `registerProcessor("tap", class extends AudioWorkletProcessor {
+  constructor() { super(); this.b = new Float32Array(Math.round(sampleRate / 10)); this.i = 0;
+    this.port.onmessage = () => { this.port.postMessage(this.b.slice(0, this.i)); this.i = 0; }; }
+  process(ins) { const c = ins[0] && ins[0][0];
+    if (c) for (let k = 0; k < c.length; k++) { this.b[this.i++] = c[k];
+      if (this.i === this.b.length) { this.port.postMessage(this.b); this.b = new Float32Array(this.b.length); this.i = 0; } }
+    return true; } });`;
+async function capture(me) {
+  let ctx;
+  try { ctx = new AudioContext({sampleRate: 16000}); } catch (e) { ctx = new AudioContext(); }
+  me.ctx = ctx;
+  me.rate = ctx.sampleRate;
+  me.fl = Math.round(me.rate * FRAME_MS / 1000);
+  me.pcm = new Float32Array(me.rate * 30);
+  me.n = 0; me.lv = []; me.hist = new Array(BINS).fill(0); me.level = 0;
+  const src = ctx.createMediaStreamSource(me.stream), mute = ctx.createGain();
+  mute.gain.value = 0;
+  mute.connect(ctx.destination);
   try {
-    me.ctx = new AudioContext();
-    const an = me.ctx.createAnalyser();
-    an.fftSize = 512;
-    me.ctx.createMediaStreamSource(me.stream).connect(an);
-    const buf = new Float32Array(an.fftSize);
-    let lv = 0;
-    const tick = () => {
-      if (me.stopped) return;
-      an.getFloatTimeDomainData(buf);
-      let sum = 0;
-      for (const x of buf) sum += x * x;
-      lv = Math.max(Math.min(1, Math.sqrt(Math.sqrt(sum / buf.length) * 8)), lv * 0.85);
-      if (me.bars) me.bars.forEach((b, i) => { b.style.transform = `scaleY(${Math.max(0.15, Math.min(1, lv * (1.3 - Math.abs(i - 2) * 0.2)))})`; });
-      me.raf = requestAnimationFrame(tick);
-    };
-    tick();
-  } catch (e) { /* no meter; the recording goes on */ }
+    const url = URL.createObjectURL(new Blob([TAP], {type: "text/javascript"}));
+    await ctx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    const node = me.tap = new AudioWorkletNode(ctx, "tap");
+    node.port.onmessage = e => take(me, e.data);
+    src.connect(node);
+    node.connect(mute);
+  } catch (e) {
+    const sp = ctx.createScriptProcessor(4096, 1, 1);
+    sp.onaudioprocess = e => take(me, new Float32Array(e.inputBuffer.getChannelData(0)));
+    src.connect(sp);
+    sp.connect(mute);
+  }
+  if (ctx.state !== "running") await ctx.resume().catch(() => {});
+}
+function take(me, x) {  // samples in: kept, levelled, and maybe a pass sent
+  if (me.closed) return;
+  if (me.n + x.length > me.pcm.length) {
+    const b = new Float32Array(Math.max(me.pcm.length * 2, me.n + x.length));
+    b.set(me.pcm.subarray(0, me.n));
+    me.pcm = b;
+  }
+  me.pcm.set(x, me.n);
+  me.n += x.length;
+  for (let f = me.lv.length; (f + 1) * me.fl <= me.n; f++) {
+    let s = 0;
+    for (let i = f * me.fl; i < (f + 1) * me.fl; i++) s += me.pcm[i] * me.pcm[i];
+    const r = Math.sqrt(s / me.fl);
+    me.lv.push(r);
+    me.hist[levelBin(r)]++;
+    me.level = r;
+  }
+  if (me.flushed && x.length < me.rate / 10) me.flushed();
+  pump(me);
+}
+function flushTap(me) {  // the worklet's last part-filled batch, so the end of what was said is not left out
+  if (!me.tap) return Promise.resolve();
+  return new Promise(ok => {
+    const done = () => { me.flushed = null; ok(); };
+    me.flushed = done;
+    me.tap.port.postMessage("flush");
+    setTimeout(done, 150);
+  });
+}
+function wavOf(me, from, to) {  // frames from..to as a 16-bit mono WAV, base64
+  const a = Math.min(from * me.fl, me.n), b = Math.min(to * me.fl, me.n), len = Math.max(0, b - a);
+  const buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + len * 2, true); str(8, "WAVEfmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, me.rate, true); v.setUint32(28, me.rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, len * 2, true);
+  for (let i = 0; i < len; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, me.pcm[a + i])) * 0x7fff, true);
+  const u = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function lastSpeech(me) {
+  const thr = quietLine(me.hist);
+  for (let i = me.lv.length - 1; i >= me.cut; i--) if (me.lv[i] >= thr) return i;
+  return -1;
+}
+function meter(me) {  // the five bars follow the microphone's level (root mean square, eased down)
+  let lv = 0;
+  const tick = () => {
+    if (me.stopped) return;
+    lv = Math.max(Math.min(1, Math.sqrt(me.level * 8)), lv * 0.85);
+    if (me.bars) me.bars.forEach((b, i) => { b.style.transform = `scaleY(${Math.max(0.15, Math.min(1, lv * (1.3 - Math.abs(i - 2) * 0.2)))})`; });
+    me.raf = requestAnimationFrame(tick);
+  };
+  tick();
 }
 function listening(me) {  // the microphone records and the server answers: say so
   if (rec !== me || me.stopped) return;
   me.bars = vline(me.t, "on", "Listening… release Space to stop.");
 }
 async function listen(t) {
-  const me = rec = {t, key: t.parentElement.dataset.for, chunks: [], stopped: false, mic: false, up: false};
+  const me = rec = {t, key: t.parentElement.dataset.for, stopped: false, mic: false, up: false, live: true, cut: 0,
+    piece: {done: [], prev: []}, last: null, out: null, sentAt: -1e9, said: "", before: "", interim: []};
   const server = api().dictation("ready");
   if (!navigator.mediaDevices) { failed(me, micNote(null)); return; }
   try {
     me.stream = await navigator.mediaDevices.getUserMedia({audio: true});
   } catch (e) { failed(me, micNote(e)); return; }
   if (me.stopped) { stopMic(me); return; }  // let go before the microphone was up: nothing to send
-  me.mr = new MediaRecorder(me.stream, {audioBitsPerSecond: 32000});  // speech: small enough for the bridge
-  me.mr.ondataavailable = e => { if (e.data && e.data.size) me.chunks.push(e.data); };
-  me.mr.start();
+  try { await capture(me); } catch (e) { failed(me, micNote(e)); return; }
   me.mic = true;
+  dlog("mic", {rate: me.rate, via: me.tap ? "worklet" : "script"});
   meter(me);
   let a = await server;
   if (me.stopped) return;  // let go meanwhile: finish() sends it, and the panel starts or waits for the server itself
@@ -704,35 +879,115 @@ async function listen(t) {
   if (!a || !a.up) { failed(me, a && a.note ? a : {note: "Voice to Text could not be reached."}); return; }
   me.up = true;
   listening(me);
+  pump(me);
 }
-function finish() {  // Space let go (or the box, or the window, lost the keyboard): what was said, to text
+// ---------- text while speaking: planPass() decides, pass() sends, land() commits or shows the guess ----------
+const dlog = (e, o) => { if (window.dictLog) window.dictLog.push(Object.assign({e, t: performance.now()}, o)); };
+function boxOf(me) {  // the hold's box, found again by its key when it was redrawn meanwhile
+  if (me.t.isConnected) return me.t;
+  return document.querySelector(`.ansrow[data-for="${CSS.escape(me.key)}"] .ans`) || me.t;
+}
+function pump(me) {  // while Space is held: one pass at a time, never queued, always up to the newest sound
+  if (me.stopped || !me.up || !me.live || me.out) return;
+  const p = planPass({lv: me.lv, thr: quietLine(me.hist), cut: me.cut, n: me.lv.length,
+    lastTo: me.last && me.last.from === me.cut ? me.last.to : -1, since: performance.now() - me.sentAt});
+  if (p.kind === "skip") { me.cut = p.to; me.last = null; return; }
+  if (p.kind) pass(me, p.kind, me.cut, p.to);
+}
+async function pass(me, kind, from, to) {
+  const out = me.out = {kind, from, to, at: performance.now()};
+  me.sentAt = out.at;
+  dlog("send", {kind, from, to});
+  let a = null;
+  // the context is what the hold said before this piece: words of the piece itself in the prompt make the recogniser
+  // leave them out of its answer
+  try { a = await api().dictate(wavOf(me, from, to), "audio/wav", kind, me.before); } catch (e) { a = null; }
+  me.out = null;
+  const ms = performance.now() - out.at;
+  dlog("land", {kind, ms, text: a && a.text, note: a && a.note});
+  // a pass that failed or took longer than SLOW_MS: no more passes this hold; letting go sends the rest in one, as
+  // before this existed
+  if (!a || typeof a.text !== "string" || ms > SLOW_MS) me.live = false;
+  if (a && typeof a.text === "string") land(me, out, a.text);
+  if (out.done) out.done();
+  pump(me);
+}
+function land(me, out, text) {
+  if (out.from !== me.cut) return;
+  const r = out.kind === "close" ? closeStep(me.piece, text) : agreeStep(me.piece, text);
+  me.piece = r.piece;
+  if (out.kind === "close") { me.cut = out.to; me.last = null; }  // me.before follows below, after the commit
+  else me.last = {from: out.from, to: out.to, text};
+  me.interim = r.interim;
+  const t = boxOf(me);
+  if (r.commit.length) {
+    const words = r.commit.join(" ");
+    me.said = (me.said ? me.said + " " : "") + words;
+    dlog("commit", {words});
+    putDictation(t, words);
+  }
+  if (out.kind === "close") me.before = me.said;
+  ghost(t, me.interim);
+  if (r.interim.length) dlog("interim", {words: r.interim.join(" ")});
+}
+// The words not yet committed, dim at the caret. A textarea draws one colour, so while they show, a copy of the box
+// (.ghost, the same font, padding and width) draws its text with them in place, and the box's own text is clear
+// (its caret and selection still drawn); the box grows to the copy's height.
+function ghost(t, words) {
+  const row = t.parentElement;
+  if (!row) return;
+  let g = row.querySelector(".ghost");
+  if (!words || !words.length) {
+    if (g) { g.remove(); t.classList.remove("ghosted"); grow(t); }
+    return;
+  }
+  if (!g) { g = document.createElement("div"); g.className = "ghost"; g.setAttribute("aria-hidden", "true"); t.after(g); }
+  const cs = getComputedStyle(t);
+  for (const k of ["font", "letterSpacing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+    "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"]) g.style[k] = cs[k];
+  g.style.left = t.offsetLeft + "px";
+  g.style.top = t.offsetTop + "px";
+  g.style.width = t.offsetWidth + "px";
+  const at = t.selectionEnd, before = t.value.slice(0, at), after = t.value.slice(at);
+  const tail = document.createElement("span");
+  tail.className = "tail";
+  tail.textContent = joinDictation(before, after, words.join(" ")).s;
+  g.replaceChildren(before, tail, after + "​");
+  t.classList.add("ghosted");
+  t.style.height = "auto";
+  t.style.height = Math.max(t.scrollHeight, g.offsetHeight) + "px";
+  size();
+}
+async function finish() {  // Space let go (or the box, or the window, lost the keyboard): the rest of what was said, to text
   const me = rec;
   if (!me) return;
   rec = null;
   me.stopped = true;
   if (!me.mic) { vline(me.t, ""); return; }  // the microphone was not up yet: listen() stops it, nothing is sent
+  dlog("release", {});
   cancelAnimationFrame(me.raf);
   busy.add(me.t);
   vline(me.t, "busy", "Transcribing…");
-  me.mr.onstop = async () => {
-    stopMic(me);
-    let a;
-    try {
-      const b64 = await new Promise((ok, no) => {
-        const r = new FileReader();
-        r.onload = () => ok(String(r.result).split(",")[1] || "");
-        r.onerror = no;
-        r.readAsDataURL(new Blob(me.chunks, {type: me.mr.mimeType}));
-      });
-      a = await api().dictate(b64, me.mr.mimeType || "audio/webm");
-    } catch (e) { a = {note: "Voice to Text could not be reached."}; }
-    busy.delete(me.t);
-    let t = me.t;
-    if (!t.isConnected) t = document.querySelector(`.ansrow[data-for="${CSS.escape(me.key)}"] .ans`) || t;  // redrawn meanwhile
-    if (a && a.text) { vline(t, ""); putDictation(t, a.text); }
-    else vline(t, "note", (a && a.note) || "Voice to Text could not be reached.", a && a.link);
-  };
-  me.mr.stop();
+  await flushTap(me);
+  me.closed = true;
+  stopMic(me);
+  if (me.out) await new Promise(ok => { me.out.done = ok; });
+  const n = me.lv.length;
+  let plan = finalPlan({last: me.last, cut: me.cut, n, lastSpeech: lastSpeech(me)}), a = null;
+  if (plan === "none" && !me.said) plan = "send";  // nothing heard at all: the server says so, as before
+  dlog("final", {plan});
+  if (plan === "use") land(me, {kind: "close", from: me.cut, to: n}, me.last.text);
+  else if (plan === "send") {
+    try { a = await api().dictate(wavOf(me, me.cut, n), "audio/wav", me.said ? "close" : "whole", me.before); }
+    catch (e) { a = {note: "Voice to Text could not be reached."}; }
+    if (a && typeof a.text === "string") land(me, {kind: "close", from: me.cut, to: n}, a.text);
+  }
+  busy.delete(me.t);
+  const t = boxOf(me);
+  ghost(t, []);
+  if (a && typeof a.text !== "string") vline(t, "note", a.note || "Voice to Text could not be reached.", a.link);
+  else vline(t, "");
+  dlog("done", {text: me.said});
 }
 function putDictation(t, text) {  // at the caret, keeping the box's keyboard if it has it
   if (!t.isConnected) return;
@@ -756,7 +1011,11 @@ function changed(t) {
   const sid = S.sid, passage = sources[key] || "", text = t.value;
   saveJob[key] = setTimeout(() => api().draft(sid, key, passage, text), 300);
 }
-document.addEventListener("input", e => { if (e.target.classList.contains("ans")) changed(e.target); });
+document.addEventListener("input", e => {
+  if (!e.target.classList.contains("ans")) return;
+  changed(e.target);
+  if (rec && rec.interim.length && boxOf(rec) === e.target) ghost(e.target, rec.interim);  // typed while listening
+});
 document.addEventListener("keyup", e => {
   if (e.code === "Space" && spaceBox) spaceStep(spaceBox, {type: "up"});
 });

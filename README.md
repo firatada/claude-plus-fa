@@ -81,7 +81,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 3. Click **Send to Session**. The session's terminal comes to the front with each reply you answered pasted in full, with **My answer** under the passages you answered. Claude Code may show the block as a collapsed paste. Press Enter to send it.
 
 - Claude gets each paragraph you answered, with your answer.
-- Hold **Space** in an answer box to speak your answer, as in Claude Code: a space appears, then *Listening…* with a level meter; let go and your words go in at the cursor. A quick tap still types a space. The speech is turned into text on your own PC by a local speech-to-text server (see [Dictation](#dictation)); nothing is kept. When the microphone or the server is missing, the note under the box says so, with a link that helps.
+- Hold **Space** in an answer box to speak your answer, as in Claude Code: a space appears, then *Listening…* with a level meter; your words appear at the cursor while you speak (the newest ones dim until they settle), and when you let go the rest is filled in. A quick tap still types a space. The speech is turned into text on your own PC by a local speech-to-text server (see [Dictation](#dictation)); nothing is kept. When the microphone or the server is missing, the note under the box says so, with a link that helps.
 - Your answers are kept until you send them, even if you fold the window or restart.
 - Click **Pin** at the top right of a reply to keep it: it becomes a chip under the tabs, still there after newer prompts and restarts. Click the chip to read and answer it again, **Latest** to go back, its x to unpin it. A session keeps 8 pins.
 - **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.
@@ -184,7 +184,7 @@ Put any of these in `~/.claude/claude-plus.local.json` (the installer never chan
 
 ## Dictation
 
-Holding **Space** in a reply window answer box sends what you said to a speech-to-text server on your own PC: `POST <url>/api/dictate` with the audio of one utterance (WebM/Opus) as the body and `language` and `prompt` as query parameters, answering `{"text": "..."}` (errors as `{"error": "..."}`); `GET <url>/api/health` answers while it runs. Set it up in the same `~/.claude/claude-plus.local.json`:
+Holding **Space** in a reply window answer box sends what you say to a speech-to-text server on your own PC: `POST <url>/api/dictate` with a stretch of audio (WAV) as the body and `language` and `prompt` as query parameters, answering `{"text": "..."}` (errors as `{"error": "..."}`); `GET <url>/api/health` answers while it runs. While Space is held the words since the last pause are sent again about every 1.5 s, one request at a time, so words show while you speak; on a CPU-only PC each request takes about 2 to 4 s, so the words come in steps of that size. Set it up in the same `~/.claude/claude-plus.local.json`:
 
 | Setting | Default | What it does |
 |---|---|---|
