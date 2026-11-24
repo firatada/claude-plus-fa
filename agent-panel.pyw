@@ -697,6 +697,24 @@ def front_session(front, before, sessions, window, mine):
     return tab_session(hwnd, title, here, window)
 
 
+RECENT_TERMINALS = 8  # session terminals remembered in the order they were last in front (tray_click())
+
+
+def note_terminal(recent, hwnd, wins):
+    """The session terminals in the order they were last in front, newest first, after the window hwnd came to the
+    front: hwnd goes first when it is a session's window (one of wins), anything else (the browser, the taskbar, the
+    panel) leaves the list as it is. At most RECENT_TERMINALS, each once."""
+    if not hwnd or hwnd not in wins:
+        return recent
+    return [hwnd] + [h for h in recent if h != hwnd][:RECENT_TERMINALS - 1]
+
+
+def last_terminal(recent, alive):
+    """The terminal a tray click brings back: the newest in recent that alive(window) still holds (the window exists
+    and still shows an open session), else None. A minimised one counts; bring_front() restores it."""
+    return next((h for h in recent if alive(h)), None)
+
+
 def bring_front(hwnd):
     """Put a window in front where it was: restored only if minimised (never maximised), the foreground (a lone
     Alt lets this process take it when Windows refuses), and the top of the ordinary windows. True when it is the
@@ -2072,6 +2090,11 @@ def tray(events, opts):
                 self._icon_handle = win32.LoadImage(None, path, win32.IMAGE_ICON, n, n, win32.LR_LOADFROMFILE)
             finally:
                 os.remove(path)
+
+        def __call__(self):
+            """A left click on the icon (pystray calls this on WM_LBUTTONUP): the panel and the terminal last in front
+            (tray_click()). The menu's own Show or Hide stays the plain toggle."""
+            events.put("tray")
     menu = pystray.Menu(
         pystray.MenuItem("Show or Hide  (Ctrl+Alt+C)", lambda: events.put("toggle"), default=True),
         pystray.MenuItem("Refresh", lambda: events.put("refresh")),
@@ -2641,6 +2664,7 @@ class Panel:
                 self.drafts = None
         self.reads, self.tabs, self.reply_sid, self.reply_pick = {}, [], None, None
         self.front_key = None  # (window, shown name) in front at the last poll turn (follow_terminal)
+        self.terminals = []  # session terminals, newest in front first (note_terminal(), read by tray_click())
         # every reply the page was handed, {(session id, message id): (text, at)}, newest last, SEEN_MAX at most: Send
         # to Session and Copy put in exactly the text the window showed, even one held while an answer box was typed in
         self.reply_seen = {}
@@ -2729,6 +2753,8 @@ class Panel:
                     ev = self.events.get_nowait()
                     if ev == "toggle":
                         self.toggle()
+                    elif ev == "tray":
+                        self.tray_click()
                     elif ev == "refresh":
                         self.last_scan = 0
                     elif ev == "quit":
@@ -2955,6 +2981,21 @@ class Panel:
             user32.ShowWindow(self.hwnd, 5)
             self.raise_panel()
         self.update_strip()  # shown beside the panel, hidden with it
+
+    def tray_click(self):
+        """A left click on the tray icon: as Ctrl+Alt+C, then, while the panel shows, the session terminal last in
+        front comes back too (restored if minimised; with several tabs only the window, no key is sent), so the user
+        is back where they were typing. The click gave this process the right to take the foreground: it is used
+        here, in the same event, before any other input can take it away. The panel goes right under the terminal
+        (lift(), as after a card click), the strip and the reply window with it."""
+        self.toggle()
+        if not self.visible:
+            return
+        wins = set(self.wins.values())
+        hwnd = last_terminal(self.terminals, lambda h: h in wins and user32.IsWindow(h))
+        if hwnd:
+            bring_front(hwnd)
+            self.lift(hwnd)
 
     def show(self):
         """A second start (the desktop shortcut): as Ctrl+Alt+C, but never hides the panel."""
@@ -3983,6 +4024,7 @@ class Panel:
         until a prompt is typed after it. The panel's own windows (the panel, the strip, the reply window) and
         windows that are no session's terminal leave the tab alone; nothing is focused. True when the tab changed."""
         before, self.front_key = self.front_key, front
+        self.terminals = note_terminal(self.terminals, raw[0], set(self.wins.values()))  # for tray_click()
         if not self.reply_mod or not self.tabs:
             return False
         s = front_session(raw, before, self.sessions, lambda o: self.wins.get(o.get("pid")), own)
