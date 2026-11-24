@@ -8,9 +8,9 @@
      tab per open session (its whole name, fitted on one or two lines, and under it the panel's state dot and the time
      of its last reply in very small type; the one shown outlined; equal columns, wrapping into more rows), a
      button that folds the window to its head or opens it again, and right under the tabs a line naming the session
-     shown, its folder and the times of its last reply and of the prompt it answers (agent-panel.pyw sends it with
-     reply.head()). A tab press released in place shows that session; a press on the head may drag the window and
-     the strip together. Under the head it shows every reply Claude gave in that session since the prompt the user
+     shown, its folder (a link: a click opens it in File Explorer) and the times of its last reply and of the prompt
+     it answers (agent-panel.pyw sends it with reply.head()). A tab press released in place shows that session; a
+     press on the head may drag the window and the strip together. Under the head it shows every reply Claude gave in that session since the prompt the user
      last typed there, one under the other (agent-reply.py reads them from the transcript; agent-panel.pyw sends them with
      reply.show()), its markdown drawn as Claude Code draws it: headings, bold, italics, strikethrough, inline code,
      links (web addresses in the browser; file:/// links and Windows paths found on disk with Windows' own handler,
@@ -600,10 +600,16 @@ function linkPaths() {
     settle();
   }, () => want.forEach(p => pathSeen.delete(p)));
 }
+// a click on a link (in a reply, or the folder in the head): agent-panel.pyw opens it, never the page itself
+function openLink(a) {
+  tipHide();
+  document.querySelectorAll(".lnote").forEach(n => n.remove());
+  Promise.resolve(api().link(a.dataset.url)).then(r => { if (r && r.note && a.isConnected) linkNote(a, r.note); }, () => {});
+}
 // a link that could not open: one short line at it ("File not found"), gone after LINK_NOTE_MS or at the next click
 const LINK_NOTE_MS = 4000;
 function linkNote(a, text) {
-  document.querySelectorAll("#replies .lnote").forEach(n => n.remove());
+  document.querySelectorAll(".lnote").forEach(n => n.remove());
   const n = document.createElement("span");
   n.className = "lnote";
   n.setAttribute("role", "status");
@@ -1127,12 +1133,8 @@ document.addEventListener("click", e => {
   if (e.target.closest("#ask [data-cancel]")) { askHide(); return; }
   const a = e.target.closest("a.lnk");
   if (a && a.dataset.settings) { e.preventDefault(); tipHide(); api().settings(a.dataset.settings); return; }  // its box stays
-  if (a) {  // never opened in the page itself; its paragraph's box is not opened or toggled
-    e.preventDefault(); tipHide();
-    document.querySelectorAll("#replies .lnote").forEach(n => n.remove());
-    Promise.resolve(api().link(a.dataset.url)).then(r => { if (r && r.note && a.isConnected) linkNote(a, r.note); }, () => {});
-    return;
-  }
+  if (a && a.closest("#head")) { e.preventDefault(); return; }  // the head's press opens it on release (below)
+  if (a) { e.preventDefault(); openLink(a); return; }  // never opened in the page itself; its paragraph's box is not opened or toggled
   if (e.target.closest("#replies .lnote")) return;
   const row = e.target.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
@@ -1364,7 +1366,8 @@ function drawHead(h) {
   f.classList.toggle("shut", !h.open);
   f.dataset.tip = h.open ? "Folds the reply window to its tabs" : "Opens the reply window";
   f.setAttribute("aria-label", h.open ? "Fold the reply window" : "Open the reply window");
-  $("meta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · ${esc(h.meta.where)}${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
+  // the folder is a link: a click opens it in File Explorer (as a folder link in a reply opens); the name stays text
+  $("meta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · <a class="lnk" data-url="${esc(h.meta.where)}" data-tip="Opens this folder in File Explorer">${esc(h.meta.where)}</a>${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
   document.body.classList.toggle("folded", !h.open);
   tipHide();
   size();
@@ -1407,7 +1410,7 @@ $("head").addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
   e.preventDefault();
   try { $("head").setPointerCapture(e.pointerId); } catch (_) {}
-  pressed = {b: e.target.closest("button"), x: e.screenX, y: e.screenY, n: api().press()};
+  pressed = {b: e.target.closest("button, a.lnk"), x: e.screenX, y: e.screenY, n: api().press()};
 });
 $("head").addEventListener("pointermove", e => {
   if (pressed && Math.hypot(e.screenX - pressed.x, e.screenY - pressed.y) >= 4) document.body.classList.add("moving");
@@ -1419,6 +1422,7 @@ $("head").addEventListener("pointerup", e => {
   n.then(id => api().release(id)).then(moved => {
     document.body.classList.remove("moving");
     if (moved || !b) return;
+    if (b.matches("a.lnk")) { openLink(b); return; }  // the folder: the window, its tab and any answer box stay as they are
     // the head's press is cancelled, so the keyboard stays in an answer box being typed in: it is left first, so
     // what the press shows is drawn now (its draft is kept)
     if (b.id !== "fold" && document.activeElement && document.activeElement.classList.contains("ans")) document.activeElement.blur();

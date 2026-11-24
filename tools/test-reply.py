@@ -1065,6 +1065,18 @@ class Links(unittest.TestCase):
         self.assertEqual(self.go(os.path.join(self.dir, "nope", "x.txt")), {"note": "File not found"})
         self.assertEqual(self.opened, [])
 
+    def test_the_heads_folder_as_shown_opens_in_explorer(self):
+        # the head's line hands where_of() as written: spaces kept, a folder named like a script still opened
+        odd = os.path.join(self.dir, "game club", "app.py")
+        os.makedirs(odd)
+        self.assertEqual(self.go(odd), {"ok": True})
+        self.assertEqual(self.go(odd + "\\"), {"ok": True})
+        self.assertEqual([os.path.normcase(p.rstrip("\\")) for p in self.opened], [os.path.normcase(odd)] * 2)
+        self.assertEqual(self.shown, [])
+        self.assertEqual(self.go(os.path.join(self.dir, "moved away")), {"note": "File not found"})
+        self.assertEqual(len(self.opened), 2)
+        self.assertEqual(ar.link_path(r"\\wsl.localhost\Ubuntu\home\x"), r"\\wsl.localhost\Ubuntu\home\x")
+
     def test_a_program_or_script_is_shown_in_explorer_not_run(self):
         self.assertEqual(self.go(self.url(self.tool)), {"ok": True})
         self.assertEqual(self.opened, [])
@@ -1093,10 +1105,12 @@ EDGE = next((p for p in (os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge
 # script (paths() says which paths exist, link() records the address and answers "File not found" for one), and a
 # test after it that shows a reply, waits for the paths, clicks links and a paragraph and writes what it saw.
 PAGE_STUB = r"""<script>
-window.T = {links: [], asked: []};
+window.T = {links: [], asked: [], tabs: [], folds: 0};
 const T_API = {
   paths(ps) { T.asked.push(ps); return Promise.resolve(ps.filter(p => /shot|plain/.test(p))); },
   link(u) { T.links.push(u); return Promise.resolve(/gone/.test(u) ? {note: "File not found"} : {ok: true}); },
+  tab(sid) { T.tabs.push(sid); return Promise.resolve(null); },
+  fold() { T.folds++; return Promise.resolve(null); },
 };
 window.pywebview = {api: new Proxy(T_API, {get: (t, k) => k in t ? t[k] : () => Promise.resolve(null)})};
 </script>
@@ -1195,6 +1209,83 @@ class Page(unittest.TestCase):
 
     def test_links_work_in_a_pinned_reply(self):
         self.assertEqual(self.o["pinned"], [["old", "file:///C:/x/shot-old.png", ""], ["C:\\x\\plain.txt", "C:\\x\\plain.txt", ""]])
+
+
+# The folder in the head's line: a link drawn as the replies' links are; a press released in place opens it (the head
+# takes the press for its drag, so the click itself opens nothing more), shows no tab, folds nothing, opens no answer
+# box and leaves the keyboard in a box being typed in; a folder that is gone gets the short note at the link.
+HEAD_LINK_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const head = where => ({tabs: [{sid: "s1", name: "gameclub", dot: "open", when: "10:01", on: true, full: "gameclub"},
+    {sid: "s2", name: "other", dot: "open", when: "", on: false, full: "other"}],
+    meta: {name: "gameclub", where, line: "last reply 10:01, after your prompt of 10:00"}, open: true});
+  reply.show({sid: "s1", name: "gameclub", replies: [{id: "m1", when: "10:01", text: "A paragraph."}], answers: {},
+    selections: [], note: "", pins: []});
+  reply.head(head("C:\\Users\\x\\game club"));
+  await later(50);
+  const a = () => document.querySelector("#meta a.lnk");
+  const press = async el => {
+    const r = el.getBoundingClientRect(), at = {bubbles: true, cancelable: true, button: 0, pointerId: 1,
+      clientX: r.left + 3, clientY: r.top + 3, screenX: r.left + 3, screenY: r.top + 3};
+    el.dispatchEvent(new PointerEvent("pointerdown", at));
+    el.dispatchEvent(new PointerEvent("pointerup", at));
+    el.dispatchEvent(new MouseEvent("click", at));
+    await later(50);
+  };
+  const o = {link: [a().textContent, a().dataset.url, a().dataset.tip, getComputedStyle(a()).color,
+    getComputedStyle(a()).textDecorationLine, getComputedStyle(a()).cursor], meta: document.getElementById("meta").textContent};
+  document.querySelector("#replies .para").click();
+  await later(20);
+  const box = document.querySelector("#replies .ans");
+  box.focus();
+  await press(a());
+  o.opened = T.links.slice();
+  o.tabs = T.tabs.slice();
+  o.folds = T.folds;
+  o.boxes = document.querySelectorAll("#replies .ansrow").length;
+  o.focusKept = document.activeElement === box;
+  o.shown = document.querySelector(".tab.on").dataset.sid;
+  box.blur();
+  reply.head(head("C:\\Users\\x\\gone"));
+  await later(20);
+  await press(a());
+  o.note = [...document.querySelectorAll(".lnote")].map(n => [n.textContent, n.previousElementSibling.textContent, n.parentElement.id]);
+  o.opened2 = T.links.slice();
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class HeadLink(unittest.TestCase):
+    """The session's folder in the head's line is a live link, in the real page."""
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(HEAD_LINK_TEST)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_drawn_as_a_link_with_its_path_whole(self):
+        text, url, tip, color, line, cursor = self.o["link"]
+        self.assertEqual((text, url), ("C:\\Users\\x\\game club",) * 2)
+        self.assertEqual(tip, "Opens this folder in File Explorer")
+        self.assertEqual((color, line, cursor), ("rgb(27, 77, 245)", "underline", "pointer"))
+        self.assertEqual(self.o["meta"], "gameclub · C:\\Users\\x\\game club · last reply 10:01, after your prompt of 10:00")
+
+    def test_a_click_opens_it_once_and_changes_nothing_else(self):
+        self.assertEqual(self.o["opened"], ["C:\\Users\\x\\game club"])
+        self.assertEqual((self.o["tabs"], self.o["folds"], self.o["shown"]), ([], 0, "s1"))
+        self.assertEqual(self.o["boxes"], 1)  # the box opened before stays, no other opens
+        self.assertTrue(self.o["focusKept"])
+
+    def test_a_folder_that_is_gone_gets_the_note_at_the_link(self):
+        self.assertEqual(self.o["opened2"], ["C:\\Users\\x\\game club", "C:\\Users\\x\\gone"])
+        self.assertEqual(self.o["note"], [["File not found", "C:\\Users\\x\\gone", "meta"]])
 
 
 # The head's tabs at the reply window's width on a 1920 px screen (808 px): nine sessions, long names among them.
