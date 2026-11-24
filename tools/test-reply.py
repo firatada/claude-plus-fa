@@ -1120,13 +1120,13 @@ const later = ms => new Promise(r => setTimeout(r, ms));
 """
 
 
-def page_run():
+def page_run(test=PAGE_TEST, size="800,600"):
     with open(os.path.join(ROOT, "agent-reply.html"), encoding="utf-8") as f:
         page = f.read()
     at = page.index("<script>")
     page = page[:at] + PAGE_STUB + page[at:]
     at = page.rindex("</body>")
-    page = page[:at] + PAGE_TEST + page[at:]
+    page = page[:at] + test + page[at:]
     d = tempfile.mkdtemp()
     try:
         path = os.path.join(d, "page.html")
@@ -1135,6 +1135,7 @@ def page_run():
         import subprocess
         r = subprocess.run([EDGE, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
                             "--user-data-dir=" + os.path.join(d, "profile"), "--virtual-time-budget=3000", "--dump-dom",
+                            "--window-size=" + size, "--force-device-scale-factor=1",
                             "file:///" + path.replace("\\", "/")], capture_output=True, text=True, encoding="utf-8",
                            timeout=90)
         m = re.search(r'<pre id="tout">(.*?)</pre>', r.stdout, re.S)
@@ -1177,6 +1178,57 @@ class Page(unittest.TestCase):
 
     def test_links_work_in_a_pinned_reply(self):
         self.assertEqual(self.o["pinned"], [["old", "file:///C:/x/shot-old.png", ""], ["C:\\x\\plain.txt", "C:\\x\\plain.txt", ""]])
+
+
+# The head's tabs at the reply window's width on a 1920 px screen (808 px): nine sessions, long names among them.
+TABS_TEST = r"""<pre id="tout"></pre><script>
+(async () => {
+  const names = ["order_processing", "audio_capture", "claude-plus", "warehouse-portal", "mindmap", "photoframe",
+    "game club", "falcon", "beta"];
+  const head = n => ({tabs: names.concat(["sales-forecasts", "one two three four five six seven eight"]).slice(0, n).map((x, i) => ({sid: "s" + i, name: x,
+    dot: i === 1 ? "work" : "open", when: "22:0" + i, on: i === 0, full: x})), meta: null, open: true});
+  const look = () => [...document.querySelectorAll(".tab")].map(t => {
+    const nm = t.querySelector(".nm"), r = t.getBoundingClientRect();
+    return {name: nm.textContent, cut: nm.classList.contains("cut") || nm.scrollWidth > nm.clientWidth,
+      size: parseFloat(getComputedStyle(nm).fontSize), h: r.height, top: Math.round(r.top), time: t.querySelector(".at").textContent};
+  });
+  reply.head(head(9));
+  await new Promise(r => setTimeout(r, 50));
+  const o = {nine: look(), fold: document.getElementById("fold").getBoundingClientRect().height};
+  reply.head(head(11));
+  await new Promise(r => setTimeout(r, 50));
+  o.eleven = look();
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class Tabs(unittest.TestCase):
+    """The session tabs in the real page: whole names, one height, more rows rather than tabs out of sight."""
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(TABS_TEST, "808,300")
+
+    def test_nine_tabs_share_one_row_with_every_name_whole_and_readable(self):
+        self.assertNotIn("error", self.o)
+        tabs = self.o["nine"]
+        self.assertEqual([t["name"] for t in tabs][:2], ["order_processing", "audio_capture"])
+        self.assertEqual(len({t["top"] for t in tabs}), 1)
+        self.assertFalse([t["name"] for t in tabs if t["cut"]])
+        self.assertTrue(all(t["size"] >= 10 for t in tabs))
+        self.assertEqual(tabs[0]["time"], "22:00")
+
+    def test_tabs_and_the_fold_button_are_one_height(self):
+        self.assertEqual({t["h"] for t in self.o["nine"] + self.o["eleven"]}, {self.o["fold"]})
+
+    def test_more_tabs_wrap_into_a_second_row_and_only_a_name_too_long_for_two_lines_is_cut(self):
+        tabs = self.o["eleven"]
+        self.assertEqual(len({t["top"] for t in tabs}), 2)
+        self.assertEqual([t["name"] for t in tabs if t["cut"]], ["one two three four five six seven eight"])
 
 
 if __name__ == "__main__":

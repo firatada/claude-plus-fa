@@ -5,7 +5,8 @@
 <title>Field Agents Reply</title>
 <!-- The reply window (the maintainer, 2026-11-23): a window of its own at the screen's left edge, its top on the
      screenshot strip's, edged by DWM as the strip and the panel are, so it reads as its own surface. Its head holds a
-     tab per open session (the panel's state dot, its name, the time of its last reply; the one shown outlined), a
+     tab per open session (its whole name, fitted on one or two lines, and under it the panel's state dot and the time
+     of its last reply in very small type; the one shown outlined; equal columns, wrapping into more rows), a
      button that folds the window to its head or opens it again, and right under the tabs a line naming the session
      shown, its folder and the times of its last reply and of the prompt it answers (agent-panel.pyw sends it with
      reply.head()). A tab press released in place shows that session; a press on the head may drag the window and
@@ -54,24 +55,33 @@ button { cursor: pointer; }
 body.folded #head { border-bottom: 0; }
 body.folded #body, body.folded #miss, body.folded #foot, body.folded #ask { display: none; }
 body.moving, body.moving * { cursor: grabbing !important; }
-.tabrow { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.tabs { flex: 1 1 auto; display: flex; gap: 6px; align-items: center; min-width: 0; overflow: hidden; }
+/* the tabs: a grid of equal columns (tabFit()), more rows when they do not fit in one; a tab holds the session's name
+   whole on one or two lines (nameFit() sets its size, 12 px down to 10) and under it the state dot and the time of
+   its last reply in very small type; every tab and the fold button share --tabh */
+.tabrow { display: flex; gap: 6px; align-items: flex-start; min-width: 0; --tabh: 46px; }
+.tabs { flex: 1 1 0; display: grid; gap: 6px; min-width: 0; grid-auto-rows: var(--tabh); }
 .tab {
-  flex: 0 1 auto; min-width: 0; max-width: 220px; height: 34px; padding: 0 12px; display: flex; align-items: center;
-  gap: 8px; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel); color: var(--text);
-  font: 600 12px "Segoe UI", system-ui, sans-serif; transition: transform .16s ease-out;
+  min-width: 0; min-height: var(--tabh); padding: 3px 6px; display: grid; grid-template-rows: 1fr auto;
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--panel); color: var(--text);
+  text-align: left; transition: transform .16s ease-out;
 }
 .tab:hover { border-color: var(--blue); }
 .tab:active, #fold:active { transform: scale(.97); }
 .tab.on { border-color: var(--blue); box-shadow: 0 0 0 .5px var(--blue), 0 0 0 3px rgba(27, 77, 245, .12); }
-.tab .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tab .at { flex: none; font-weight: 400; color: var(--muted); font-size: 11px; }
+.tab .nm { align-self: center; min-width: 0; font: 600 12px/13px "Segoe UI", system-ui, sans-serif; white-space: nowrap;
+  overflow: hidden; }
+.tab .nm.two { white-space: normal; overflow-wrap: normal; }
+.tab .nm.any { white-space: normal; overflow-wrap: anywhere; }
+.tab .nm.cut { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; }
+.tab .sub { display: flex; align-items: center; gap: 4px; height: 12px; min-width: 0; }
+.tab .at { font: 400 9px/12px "Segoe UI", system-ui, sans-serif; color: var(--muted); }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1.5px var(--violet); }
 .dot.ask { background: var(--red); box-shadow: none; }
 .dot.work { width: 10px; height: 10px; box-shadow: none; border: 1.5px solid var(--green); border-right-color: transparent;
   animation: turn 1s linear infinite; }
 @keyframes turn { to { transform: rotate(360deg); } }
-#fold { flex: none; width: 34px; height: 34px; border: 0; border-radius: var(--r-ctl); background: none;
+#fold { flex: none; width: 34px; min-height: var(--tabh); border: 0; border-radius: var(--r-ctl); background: none;
   color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out; }
 #fold:hover { color: var(--blue); background: var(--surface2); }
 #fold svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round;
@@ -1347,7 +1357,8 @@ window.reply = {
   },
 };
 function drawHead(h) {
-  $("tabs").innerHTML = h.tabs.map(t => `<button type="button" class="tab${t.on ? " on" : ""}" tabindex="-1" data-sid="${esc(t.sid)}" data-tip="${esc(t.full)}" aria-pressed="${t.on}"><span class="dot ${t.dot}" aria-hidden="true"></span><span class="nm">${esc(t.name)}</span>${t.when ? `<span class="at">${esc(t.when)}</span>` : ""}</button>`).join("");
+  $("tabs").innerHTML = h.tabs.map(t => `<button type="button" class="tab${t.on ? " on" : ""}" tabindex="-1" data-sid="${esc(t.sid)}" data-tip="${esc(t.full)}" aria-pressed="${t.on}"><span class="nm">${esc(t.name).replace(/[_\-.\/\\]/g, "$&<wbr>")}</span><span class="sub"><span class="dot ${t.dot}" aria-hidden="true"></span>${t.when ? `<span class="at">${esc(t.when)}</span>` : ""}</span></button>`).join("");
+  tabFit();
   const f = $("fold");
   f.classList.toggle("shut", !h.open);
   f.dataset.tip = h.open ? "Folds the reply window to its tabs" : "Opens the reply window";
@@ -1358,6 +1369,32 @@ function drawHead(h) {
   size();
   return natural();
 }
+
+// The tabs share the row in equal columns, TAB_MIN to TAB_MAX wide; more than fit in one row wrap into another, so
+// every open session keeps a tab. A tab's name is never cut while it can be read whole, and stays as large as it
+// can: two lines at a size come before a smaller size on one line.
+//   for each size from NAME_SIZES' largest down to its floor:
+//     if the name fits on one line, or on two broken only at spaces and _ - . / \: keep it, done
+//   for each size from the largest down: if it fits on two lines broken anywhere: keep it, done
+//   otherwise: two lines at the floor, the rest cut with "…" (the whole name is in the tab's tooltip)
+const TAB_MIN = 72, TAB_MAX = 168, TAB_GAP = 6, NAME_LINE = 13, NAME_SIZES = [12, 11, 10];
+function tabFit() {
+  const box = $("tabs"), tabs = [...box.children], w = box.clientWidth;
+  if (!tabs.length || !w) return;
+  const cols = Math.max(1, Math.min(tabs.length, Math.floor((w + TAB_GAP) / (TAB_MIN + TAB_GAP))));
+  box.style.gridTemplateColumns = `repeat(${cols}, ${Math.min(TAB_MAX, Math.floor((w - TAB_GAP * (cols - 1)) / cols))}px)`;
+  for (const t of tabs) nameFit(t.querySelector(".nm"));
+}
+function nameFit(nm) {
+  const tries = NAME_SIZES.flatMap(px => [["", 1, px], ["two", 2, px]]).concat(NAME_SIZES.map(px => ["any", 2, px]));
+  for (const [way, lines, px] of tries) {
+    nm.className = "nm " + way;
+    nm.style.fontSize = px + "px";
+    if (nm.scrollWidth <= nm.clientWidth && nm.scrollHeight <= lines * NAME_LINE + 1) return;
+  }
+  nm.className = "nm cut";
+}
+new ResizeObserver(() => { tabFit(); size(); }).observe($("tabs"));
 
 // The head's buttons work by pointer alone, so they are out of the keyboard's order (tabindex -1): Tab never lands on
 // a session tab, the fold button or a chip.

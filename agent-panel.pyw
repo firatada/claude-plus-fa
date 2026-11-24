@@ -4178,7 +4178,7 @@ class Panel:
             dot = "ask" if s.get("waiting") else "work" if s["status"] == "busy" else "open"
             when = time.strftime("%H:%M", time.localtime(reps[-1]["at"])) if reps and reps[-1]["at"] else ""
             on = s["id"] == self.reply_sid
-            tabs.append({"sid": s["id"], "name": short(name, 28), "dot": dot, "when": when, "on": on,
+            tabs.append({"sid": s["id"], "name": name, "dot": dot, "when": when, "on": on,
                          "full": "%s\n%s" % (name, where_of(s))})
             if on:
                 p = x["t"].prompt
