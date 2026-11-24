@@ -59,7 +59,7 @@ Using it:
 - Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
 - Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
 - Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Field Agents** icon on your desktop. It starts when you sign in to Windows.
-- The tray icon shows your 5-hour usage as a number.
+- The tray icon shows your 5-hour usage as a number. Clicking it also brings back the Claude Code terminal you were last in.
 - **Status** opens [status.claude.com](https://status.claude.com/); its dot shows whether Claude has an outage.
 - If a Claude Code update breaks `claude`, the panel repairs it with `claude update`.
 - Drag the header to the top edge to make it a row of tabs (the tray menu does this too):
