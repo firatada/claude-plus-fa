@@ -442,6 +442,7 @@ out.inline = inline("**bold** `code` ~~gone~~ *it* [docs](https://ex.com/a?b=1&c
 out.lists = blocks("1. one\n2. two\n   more\n- dot\n  - nested").map(b => [b.kind, b.marker, b.indent, b.text]);
 out.quote = blocks("> a\n> b")[0];
 out.heads = blocks("# H1\n## H2\n### H3").map(b => blockHtml(b, "k"));
+out.codes = blocks("```js\nconst a = 1;\n```\n\n~~~\n" + Array.from({length: 60}, (_, i) => "line " + i).join("\n") + "\n~~~").map(b => blockHtml(b, "k"));
 const C = (o) => clickAction(Object.assign({own: false, moved: false, selected: false, detail: 1, box: false, text: false}, o));
 out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}), drag: C({moved: true}),
   dragShut: C({moved: true, box: true}), selected: C({selected: true}), dbl: C({detail: 2}), own: C({own: true}),
@@ -550,6 +551,14 @@ class Markdown(unittest.TestCase):
         self.assertIn("<td>News <b>scoring</b></td>", h)
         self.assertIn("<td>Trend <code>cut</code></td>", h)
         self.assertNotIn("|", h)
+
+    def test_a_code_block_is_drawn_open_short_or_long(self):
+        short, long = self.md["codes"]
+        for h in (short, long):
+            self.assertTrue(h.startswith('<div class="code open"><button type="button" data-tip="Hides the code">'), h[:80])
+        self.assertIn("<span>1 line</span>", short)
+        self.assertIn("<span>60 lines</span>", long)
+        self.assertIn("line 59</pre>", long)
 
     def test_pipes_without_a_dash_row_stay_as_written(self):
         self.assertEqual(self.md["noSep"], ["pre"])
