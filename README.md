@@ -55,6 +55,7 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 
 Using it:
 - Click an open session to bring its window to the front, even from the notification area (Windows Terminal's **Hide Terminal in the notification area when it is minimized**). Click it again to put it away.
+- With that Windows Terminal setting on, only the terminal in front keeps a taskbar button: whenever a Windows Terminal window comes to the front (a card, the taskbar, Alt+Tab, a click), the other Windows Terminal windows go to the notification area, still running, and come back from their cards.
 - A link you Ctrl+click in a session's terminal opens in front, even when Windows would leave the browser or editor behind the terminal.
 - Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
 - Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
@@ -182,6 +183,7 @@ Put any of these in `~/.claude/claude-plus.local.json` (the installer never chan
 | `"screenshots": false` | Keeping screenshots, the strip and the numbered reply list |
 | `"paste_keys": false` | Fast picture paste with `Ctrl+V` and `Alt+V` |
 | `"shot_strip": false` | The strip and the numbered reply list (also the picture button in the panel's header) |
+| `"minimize_other_terminals": false` | Sending the other Windows Terminal windows to the notification area when one comes to the front |
 | `"quick_answers": []` | The **I approve** button in an empty answer box |
 | `"rule": "<where your steps live>"` | The built-in 90 % steps: Claude follows yours instead, for example `"the global CLAUDE.md, section \"Saving work\""` |
 

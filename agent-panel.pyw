@@ -338,6 +338,7 @@ STATUS_EVERY = 180     # seconds between reads of STATUS_API
 LAUNCH_WAIT = 8        # seconds a session opened from the panel is not opened again while Claude Code starts
 LIFT_AGAIN = (0.1, 0.2, 0.4, 0.8)  # seconds between looks after a session's window comes to the front (stay_over)
 MIN_FRONT_WAIT = 0.5  # seconds a minimised session window is given to hand the foreground on (stay_on_screen)
+TIDY_WAIT = 0.3       # seconds a Windows Terminal window stays in front before the others are minimised (tidy)
 LINK_WAIT = 3          # seconds from a Ctrl+click in a session's terminal to the flash of the window Windows refused
                        # the foreground to; a later flash is left alone (link_raise)
 CLICK_EVERY = 0.02     # seconds between looks at Ctrl and the primary mouse button while a session window is in front
@@ -930,6 +931,58 @@ def terminal_window(hwnd):
     buf = ctypes.create_unicode_buffer(64)
     user32.GetClassNameW(hwnd, buf, 64)
     return buf.value in TERMINAL_CLASSES
+
+
+WT_CLASS = TERMINAL_CLASSES[0]  # Windows Terminal's top-level window
+
+
+def wt_window(hwnd):
+    """A Windows Terminal window (a session's or not): coming to the front, it sends the others away (tidy())."""
+    buf = ctypes.create_unicode_buffer(64)
+    user32.GetClassNameW(hwnd, buf, 64)
+    return buf.value == WT_CLASS
+
+
+def wt_tray_on():
+    """Windows Terminal hides a minimised window in the notification area: "minimizeToNotificationArea": true, not
+    commented out, in one of its settings files (the Store builds, the unpackaged one, Scoop's). Without it a
+    minimised terminal keeps its taskbar button, so minimising the others would hide nothing (tidy())."""
+    la = os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local")
+    scoop = os.environ.get("SCOOP") or os.path.join(HOME, "scoop")
+    files = glob.glob(os.path.join(la, "Packages", "Microsoft.WindowsTerminal*_8wekyb3d8bbwe", "LocalState",
+                                   "settings.json"))
+    files.append(os.path.join(la, "Microsoft", "Windows Terminal", "settings.json"))
+    files += glob.glob(os.path.join(scoop, "apps", "windows-terminal*", "current", "settings", "settings.json"))
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                if re.search(r'(^|[{,])\s*"minimizeToNotificationArea"\s*:\s*true', fh.read(), re.M):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def wt_states():
+    """Every Windows Terminal top-level window: [(window, visible, minimised, cloaked)]."""
+    out = []
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def each(h, _):
+        if wt_window(h):
+            cloaked = ctypes.c_int(0)
+            dwmapi.DwmGetWindowAttribute(h, 14, ctypes.byref(cloaked), 4)  # DWMWA_CLOAKED: another virtual desktop
+            out.append((h, bool(user32.IsWindowVisible(h)), bool(user32.IsIconic(h)), bool(cloaked.value)))
+        return True
+    user32.EnumWindows(each, 0)
+    return out
+
+
+def to_tidy(front, states):
+    """The Windows Terminal windows to minimise now that front is in front: every other one showing on this desktop
+    (visible, not minimised, not cloaked). front itself never; one already minimised never (SW_MINIMIZE to a window
+    hidden in the notification area puts it on the taskbar)."""
+    return [h for h, shown, iconic, cloaked in states if h != front and shown and not iconic and not cloaked]
 
 
 def top_window():
@@ -2827,6 +2880,7 @@ class Panel:
         self.claims_swept = 0
         self.nc = None  # the DWM frame policy last set (see frame())
         self.front = None  # the last window that came to the front, not counting the panel's own (follow_front())
+        self.tidy_gen = 0  # foreground changes to a Windows Terminal window so far; only the newest one tidies (tidy())
         self.link_click = None  # (session window, time) of the last Ctrl+click on one (watch_clicks())
         self.links_used = set()  # the clicks a window was already brought forward for (on_flash())
         self.links_told = {}  # flashing window -> when links.log last said it was left flashing
@@ -3347,6 +3401,8 @@ class Panel:
             self.front = hwnd
             if self.raised and self.raised[1] != hwnd:
                 self.raised = None  # another window came forward: a click on the card is a first click again
+            if wt_window(hwnd):
+                self.tidy_soon(hwnd)
             wins = set(self.wins.values())
             self.terminals = note_terminal(self.terminals, hwnd, wins)  # at once, not at the next poll turn
             if getattr(self, "shots", None):
@@ -3383,6 +3439,32 @@ class Panel:
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
+
+    def tidy_soon(self, hwnd):
+        """A Windows Terminal window has come to the front (a card, the taskbar, Alt+Tab, a click on it): tidy() in
+        TIDY_WAIT on a thread of its own, as the hook's callback must return at once. A newer foreground change makes
+        the waiting one give up."""
+        self.tidy_gen += 1
+        threading.Thread(target=self.tidy, args=(hwnd, self.tidy_gen), daemon=True).start()
+
+    def tidy(self, hwnd, gen):
+        """Only the terminal in front keeps a taskbar button: every other Windows Terminal window showing goes to the
+        notification area, still running, and comes back from its card. Done once the window has stayed in front for
+        TIDY_WAIT (Alt+Tab walking past terminals minimises nothing), only while Windows Terminal hides minimised
+        windows there (wt_tray_on()) and "minimize_other_terminals" in claude-plus.local.json is not false (read each
+        time). SW_SHOWMINNOACTIVE leaves the foreground where it is, so no foreground event follows and nothing loops;
+        ShowWindowAsync, so a hung terminal never holds this thread. True when it minimised any."""
+        time.sleep(TIDY_WAIT)
+        if gen != self.tidy_gen or user32.GetForegroundWindow() != hwnd:
+            return False
+        if user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd):
+            return False
+        if local("minimize_other_terminals") is False or not wt_tray_on():
+            return False
+        away = to_tidy(hwnd, wt_states())
+        for h in away:
+            user32.ShowWindowAsync(h, 7)  # SW_SHOWMINNOACTIVE
+        return bool(away)
 
     def lift(self, hwnd):
         """A session's own window has come to the front: the panel, and with it the shadow it owns, go directly under

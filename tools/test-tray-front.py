@@ -63,6 +63,7 @@ tray_stale, put_away = ns["tray_stale"], ns["put_away"]
 TERM, TERM2, TERM3, CHROME, TASKBAR, PANEL = 10, 11, 12, 20, 30, 40
 OWN = {PANEL}  # the panel's own windows
 ns["own"] = OWN.__contains__
+ns["wt_window"] = lambda h: False  # on_front()'s tidy of other terminals: test-tidy-terminals.py
 SESSIONS = {TERM, TERM2, TERM3}
 
 
@@ -268,7 +269,7 @@ class CardAfterTray(unittest.TestCase):
         u.UnhookWinEvent = lambda h: None
         self.u, self.top = u, CHROME
         c = take({"put_away", "note_terminal", "RECENT_TERMINALS"}, {}, ("click", "shown_in_front", "shared", "follow_front"))
-        c.update(user32=u, own=OWN.__contains__, top_window=lambda: self.top, window_title=lambda h: "",
+        c.update(user32=u, own=OWN.__contains__, wt_window=lambda h: False, top_window=lambda: self.top, window_title=lambda h: "",
                  folder_exists=lambda s: True, ok=lambda t: t, err=lambda t: ("err", t),
                  focus_session=self.focus, WINEVENTPROC=lambda f: f, SetWinEventHook=lambda *a: self.procs.append(a[3]) or 0,
                  threading=types.SimpleNamespace(Thread=lambda target, args, daemon: types.SimpleNamespace(start=lambda: None)),
