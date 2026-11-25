@@ -65,9 +65,10 @@ def headless_hours():
 
 def shown(s, now, hours):
     """Whether the panel lists a session at all. A headless run that is not running and whose transcript last
-    changed more than `hours` ago is left out everywhere (list, set-aside section, dropdown, counts); a running one
-    always shows. A display rule only: the transcript stays on disk and every other feature still sees it."""
-    return not s.get("headless") or bool(s.get("status")) or now - s["mtime"] <= hours * 3600
+    last moved more than `hours` ago (its `at`, see last_at()) is left out everywhere (list, set-aside section,
+    dropdown, counts); a running one always shows. A display rule only: the transcript stays on disk and every other
+    feature still sees it."""
+    return not s.get("headless") or bool(s.get("status")) or now - s["at"] <= hours * 3600
 
 
 QUICK_ANSWERS = ["I approve"]  # the chips in an empty answer box of the reply window; "quick_answers" overrides them
@@ -332,6 +333,8 @@ DROP_ROOM = 440        # logical pixels under the strip where its menus, tooltip
 TOP_ZONE = 120         # logical pixels: a drag released this close to the top edge docks the panel there
 SCAN_EVERY = 15        # seconds
 LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
+AT_LOOK = 8388608      # bytes from a transcript's end searched for its last prompt or reply (last_at()); past it, the
+                       # file's time stands in
 STATUS_PAGE = "https://status.claude.com/"
 STATUS_API = "https://status.claude.com/api/v2/summary.json"  # Statuspage's public API: status and unresolved incidents
 STATUS_EVERY = 180     # seconds between reads of STATUS_API
@@ -418,6 +421,39 @@ def text_of(message):
     return ""
 
 
+TURN_LINE = re.compile(rb'"type":"(?:user|assistant)"')  # a line that may be a prompt, a reply or a tool's result
+
+
+def last_at(path, size, tail=None):
+    """Epoch seconds of the transcript's last real activity: the newest top-level `user` or `assistant` line with a
+    `timestamp` (a prompt, a reply, a tool's result), or None when there is none in the last AT_LOOK bytes.
+    Never the file's time: Claude Code appends lines to an open session's transcript with no turn at all (the
+    metadata block `last-prompt` .. `atis-latch`, `bridge-session`, `data-flow-records`, `away_summary`), which
+    moved idle sessions to the top of the list with a fresh age. `tail`: the file's last bytes already read."""
+    end, carry = size, b""
+    with open(path, "rb") as f:
+        while end > 0 and size - end < AT_LOOK:
+            start = max(0, end - 262144)
+            if tail is not None and end == size and len(tail) >= size - start:
+                buf = tail[len(tail) - (end - start):]
+            else:
+                f.seek(start)
+                buf = f.read(end - start)
+            lines = (buf + carry).split(b"\n")
+            carry = lines.pop(0) if start else b""  # a line cut at the block's start is finished by the next block
+            for line in reversed(lines):
+                if not TURN_LINE.search(line):
+                    continue
+                try:
+                    o = json.loads(line)
+                    if o.get("type") in ("user", "assistant") and o.get("timestamp"):
+                        return datetime.datetime.fromisoformat(o["timestamp"].replace("Z", "+00:00")).timestamp()
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            end = start
+    return None
+
+
 def parse(path):
     size = os.path.getsize(path)
     with open(path, "rb") as f:
@@ -461,6 +497,7 @@ def parse(path):
         if custom:
             break
     info["title"] = custom or ai
+    info["at"] = last_at(path, size, tail)
     return info
 
 
@@ -605,7 +642,7 @@ def scan(cache):
                     continue
                 key = "%s|%s" % (st.st_mtime, st.st_size)
                 hit = cache.get(path)
-                if not hit or hit.get("key") != key or "entry" not in hit:
+                if not hit or hit.get("key") != key or "at" not in hit:
                     try:
                         hit = dict(parse(path), key=key)
                     except Exception:
@@ -618,13 +655,13 @@ def scan(cache):
                 title = (run or {}).get("name") or hit.get("title") or hit.get("first") or os.path.basename(cwd or folder)
                 sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title, "path": path,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
-                                 "mtime": st.st_mtime, "status": (run or {}).get("status"),
+                                 "at": hit.get("at") or st.st_mtime, "key": key, "status": (run or {}).get("status"),
                                  "waiting": (run or {}).get("waiting"), "since": (run or {}).get("since"),
                                  "pid": (run or {}).get("pid"), "name": (run or {}).get("name"),
                                  "ctx": read_ctx(sid), "headless": hit.get("entry") == "sdk-cli"})
     for gone in [p for p in cache if p not in seen]:
         del cache[gone]
-    sessions.sort(key=lambda s: s["mtime"], reverse=True)
+    sessions.sort(key=lambda s: s["at"], reverse=True)  # last real activity, newest first (last_at())
     return sessions
 
 
@@ -3332,11 +3369,14 @@ class Panel:
             s["status"], s["pid"], s["waiting"], s["since"] = run.get("status"), run.get("pid"), run.get("waiting"), run.get("since")
             if s["status"]:
                 s["ctx"] = read_ctx(s["id"])
-                try:
-                    s["mtime"] = os.stat(s["path"]).st_mtime
+                try:  # the file changed: read its last real activity again (never the file's own time)
+                    st = os.stat(s["path"])
+                    key = "%s|%s" % (st.st_mtime, st.st_size)
+                    if key != s.get("key"):
+                        s["key"], s["at"] = key, last_at(s["path"], st.st_size) or s["at"]
                 except OSError:
                     pass
-        self.sessions.sort(key=lambda s: s["mtime"], reverse=True)
+        self.sessions.sort(key=lambda s: s["at"], reverse=True)
         self.find_windows()
         self.background(live)
         self.feed_shots()
@@ -4442,7 +4482,7 @@ class Panel:
         live = {s["path"] for s in self.sessions if s.get("status")}
         for p in [p for p in self.reads if p not in live]:
             del self.reads[p]  # a closed session is read afresh when it opens again
-        tabs.sort(key=lambda x: (x["typed"], x["s"]["mtime"]), reverse=True)
+        tabs.sort(key=lambda x: (x["typed"], x["s"]["at"]), reverse=True)
         return tabs
 
     def follow_terminal(self, raw, front):
@@ -5174,7 +5214,7 @@ class Panel:
                              "status": s["status"], "waiting": bool(s["status"] and s.get("waiting")),
                              "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden, "turn": self.turn_start(s, turns),
                              "bgSince": self.bg_start(s, seen),
-                             "here": folder_exists(s), "distro": s["distro"], "age": ago(s["mtime"]),
+                             "here": folder_exists(s), "distro": s["distro"], "age": ago(s["at"]),
                              "headless": s.get("headless", False),
                              "via": (self.returns.get(s["id"]) or {}).get("via"),
                              "viaOpen": bool((self.returns.get(s["id"]) or {}).get("open")),

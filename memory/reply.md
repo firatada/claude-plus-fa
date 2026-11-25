@@ -2,7 +2,7 @@ Parent: [`memory.md`](../memory.md) — replying to Claude: the ":N" reply to pa
 
 # claude-plus-fa: reply to passages and the reply window
 
-What is true now; history in [`trials.md`](../trials.md). Limits of these features stay in `memory.md` § Limits. Moved here whole from `memory.md` § Reply to a passage (2026-11-23), when the reply window was added.
+What is true now; history in [`trials.md`](../trials.md). Limits of these features: § Limits below. Moved here whole from `memory.md` § Reply to a passage (2026-11-23), when the reply window was added.
 
 ## Reply to a passage
 - Flow: select in Windows Terminal (`copyOnSelect` fills the clipboard), type `: my answer` or `:1 yes :3 no`, Enter; `quote-reply.py` adds the passages to the turn. The prompt itself is never changed.

@@ -2,7 +2,7 @@ Parent: [`memory.md`](../memory.md) — the limit fallback's current behaviour: 
 
 # claude-plus-fa: limit fallback
 
-What is true now; history in [`trials.md`](../trials.md). Limits of this feature stay in `memory.md` § Limits.
+What is true now; history in [`trials.md`](../trials.md). Limits of this feature are in [`limits.md`](./limits.md).
 
 ## The way out
 - The dialog opens once per limit per session, for the main thread of a session a person works in. Silent: a session already on a gateway (`ANTHROPIC_BASE_URL` set, so GLM never relaunches itself); a hook input with `agent_id` (StopFailure also fires inside subagents, with the session's id and cwd); a `claude -p` or SDK run (`seen_by_user()`: entrypoint `sdk-*` in the Claude process's session file, else in the transcript's last line naming one); a session whose dialog another hook holds (`hold_dialog()`: named mutex `Local\claude-plus-fa-way-out-<sid>`, held for the hook's life); a session with a live `<sid>.quiet`. Once the dialog is answered (Cancel included) the hook writes `<sid>.quiet` until the limit's reset (`reset_time()`). The hook waits inside itself (timeout 3600 s).

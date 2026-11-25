@@ -2,7 +2,7 @@ Parent: [`memory.md`](../memory.md) — the Field Agents panel's screenshot keep
 
 # claude-plus-fa: screenshots and the paste key
 
-What is true now; history in [`trials.md`](../trials.md). Limits of these features stay in `memory.md` § Limits.
+What is true now; history in [`trials.md`](../trials.md). Limits of these features are in [`limits.md`](./limits.md).
 
 ## The keeper
 - `agent-panel-shots.py`, class `Shots`, loaded by the panel (`load_shots()`, `importlib`) on two threads; a missing or broken file leaves the panel running without it. Fed the open, non-headless sessions on every live pass and scan (`feed_shots()`: id, transcript, `where_of()` as project folder, title). Off with `"screenshots": false`.

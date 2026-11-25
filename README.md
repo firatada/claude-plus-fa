@@ -43,7 +43,7 @@ Add-ons for [Claude Code](https://code.claude.com) on Windows, so a long session
 
 <img src="docs/img/agent-panel.png" alt="Field Agents: one session asking (its hero waves), one with background work (its hero conducts), one working (its hero runs), one open (its hero stands), closed ones greyed (their heroes asleep), usage bars at the bottom" width="280">
 
-Every Claude Code session on your PC in one list on the right edge of the screen, newest first, with a search box: each session is an agent at work in the field, hence the name (it was called Agent Panel before). It takes no screen space: the window you work in covers it.
+Every Claude Code session on your PC in one list on the right edge of the screen, the one with the latest prompt or reply first, with a search box: each session is an agent at work in the field, hence the name (it was called Agent Panel before). It takes no screen space: the window you work in covers it.
 
 - **Red**: the session asks you something. It stays at the top; a permission prompt makes its card pulse.
 - **Green**: the session is working, or work it started still runs in the background. Its dot turns while the session itself works, and the clock shows how long the current turn has run.
@@ -59,7 +59,7 @@ Using it:
 - A link you Ctrl+click in a session's terminal opens in front, even when Windows would leave the browser or editor behind the terminal.
 - Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
 - Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
-- Hidden sessions, sessions whose folder is gone and `claude -p` runs are listed under **Hidden, Deleted and Headless** at the bottom. A finished `claude -p` run leaves the panel 24 hours after it last changed (`"headless_hours"` in `~/.claude/claude-plus.local.json` changes this); its conversation stays on disk.
+- Hidden sessions, sessions whose folder is gone and `claude -p` runs are listed under **Hidden, Deleted and Headless** at the bottom. A finished `claude -p` run leaves the panel 24 hours after its last prompt or reply (`"headless_hours"` in `~/.claude/claude-plus.local.json` changes this); its conversation stays on disk.
 - Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Field Agents** icon on your desktop. It starts when you sign in to Windows.
 - The tray icon shows your 5-hour usage as a number. Clicking it also brings back the Claude Code terminal you were last in.
 - **Status** opens [status.claude.com](https://status.claude.com/); its dot shows whether Claude has an outage.

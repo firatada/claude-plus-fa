@@ -4,20 +4,22 @@
 # The .pyw is never imported (that would trip its one-instance mutex and raise the running panel): the functions
 # under test are taken from it by ast and given a fake process table and fake creation times, so no process is
 # started or read. The page's state functions are cut out of agent-panel.html and run in node.
-import ast, json, os, re, subprocess, time, unittest
+import ast, datetime, json, os, re, shutil, subprocess, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 
 
 def pyw_functions(*names, cls_methods=()):
+    """The module-level functions and assignments named, and the class methods named, run into one namespace."""
     with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
-    keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names or
+            isinstance(n, ast.Assign) and any(getattr(t, "id", None) in names for t in n.targets)]
     for c in tree.body:
         if isinstance(c, ast.ClassDef):
             keep += [m for m in c.body if isinstance(m, ast.FunctionDef) and m.name in cls_methods]
-    ns = {"os": os, "time": time, "json": json, "FT_EPOCH": 116444736000000000}
+    ns = {"os": os, "time": time, "json": json, "re": re, "datetime": datetime, "FT_EPOCH": 116444736000000000}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
     return ns
 
@@ -338,17 +340,17 @@ class HeadlessShown(unittest.TestCase):
         self.ns = ns
         H = 3600
         mk = lambda sid, **kw: dict({"id": sid, "title": sid, "folder": "f", "cwd": "C:/w", "status": None,
-                                     "distro": None, "headless": False, "mtime": self.NOW - 60}, **kw)
+                                     "distro": None, "headless": False, "at": self.NOW - 60}, **kw)
         self.sessions = [
             mk("plain"),                                                         # main list
-            mk("old-plain", mtime=self.NOW - 30 * 24 * H),                       # main list, however old
-            mk("run-old", headless=True, status="busy", pid=1, mtime=self.NOW - 50 * H),  # running: always shown
-            mk("done-new", headless=True, mtime=self.NOW - 23 * H),              # finished under 24 h: shown
-            mk("done-edge", headless=True, mtime=self.NOW - 24 * H),             # exactly 24 h: still shown
-            mk("done-old", headless=True, mtime=self.NOW - 25 * H),              # finished over 24 h: gone
-            mk("done-old-hidden", headless=True, mtime=self.NOW - 49 * H),       # headless rule wins over hidden
-            mk("hidden-old", mtime=self.NOW - 90 * 24 * H),                      # hidden: unchanged
-            mk("deleted-old", cwd="C:/gone", mtime=self.NOW - 90 * 24 * H),     # folder deleted: unchanged
+            mk("old-plain", at=self.NOW - 30 * 24 * H),                       # main list, however old
+            mk("run-old", headless=True, status="busy", pid=1, at=self.NOW - 50 * H),  # running: always shown
+            mk("done-new", headless=True, at=self.NOW - 23 * H),              # finished under 24 h: shown
+            mk("done-edge", headless=True, at=self.NOW - 24 * H),             # exactly 24 h: still shown
+            mk("done-old", headless=True, at=self.NOW - 25 * H),              # finished over 24 h: gone
+            mk("done-old-hidden", headless=True, at=self.NOW - 49 * H),       # headless rule wins over hidden
+            mk("hidden-old", at=self.NOW - 90 * 24 * H),                      # hidden: unchanged
+            mk("deleted-old", cwd="C:/gone", at=self.NOW - 90 * 24 * H),     # folder deleted: unchanged
         ]
 
         class P:
@@ -390,6 +392,123 @@ class HeadlessShown(unittest.TestCase):
         js = aside + "\nconst all = " + pushed + ";\nconsole.log(JSON.stringify(all.filter(aside).map(s => s.id)));"
         out = subprocess.run(["node", "-e", js], capture_output=True, encoding="utf-8", check=True)
         self.assertEqual(json.loads(out.stdout), ["run-old", "done-new", "done-edge", "hidden-old", "deleted-old"])
+
+
+class LastActivity(unittest.TestCase):
+    """A card's age and its place in the list come from the session's last real activity (a prompt, a reply, a
+    tool's result), never from the transcript file's time: Claude Code appends lines with no turn to an open
+    session's transcript (the metadata block, bridge-session, data-flow-records, away_summary), which put idle
+    sessions at the top with a fresh age (project A: no prompt since the day before, shown "5m" second from the top).
+    Made-up transcripts in a temp folder; scan() and update_live() run on them with stubs, nothing real is read."""
+    NOW = time.time()
+    DAY = 86400
+
+    def setUp(self):
+        self.ns = pyw_functions("scan", "parse", "text_of", "last_at", "TURN_LINE", "AT_LOOK", "SESSION_FILE",
+                                cls_methods=("update_live",))
+        self.tmp = tempfile.mkdtemp(prefix="cpfa-at-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.ns.update(CLAUDE=self.tmp, wsl_roots=lambda: [], running=lambda: {}, read_ctx=lambda sid: None,
+                       home_of=lambda folder, cwds: cwds[0] if cwds else None)
+        self.dir = os.path.join(self.tmp, "projects", "C--work")
+        os.makedirs(self.dir)
+
+    @staticmethod
+    def stamp(t):
+        return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "123Z"
+
+    def turn(self, kind, t, text="hi"):
+        return {"type": kind, "timestamp": self.stamp(t), "cwd": "C:\\work", "sessionId": "x",
+                "message": {"role": kind, "content": text}}
+
+    def write(self, n, lines, mtime=None):
+        path = os.path.join(self.dir, "%08d-0000-0000-0000-000000000000.jsonl" % n)
+        with open(path, "w", encoding="utf-8") as f:
+            for o in lines:
+                f.write(json.dumps(o, separators=(",", ":")) + "\n")
+        if mtime:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    @staticmethod
+    def meta():
+        """The lines Claude Code appends to an idle open session's transcript, none with a timestamp."""
+        return [{"type": t, "sessionId": "x"} for t in ("last-prompt", "custom-title", "agent-name", "mode",
+                                                        "permission-mode", "session-owner", "atis-latch")] + [
+            {"type": "bridge-session", "sessionId": "x", "lastSequenceNum": 6217},
+            {"type": "data-flow-records", "v": 1, "sessionId": "x", "records": []}]
+
+    def test_appended_lines_do_not_move_an_idle_session_up(self):
+        old = self.NOW - self.DAY - 3600  # yesterday's last reply
+        idle = self.write(1, [self.turn("user", old - 60), self.turn("assistant", old),
+                              {"type": "system", "subtype": "away_summary", "timestamp": self.stamp(old + 180)}]
+                          + self.meta(), mtime=self.NOW - 300)  # the file written 5 minutes ago
+        recent = self.write(2, [self.turn("user", self.NOW - 1200), self.turn("assistant", self.NOW - 1100)],
+                            mtime=self.NOW - 1100)
+        out = self.ns["scan"]({})
+        self.assertEqual([s["path"] for s in out], [recent, idle])
+        self.assertAlmostEqual(out[1]["at"], int(old) + 0.123, places=2)
+        self.assertAlmostEqual(out[0]["at"], int(self.NOW - 1100) + 0.123, places=2)
+
+    def test_tool_result_counts_as_activity(self):
+        t = self.NOW - 500
+        path = self.write(3, [self.turn("user", t - 100), self.turn("assistant", t - 50),
+                              {"type": "user", "timestamp": self.stamp(t), "toolUseResult": {"type": "text"},
+                               "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}}]
+                          + self.meta(), mtime=self.NOW)
+        self.assertAlmostEqual(self.ns["last_at"](path, os.path.getsize(path)), int(t) + 0.123, places=2)
+
+    def test_found_behind_a_long_tail_and_across_blocks(self):
+        t = self.NOW - 7 * self.DAY
+        pad = {"type": "bridge-session", "sessionId": "x", "pad": "p" * 300000}  # longer than one read block
+        path = self.write(4, [self.turn("assistant", t, "z" * 200000)] + [pad] * 5, mtime=self.NOW)
+        size = os.path.getsize(path)
+        self.assertGreater(size, 1048576)  # past parse()'s 1 MB tail
+        self.assertAlmostEqual(self.ns["last_at"](path, size), int(t) + 0.123, places=2)
+        with open(path, "rb") as f:
+            f.seek(size - 1048576)
+            tail = f.read()
+        self.assertAlmostEqual(self.ns["last_at"](path, size, tail), int(t) + 0.123, places=2)
+
+    def test_nested_type_is_not_a_turn(self):
+        t = self.NOW - 3 * self.DAY
+        later = {"type": "attachment", "timestamp": self.stamp(self.NOW - 10),
+                 "attachment": {"type": "user", "x": {"type": "assistant"}}}
+        path = self.write(5, [self.turn("user", t), later], mtime=self.NOW)
+        self.assertAlmostEqual(self.ns["last_at"](path, os.path.getsize(path)), int(t) + 0.123, places=2)
+
+    def test_no_turn_falls_back_to_the_files_time(self):
+        path = self.write(6, self.meta(), mtime=self.NOW - 4000)
+        self.assertIsNone(self.ns["last_at"](path, os.path.getsize(path)))
+        self.assertAlmostEqual(self.ns["scan"]({})[0]["at"], self.NOW - 4000, places=2)
+
+    def test_live_pass_keeps_an_open_idle_session_in_place(self):
+        """update_live() reads an open session again every LIVE_EVERY: appended lines change the file, not `at`."""
+        old = self.NOW - self.DAY
+        idle = self.write(7, [self.turn("assistant", old)], mtime=old)
+        busy = self.write(8, [self.turn("assistant", self.NOW - 600)], mtime=self.NOW - 600)
+        sessions = self.ns["scan"]({})
+        self.assertEqual([s["path"] for s in sessions], [busy, idle])
+        with open(idle, "a", encoding="utf-8") as f:  # Claude Code's bookkeeping lands in the idle one
+            for o in self.meta():
+                f.write(json.dumps(o) + "\n")
+        os.utime(idle, (self.NOW, self.NOW))
+        ids = {s["path"]: s["id"] for s in sessions}
+        self.ns["running"] = lambda: {ids[idle]: {"status": "idle", "pid": 1}, ids[busy]: {"status": "idle", "pid": 2}}
+        noop = lambda *a: None
+
+        class P:
+            update_live = self.ns["update_live"]
+            find_windows = background = feed_shots = push = check_alerts = watch_return = keep_voice = noop
+        p = P()
+        p.sessions, p.launched, p.last_scan = sessions, {}, 1
+        p.update_live()
+        self.assertEqual([s["path"] for s in p.sessions], [busy, idle])
+        self.assertAlmostEqual(p.sessions[1]["at"], int(old) + 0.123, places=2)
+        with open(idle, "a", encoding="utf-8") as f:  # a real prompt in it now (compact, as Claude Code writes): it rises
+            f.write(json.dumps(self.turn("user", self.NOW - 5), separators=(",", ":")) + "\n")
+        p.update_live()
+        self.assertEqual([s["path"] for s in p.sessions], [idle, busy])
 
 
 if __name__ == "__main__":
