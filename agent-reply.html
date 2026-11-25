@@ -895,7 +895,8 @@ function ownRow(p) { const r = p && p.nextElementSibling; return r && r.classLis
 // that puts its text in the box; out of the keyboard's order (tabindex -1), so Tab still goes from box to box
 let QUICK = [], quickKey = "[]";
 function boxHtml(label) {
-  return `<textarea class="ans" rows="1" placeholder="Type your answer, or hold Space to speak…" aria-label="${esc(label)}"></textarea>` +
+  // no spell check (asked 2026-11-25: "Burada yazım denetimi yapmasın"): no red wavy lines under Turkish answers
+  return `<textarea class="ans" rows="1" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" placeholder="Type your answer, or hold Space to speak…" aria-label="${esc(label)}"></textarea>` +
     `<span class="quick">${QUICK.map(q => `<button type="button" tabindex="-1" data-quick="${esc(q)}" data-tip="Puts this text in the box">${esc(q)}</button>`).join("")}</span>`;
 }
 function quickFit(row) {  // the box's right padding keeps its text clear of the chips while they show

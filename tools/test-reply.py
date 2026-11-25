@@ -1422,6 +1422,9 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   document.querySelector("#replies .para").click();
   await later(20);
   o.boxesAfterPara = boxes();
+  // no spell check in any answer box (a paragraph's here; an area's box is the same boxHtml())
+  o.spell = [...document.querySelectorAll("textarea")].map(t => [t.spellcheck, t.getAttribute("autocorrect"), t.getAttribute("autocapitalize")]);
+  o.spellArea = boxHtml("area").includes('spellcheck="false"');
   document.activeElement.blur();  // the box opened has the keyboard: nothing is redrawn until it is left
   showView("p1");
   await later(50);
@@ -1484,6 +1487,10 @@ class Page(unittest.TestCase):
         self.assertEqual(self.o["boxesAfterLinks"], 0)
         self.assertEqual(self.o["boxesAfterNote"], 0)
         self.assertEqual(self.o["boxesAfterPara"], 1)  # a click elsewhere in the paragraph still opens its box
+
+    def test_answer_boxes_have_no_spell_check(self):
+        self.assertEqual(self.o["spell"], [[False, "off", "off"]])
+        self.assertTrue(self.o["spellArea"])
 
     def test_a_missing_file_shows_one_short_note_at_its_link(self):
         self.assertEqual(self.o["note"], [["File not found", "gone"]])
