@@ -554,6 +554,12 @@ out.areaSend = sendList({"m1#1-4": {text: "Onaylıyorum"}, "m1#4": {text: "only 
 // a quick answer put in the box: an empty box becomes the text; otherwise at the caret, over a selection
 out.quick = [quickInsert("", 0, 0, "Onaylıyorum"), quickInsert("ab", 1, 1, "X"), quickInsert("abcd", 1, 3, "X"),
   quickInsert("ab", 9, 9, "X")];
+// the area's copy: what its frame holds, with every answer inside it (the blocks' own first, the area's last), lines
+// counted in the copied text's own lines; a paragraph's box alone; a key not in the reply
+const RC = "Intro.\n\n## Plan\n\n1. one\n2. two\n   more\n\nAfter.";
+out.areaClip = {area: areaClip("m1#1-3", RC, {"m1#1-3": {text: "Onaylıyorum"}, "m1#3": {text: "own"}, "m1#0": {text: "outside"}, "m1#1-2": {text: "x"}}),
+  bare: areaClip("m1#1-3", RC, {"m1#1-3": {text: "  "}}), para: areaClip("m1#4", RC, {"m1#4": {text: "ok"}}),
+  one: areaClip("m1#2-2", RC, {"m1#2-2": {text: "yes"}}), gone: areaClip("m1#7-9", RC, {}), none: areaClip("x", RC, {})};
 console.log(JSON.stringify(out));
 """
 
@@ -1225,6 +1231,19 @@ class AreaRules(unittest.TestCase):
         self.assertEqual(m["none"], "")
         self.assertEqual(m["empty"], "")
 
+    def test_the_areas_copy_takes_every_answer_inside_its_frame(self):
+        c = self.md["areaClip"]
+        md = "## Plan\n\n1. one\n2. two\n   more"
+        # the blocks' own answer first, the area's last, lines counted in the copied text; outside ones left out
+        self.assertEqual(c["area"], {"text": md, "answers": [
+            {"key": "m1#3", "passage": "2. two\n   more", "text": "own", "line": 4},
+            {"key": "m1#1-3", "passage": md, "text": "Onaylıyorum", "line": 4}]})
+        self.assertEqual(c["bare"], {"text": md, "answers": []})
+        self.assertEqual(c["para"], {"text": "After.", "answers": [{"key": "m1#4", "passage": "After.", "text": "ok", "line": 0}]})
+        self.assertEqual(c["one"], {"text": "1. one", "answers": [{"key": "m1#2-2", "passage": "1. one", "text": "yes", "line": 0}]})
+        self.assertIsNone(c["gone"])
+        self.assertIsNone(c["none"])
+
 
 EDGE = next((p for p in (os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
                          os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")) if os.path.exists(p)), None)
@@ -1821,7 +1840,8 @@ class AreaCopy(unittest.TestCase):
         ns = {}
         exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
         got = []
-        mod = type("M", (), {"set_clipboard_text": staticmethod(lambda t: got.append(t) or True)})
+        mod = type("M", (), {"set_clipboard_text": staticmethod(lambda t, e=None: got.append(t) or True),
+                             "area_copy": staticmethod(ar.area_copy), "area_size": staticmethod(ar.area_size)})
         panel = type("P", (), {"reply_mod": mod})()
         return type("A", (), {"__init__": ns["__init__"], "copy_area": ns["copy_area"]})(panel), got, mod
 
@@ -1834,7 +1854,7 @@ class AreaCopy(unittest.TestCase):
         a, got, mod = self.api()
         self.assertFalse(a.copy_area(""))
         self.assertEqual(got, [])
-        mod.set_clipboard_text = staticmethod(lambda t: False)
+        mod.set_clipboard_text = staticmethod(lambda t, e=None: False)
         self.assertFalse(a.copy_area("x"))
 
 
@@ -2385,6 +2405,204 @@ class QuickPage(unittest.TestCase):
 
     def test_an_empty_list_shows_no_chip(self):
         self.assertEqual(self.o["none"], [0, "10px"])
+
+class AreaClipboard(unittest.TestCase):
+    """The clipboard follows the area (asked 2026-11-25): its blocks, and once its box has an answer, the blocks quoted
+    with the answer after them as Send to Session words it; written only while the clipboard still holds the copy
+    this page made last. Windows' clipboard is never touched: user32 and kernel32 are stand-ins."""
+
+    MD = "1. Birinci madde\n2. İkinci madde"
+
+    def test_with_no_answer_the_blocks_go_as_they_are(self):
+        self.assertEqual(ar.area_copy(self.MD, []), self.MD)
+        self.assertEqual(ar.area_copy(self.MD, [(1, self.MD, "  \n", 2)]), self.MD)
+
+    def test_an_areas_answer_follows_its_quoted_blocks(self):
+        self.assertEqual(ar.area_copy(self.MD, [(1, self.MD, "Onaylıyorum", 2)]),
+                         '> 1. Birinci madde\n> 2. İkinci madde\n\n'
+                         'My answer to all 2 blocks from "1. Birinci madde" down to here, as a whole: Onaylıyorum')
+
+    def test_one_block_and_a_paragraph_read_as_that_blocks_own_answer(self):
+        self.assertEqual(ar.area_copy("After.", [(0, "After.", "ok", 1)]), '> After.\n\nMy answer to "After.": ok')
+        self.assertEqual(ar.area_copy("After.", [(0, "After.", "ok", 0)]), '> After.\n\nMy answer to "After.": ok')
+
+    def test_a_blocks_own_answer_inside_the_area_stays_at_its_block_before_the_areas(self):
+        md = "Intro.\n\n1. one\n2. two"
+        out = ar.area_copy(md, [(0, "Intro.", "first", 0), (3, "2. two", "own", 0), (3, md, "all", 3)])
+        self.assertEqual(out, '> Intro.\n\nMy answer to "Intro.": first\n\n> 1. one\n> 2. two\n\n'
+                              'My answer to "2. two": own\n\nMy answer to all 3 blocks from "Intro." down to here, as a whole: all')
+        self.assertFalse(out.startswith("My answers inside"))  # no heading line
+
+    def fake(self, seq):
+        import ctypes, types
+        calls, store, bufs = [], {}, []
+
+        def put(fmt, h):
+            store["text"] = ctypes.wstring_at(h)
+            self.seq += 1
+            return 1
+
+        def alloc(flags, n):
+            b = ctypes.create_string_buffer(n)
+            bufs.append(b)
+            return ctypes.addressof(b)
+
+        self.seq = seq
+        noop = lambda *a: 1
+        u = types.SimpleNamespace(OpenClipboard=noop, CloseClipboard=lambda: calls.append("close") or 1,
+                                  EmptyClipboard=lambda: calls.append("empty") or 1, SetClipboardData=put,
+                                  GetClipboardSequenceNumber=lambda: self.seq)
+        k = types.SimpleNamespace(GlobalAlloc=alloc, GlobalLock=lambda h: h, GlobalUnlock=noop, GlobalFree=noop)
+        return u, k, calls, store, bufs
+
+    def test_written_only_while_the_clipboard_holds_the_last_copy(self):
+        u, k, calls, store, bufs = self.fake(7)
+        self.assertEqual(ar.set_clipboard_text("blocks", None, u, k), 8)  # the release: written, its number back
+        self.assertEqual(ar.set_clipboard_text("blocks + answer", 8, u, k), 9)  # still ours: followed
+        self.assertEqual(store["text"], "blocks + answer")
+        self.seq = 20  # the user copied something else
+        n = len(calls)
+        self.assertIsNone(ar.set_clipboard_text("blocks + answer!", 9, u, k))
+        self.assertEqual(calls[n:], ["close"])  # opened, compared, closed: nothing emptied or written
+        self.assertEqual(store["text"], "blocks + answer")
+
+    def test_the_panel_hands_the_answers_and_the_number_through(self):
+        import types
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        api = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ReplyApi")
+        fn = next(n for n in api.body if isinstance(n, ast.FunctionDef) and n.name == "copy_area")
+        ns = {}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+        got = []
+        mod = types.SimpleNamespace(area_copy=ar.area_copy, area_size=ar.area_size,
+                                    set_clipboard_text=lambda t, e=None: got.append((t, e)) or 5)
+        me = types.SimpleNamespace(_p=types.SimpleNamespace(reply_mod=mod))
+        self.assertEqual(ns["copy_area"](me, self.MD), 5)
+        self.assertEqual(ns["copy_area"](me, self.MD, [{"key": "m1#1-2", "passage": self.MD, "text": "Onaylıyorum", "line": 1}], 5), 5)
+        self.assertEqual(got[0], (self.MD, None))
+        self.assertEqual(got[1], ('> 1. Birinci madde\n> 2. İkinci madde\n\nMy answer to all 2 blocks from '
+                                  '"1. Birinci madde" down to here, as a whole: Onaylıyorum', 5))
+        self.assertFalse(ns["copy_area"](me, ""))
+
+
+# The clipboard follows the area in the real page (headless Edge, the panel's copy_area a stand-in holding a pretend
+# clipboard's sequence number): the release copies the blocks; typing in the area's box copies them again with the
+# answer CLIP_MS after typing stops, each copy handed the number the last one left; once something else was copied,
+# the next copy is refused and the area stops following; a quick answer and Enter copy at once; another box's typing
+# never copies; no "Copied" note for these.
+CLIP_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  T.seq = 10; T.calls = [];
+  T_API.copy_area = (text, answers, expect) => {
+    T.calls.push({text, answers: (answers || []).map(a => [a.key, a.text, a.line]), expect});
+    if (expect !== null && expect !== undefined && expect !== T.seq) return Promise.resolve(null);
+    T.seq++;
+    return Promise.resolve(T.seq);
+  };
+  const R = "Intro paragraph.\n\n1. Birinci madde\n2. İkinci madde\n\nAfter.";
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: R}], answers: {}, selections: [], note: "", pins: [],
+    quick: ["Onaylıyorum"]});
+  await later(50);
+  const ev = (el, type, x, y) => el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type,
+    {bubbles: true, cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1,
+     pointerType: "mouse", isPrimary: true, clientX: x, clientY: y, detail: 1}));
+  const press = el => { const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    ev(el, "pointerdown", x, y); el.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true, button: 0, detail: 1, clientX: x, clientY: y}));
+    ev(el, "pointerup", x, y); ev(el, "mouseup", x, y); ev(el, "click", x, y); };
+  const B = n => document.querySelector(`#replies [data-n="${n}"]`).getBoundingClientRect();
+  const body = document.getElementById("body"), left = body.getBoundingClientRect().left + 4, nt = document.getElementById("areaNote");
+  const drag = async (a, b) => {
+    const x0 = left, y0 = B(a).top + 4, x1 = 400, y1 = B(b).top + 6;
+    ev(body, "pointerdown", x0, y0); ev(body, "mousedown", x0, y0);
+    for (let k = 1; k <= 5; k++) ev(body, "pointermove", x0 + (x1 - x0) * k / 5, y0 + (y1 - y0) * k / 5);
+    ev(body, "pointerup", x1, y1); ev(body, "mouseup", x1, y1); ev(body, "click", x1, y1);
+    await later(30);
+  };
+  const type = s => { if (!document.execCommand("insertText", false, s)) { const t = document.activeElement; t.value += s; t.dispatchEvent(new Event("input", {bubbles: true})); } };
+  const o = {};
+  await drag(1, 2);  // the two items: one frame, its box, the blocks copied
+  o.release = T.calls.slice();
+  const box = document.activeElement;
+  await later(1100);  // the release's "Copied" is gone
+  type("Onay");
+  await later(100);
+  o.early = T.calls.length;  // typing still going on: nothing yet
+  type("lıyorum");
+  await later(400);
+  o.typed = T.calls.slice(1);
+  o.note = nt.hidden;
+  T.seq = 50;  // the user copied something else
+  type("!");
+  await later(400);
+  type("?");
+  await later(400);
+  o.moved = T.calls.slice(1 + o.typed.length);
+  // a new area (the paragraph after): a quick answer copies at once
+  box.blur();
+  await later(30);
+  await drag(3, 3);
+  const n0 = T.calls.length, row = document.activeElement.closest(".ansrow");
+  o.lone = [row && row.dataset.for, T.calls[n0 - 1]];
+  press(row.querySelector(".quick button"));
+  await later(20);
+  o.quick = T.calls.slice(n0);
+  // typed, then Enter at once: the copy goes as the box is left
+  type(" now");
+  document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+  await later(20);
+  o.enter = T.calls.slice(n0 + o.quick.length);
+  await later(400);
+  o.enterOnce = T.calls.length - n0 - o.quick.length;
+  // another box (the intro's): its typing never copies
+  const n1 = T.calls.length;
+  press(document.querySelector('#replies .para[data-key="m1#0"]'));
+  await later(30);
+  type("other");
+  await later(400);
+  o.other = T.calls.length - n1;
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class ClipPage(unittest.TestCase):
+    o = None
+    MD = "1. Birinci madde\n2. İkinci madde"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(CLIP_TEST, budget=8000)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_the_release_copies_the_blocks_alone(self):
+        self.assertEqual(self.o["release"], [{"text": self.MD, "answers": [], "expect": None}])
+
+    def test_typing_copies_the_blocks_again_with_the_answer_once_it_stops(self):
+        self.assertEqual(self.o["early"], 1)
+        self.assertEqual(self.o["typed"], [{"text": self.MD, "answers": [["m1#1-2", "Onaylıyorum", 1]], "expect": 11}])
+        self.assertTrue(self.o["note"])  # no "Copied" for it
+
+    def test_once_something_else_was_copied_the_area_stops_following(self):
+        self.assertEqual(self.o["moved"], [{"text": self.MD, "answers": [["m1#1-2", "Onaylıyorum!", 1]], "expect": 12}])
+
+    def test_a_quick_answer_copies_at_once(self):
+        key, release = self.o["lone"]
+        self.assertEqual((key, release["text"], release["answers"]), ("m1#3", "After.", []))
+        self.assertEqual([c["answers"] for c in self.o["quick"]], [[["m1#3", "Onaylıyorum", 0]]])
+
+    def test_enter_copies_at_once_and_only_once(self):
+        self.assertEqual([c["answers"] for c in self.o["enter"]], [[["m1#3", "Onaylıyorum now", 0]]])
+        self.assertEqual(self.o["enterOnce"], 1)
+
+    def test_another_boxs_typing_never_copies(self):
+        self.assertEqual(self.o["other"], 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

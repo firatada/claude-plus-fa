@@ -348,7 +348,7 @@ def quote(lines):
     return ["> " + l if l.strip() else ">" for l in lines]
 
 
-def answer_block(text, when, answers):
+def answer_block(text, when, answers, head=True):
     """One reply with the user's answers inside it, as Send to Session pastes it: a heading line, then the reply's
     lines exactly as stored, each quoted with "> ", and each answer unquoted right after the line that ends the block
     it answers, led by lead() (ANSWER: My answer to "<the block's first line>":) and parted from the quoted lines by
@@ -357,7 +357,7 @@ def answer_block(text, when, answers):
     reads it as one answer to every block from the area's first line down to it; a block's own answer at that same
     line comes first. An answer whose block is not found in text (a reply no longer stored) goes at the end after its
     own passage, quoted. "" when no answer has text. No answers at all (answers []): the reply alone, quoted under
-    PLAIN ("" when it holds no text)."""
+    PLAIN ("" when it holds no text). head False leaves the heading line out (area_copy())."""
     lines = (text or "").replace("\r\n", "\n").split("\n")
     if not answers:
         while lines and not lines[0].strip():
@@ -379,7 +379,7 @@ def answer_block(text, when, answers):
             at.setdefault(k, []).append(a)
     if not at and not loose:
         return ""
-    out = [HEAD % ("your reply of " + when if when else "your reply"), ""]
+    out = [HEAD % ("your reply of " + when if when else "your reply"), ""] if head else []
     gap = True  # after the heading or an answer: the reply's blank lines there are left out
     for k, l in enumerate(lines if text else []):
         if gap and not l.strip():
@@ -396,20 +396,34 @@ def answer_block(text, when, answers):
     return "\n".join(out)
 
 
+def area_copy(text, answers):
+    """What the area's copy puts on the clipboard (the page's areaClip()): text, the markdown of the blocks in the frame
+    (or of the one paragraph a drag opened), as it is while no answer in it has text; once one has, those lines quoted
+    with "> " and every answer right after its block as answer_block() places them (the area's own after its last
+    line, led by AREA, or by ANSWER for one block). No heading line: the quoted lines and the leads say what it is.
+    answers: [(line in text's own lines, passage, answer, n)] as in answer_block()."""
+    return (answer_block(text, "", answers, head=False) if answers else "") or (text or "")
+
+
 def format_answered_replies(replies):
     """Send to Session's paste and Copy's text: answer_block() of each reply answered, in order, a blank line
     between them. replies: [(text, when, answers)]."""
     return "\n\n".join(b for b in (answer_block(*r) for r in replies) if b)
 
 
-def set_clipboard_text(text):
-    """Text alone on the clipboard (CF_UNICODETEXT). False when another program keeps it busy."""
-    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+def set_clipboard_text(text, expect=None, user32=None, kernel32=None):
+    """Text alone on the clipboard (CF_UNICODETEXT). Answers the clipboard's sequence number after it (True when
+    Windows gives none), False when another program keeps it busy. expect, a sequence number this returned before: the
+    clipboard is written only while it still holds that copy (checked with the clipboard open, so nothing can come in
+    between), else None and nothing changes (the area's copy following its answer never covers what the user copied
+    since). user32 and kernel32 stand in for Windows' in tests."""
+    user32, kernel32 = user32 or ctypes.windll.user32, kernel32 or ctypes.windll.kernel32
     kernel32.GlobalAlloc.restype = kernel32.GlobalLock.restype = ctypes.c_void_p
     kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
     kernel32.GlobalLock.argtypes = kernel32.GlobalUnlock.argtypes = kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
     user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
     user32.SetClipboardData.restype = ctypes.c_void_p
+    user32.GetClipboardSequenceNumber.restype = ctypes.c_uint32
     data = text.encode("utf-16-le") + b"\0\0"
     for _ in range(10):
         if user32.OpenClipboard(None):
@@ -418,6 +432,8 @@ def set_clipboard_text(text):
     else:
         return False
     try:
+        if expect is not None and user32.GetClipboardSequenceNumber() != expect:
+            return None
         user32.EmptyClipboard()
         h = kernel32.GlobalAlloc(0x0002, len(data))
         if not h:
@@ -427,9 +443,9 @@ def set_clipboard_text(text):
         if not user32.SetClipboardData(13, h):
             kernel32.GlobalFree(h)
             return False
-        return True
     finally:
         user32.CloseClipboard()
+    return user32.GetClipboardSequenceNumber() or True
 
 
 # ---------- Dictation in an answer box (Space held) ----------

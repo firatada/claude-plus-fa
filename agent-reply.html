@@ -521,6 +521,26 @@ function areaMerge(keys, rid, a, b) {
   return {key: areaKey(rid, lo, hi), a: lo, b: hi, from: [...from].sort((x, y) => areaRange(x).a - areaRange(y).a)};
 }
 const span = (a, b) => Array.from({length: b - a + 1}, (_, i) => a + i);
+// What the area's copy hands copy_area for an area's key ("<id>#a-b") or the one paragraph a drag opened ("<id>#n")
+// in reply, the reply's text (asked 2026-11-25: the frame covers its answer, so the paste brings it along): {text, the
+// blocks' markdown; answers [{key, passage, text, line}]}, every answer with text inside it, the blocks' own first and
+// the area's last (as Send to Session orders them), line counted in text's own lines. agent-reply.py area_copy()
+// quotes the blocks with those answers inside, or keeps the bare markdown while none has text. null for a key not in
+// reply. Pure, so tools/test-reply.py runs it in node.
+function areaClip(key, reply, answers) {
+  const g = areaRange(key), m = !g && /^(.*)#(\d+)$/.exec(String(key || ""));
+  const rid = g ? g.rid : m ? m[1] : null, a = g ? g.a : m ? +m[2] : -1, b = g ? g.b : a;
+  const bs = blocks(String(reply || ""));
+  if (rid === null || !bs[a] || !bs[b]) return null;
+  const text = areaMarkdown([reply], [[0, span(a, b)]]), from = bs[a].from, list = [];
+  const has = k => answers[k] && String(answers[k].text || "").trim();
+  for (let n = a; n <= b; n++) {
+    const k = rid + "#" + n;
+    if (has(k) && bs[n].src !== undefined) list.push({key: k, passage: bs[n].src, text: answers[k].text, line: bs[n].last - from});
+  }
+  if (g && has(key)) list.push({key, passage: text, text: answers[key].text, line: bs[b].to - from});
+  return {text, answers: list};
+}
 
 // Space in an answer box: hold it to speak, as Claude Code's own hold-to-talk feels. Its rule, read from Claude Code
 // 2.1.330 (a terminal has no key-up, so the key's own repeat tells a hold): the first Space types a space; from the
@@ -1394,6 +1414,7 @@ function changed(t) {
   // draft goes (S and sources belong to what is drawn when it fires)
   const sid = S.sid, passage = sources[key] || "", text = t.value;
   saveJob[key] = setTimeout(() => api().draft(sid, key, passage, text), 300);
+  clipFollow(t, false);
 }
 document.addEventListener("input", e => {
   if (!e.target.classList.contains("ans")) return;
@@ -1406,6 +1427,7 @@ document.addEventListener("keyup", e => {
 addEventListener("blur", () => { if (spaceBox) spaceStep(spaceBox, {type: "blur"}); });  // the window lost the keyboard
 document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
+  if (clipJob) clipFollow(e.target, true);  // Enter or leaving the box: the copy waiting to follow its answer goes now
   if (spaceBox === e.target) spaceStep(e.target, {type: "blur"});
   if (!busy.has(e.target)) vline(e.target, "");  // "Transcribing…" stays: its text still comes
   const row = e.target.parentElement;
@@ -1471,7 +1493,7 @@ document.addEventListener("click", e => {
   if (a) { e.preventDefault(); if (!dragged(e)) openLink(a); return; }  // never opened in the page itself; its paragraph's box is not opened or toggled
   if (tg.closest("#replies .lnote")) return;
   const qb = tg.closest(".quick button");
-  if (qb) { tipHide(); quickPut(qb.closest(".ansrow").firstChild, qb.dataset.quick); return; }  // never the paragraph's click
+  if (qb) { const t = qb.closest(".ansrow").firstChild; tipHide(); quickPut(t, qb.dataset.quick); clipFollow(t, true); return; }  // never the paragraph's click
   const row = tg.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
   const hit = tg.closest("#replies .para");
@@ -1593,7 +1615,8 @@ $("send").addEventListener("click", () => {
 // areaPress() decides what a press starts. The rectangle is there only while the drag lasts: let go, it and the
 // tint go at once (asked 2026-11-25: no frame inside a frame), what stays is the frame round the touched blocks and
 // its answer box (areaSync()). Each release puts the blocks on the clipboard at once (areaCopy()), with a quiet
-// "Copied" at the frame's corner for AREA_NOTE_MS; no Copy button. The copy never touches the keyboard: the area's
+// "Copied" at the frame's corner for AREA_NOTE_MS; no Copy button; as its answer is typed the copy follows it
+// (clipFollow()). The copy never touches the keyboard: the area's
 // box keeps it. To change an area, drag again (a drag over an answered area extends it). The rectangle lives in
 // #body's own coordinates, so it scrolls with the replies; dragged within AREA_ZONE px of the top or bottom edge (or
 // past it) the replies scroll, faster the further out, so it can span more than one screen. Esc drops a drag.
@@ -1670,16 +1693,56 @@ function areaEnd() {
   const bs = areaBlocks();
   areaClear();
   if (!bs.length) return;  // it touched nothing
-  const text = areaMarkdown(shownReplies().map(r => r.text), areaPicks(bs));
-  const row = areaSync(bs), frame = row && row.closest(".agroup");
-  areaCopy(text, frame ? [frame] : bs.map(b => b.el));
+  const row = areaSync(bs), frame = row && row.closest(".agroup"), key = row ? row.dataset.for : null;
+  const c = key && clipOf(key);  // one reply: what its box answers comes along (an area taken in has one already)
+  const text = c ? c.text : areaMarkdown(shownReplies().map(r => r.text), areaPicks(bs));
+  areaCopy(text, c ? c.answers : [], frame ? [frame] : bs.map(b => b.el), key);
 }
-function areaCopy(text, els) {  // the touched blocks as Claude wrote them, on the clipboard; the keyboard stays where it is
+function areaCopy(text, list, els, key) {  // the touched blocks as Claude wrote them, on the clipboard; the keyboard stays where it is
+  clearTimeout(clipJob);
+  clip = null;
   if (!text) return;
-  Promise.resolve(api().copy_area(text)).then(ok => {
-    if (ok) areaCopied(els);
+  const c = key && S ? {sid: S.sid, key, seq: null} : null;
+  const r = Promise.resolve(api().copy_area(text, list, null)).then(seq => {
+    if (seq) areaCopied(els);
     else say("Could not copy: another program holds the clipboard. Try again.", true);
+    if (c && typeof seq === "number") c.seq = seq;
   });
+  if (c) { c.ready = r; clip = c; }
+}
+// The clipboard follows the area (asked 2026-11-25: "the frame covers this answer too"): the area (or the one
+// paragraph a drag opened) copied last, clip {sid, key, seq: the clipboard's sequence number after that copy}, is
+// copied again with its answer each time its own box changes: CLIP_MS after typing stops (as drafts are saved), at
+// once on a quick answer, Enter or leaving the box. Only while the clipboard still holds that copy: copy_area() is
+// handed seq and leaves the clipboard alone when anything else was copied since (null), and the area stops
+// following. Another box's typing never touches it. No "Copied" for these: the note belongs to the release.
+const CLIP_MS = 300;
+let clip = null, clipJob = null;
+function clipOf(key) {  // areaClip() of key in the reply shown that holds it
+  const g = areaRange(key), rid = g ? g.rid : String(key).replace(/#\d+$/, "");
+  const rr = shownReplies().find(r => r.id === rid);
+  return rr ? areaClip(key, rr.text, answers) : null;
+}
+function clipFollow(t, now) {  // t's box changed (now: at once, else after CLIP_MS of quiet)
+  const key = t.parentElement && t.parentElement.dataset.for, c = clip;
+  if (!c || !S || c.key !== key || c.sid !== S.sid) return;
+  clearTimeout(clipJob);
+  clipJob = null;
+  const p = clipOf(key);  // the text as it stands now: a redraw before the copy goes must not change it
+  if (!p) return;
+  const go = () => {
+    clipJob = null;
+    c.ready = c.ready.then(() => {  // one after another, each handed the number the one before left
+      if (clip !== c || c.seq === null) return;
+      return Promise.resolve(api().copy_area(p.text, p.answers, c.seq)).then(seq => {
+        if (clip !== c) return;
+        if (typeof seq === "number") c.seq = seq;
+        else if (seq === null) clip = null;  // something else was copied since: leave it, and stop following
+        else say("Could not copy: another program holds the clipboard. Try again.", true);
+      });
+    });
+  };
+  if (now) go(); else clipJob = setTimeout(go, CLIP_MS);
 }
 // "Copied" for AREA_NOTE_MS, on the top border of the frame round els at its right corner (as the frame is drawn:
 // 4 px above the blocks, 10 px right of them), its white ground breaking the line; so it covers no answer box

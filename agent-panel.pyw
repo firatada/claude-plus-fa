@@ -2616,10 +2616,22 @@ class ReplyApi:
         except Exception:
             return False
 
-    def copy_area(self, text):
-        # the area's Copy: the blocks the rectangle touches, as their markdown (the page's areaMarkdown())
+    def copy_area(self, text, answers=None, expect=None):
+        # the area's copy: the blocks the rectangle touches, as their markdown (the page's areaClip()), quoted with the
+        # answers inside them once one has text (agent-reply.py area_copy()). expect: the sequence number the last copy
+        # of this area answered; the copy is made only while the clipboard still holds it (None: something else was
+        # copied since). Answers the new sequence number, or False when the clipboard is busy.
         try:
-            return bool(text) and self._p.reply_mod.set_clipboard_text(str(text))
+            mod, rows = self._p.reply_mod, []
+            for a in answers or []:
+                try:
+                    line = int(a.get("line"))
+                except (TypeError, ValueError):
+                    line = -1
+                rows.append((line, str(a.get("passage") or ""), str(a.get("text") or ""),
+                             mod.area_size(str(a.get("key") or "").rpartition("#")[2])))
+            out = mod.area_copy(str(text or ""), rows)
+            return bool(out) and mod.set_clipboard_text(out, None if expect is None else int(expect))
         except Exception:
             return False
 
