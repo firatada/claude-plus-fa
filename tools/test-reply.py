@@ -466,9 +466,9 @@ out.lists = blocks("1. one\n2. two\n   more\n- dot\n  - nested").map(b => [b.kin
 out.quote = blocks("> a\n> b")[0];
 out.heads = blocks("# H1\n## H2\n### H3").map(b => blockHtml(b, "k"));
 out.codes = blocks("```js\nconst a = 1;\n```\n\n~~~\n" + Array.from({length: 60}, (_, i) => "line " + i).join("\n") + "\n~~~").map(b => blockHtml(b, "k"));
-const C = (o) => clickAction(Object.assign({own: false, moved: false, selected: false, detail: 1, box: false, text: false}, o));
+const C = (o) => clickAction(Object.assign({own: false, moved: false, detail: 1, box: false, text: false}, o));
 out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}), drag: C({moved: true}),
-  dragShut: C({moved: true, box: true}), selected: C({selected: true}), dbl: C({detail: 2}), own: C({own: true}),
+  dragShut: C({moved: true, box: true}), dbl: C({detail: 2}), triple: C({detail: 3, box: true}), own: C({own: true}),
   ownOpen: C({own: true, box: true})};
 out.tips = [paraTip("p"), paraTip("li"), paraTip("table")];
 out.tab = [tabTarget(5, 0, false), tabTarget(5, 3, false), tabTarget(5, 4, false), tabTarget(5, 4, true), tabTarget(5, 0, true),
@@ -530,9 +530,8 @@ out.sendUnordered = sendList(ans, src, []).length;
 out.links = inline("See [the shot](file:///C:/Users/x/a%20b/shot.png), file:///C:/Users/x/a%20b/shot.png. Also " +
   "C:\\Users\\x\\plain.txt and (C:/Users/x/notes.md). Code `C:\\Users\\x\\a b\\shot.png` and `npm run C:` and https://ex.com/q");
 // the area: what a press starts, the rectangle after a drag, and what its Copy takes
-out.areaPress = [areaPress({button: 0, ctl: false, scrollbar: false, text: false}), areaPress({button: 0, ctl: false, scrollbar: false, text: true}),
-  areaPress({button: 0, ctl: true, scrollbar: false, text: false}), areaPress({button: 0, ctl: false, scrollbar: true, text: false}),
-  areaPress({button: 2, ctl: false, scrollbar: false, text: false})];
+const AP = (o) => areaPress(Object.assign({button: 0, ctl: false, scrollbar: false, detail: 1}, o));
+out.areaPress = [AP({}), AP({detail: 0}), AP({ctl: true}), AP({scrollbar: true}), AP({button: 2}), AP({detail: 2}), AP({detail: 3})];
 const AB = {w: 800, h: 1000}, p0 = {x: 50, y: 60};
 out.areaRect = {draw: areaRect(p0, {x: 170, y: 140}, AB), drawBack: areaRect(p0, {x: 20, y: 20}, AB),
   clamp: areaRect({x: 100, y: 100}, {x: 2000, y: 2000}, AB), out: areaRect({x: 100, y: 100}, {x: -40, y: -9}, AB)};
@@ -658,7 +657,7 @@ class Markdown(unittest.TestCase):
 
     def test_drag_double_click_and_own_targets_never_toggle(self):
         c = self.md["click"]
-        for k in ("drag", "dragShut", "selected", "dbl", "own", "ownOpen"):
+        for k in ("drag", "dragShut", "dbl", "triple", "own", "ownOpen"):
             self.assertEqual(c[k], "", k)
 
     def test_the_hint_says_what_a_click_does(self):
@@ -1170,18 +1169,18 @@ class Links(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class AreaRules(unittest.TestCase):
-    """The area: a drag that starts on blank space draws a rectangle, a drag on text selects text; the rectangle
-    spans the press and the pointer; the copy takes the blocks touched as Claude wrote them."""
+    """The area: a drag that starts anywhere (text too) draws a rectangle, a double or triple click selects text; the
+    rectangle spans the press and the pointer; the copy takes the blocks touched as Claude wrote them."""
     md = None
 
     @classmethod
     def setUpClass(cls):
         cls.md = node_markdown()
 
-    def test_where_the_press_goes_down_decides(self):
-        # blank space: a rectangle; a character of text: the browser's text selection; a control, the scroll bar or
-        # another button: their own
-        self.assertEqual(self.md["areaPress"], ["area", "text", "", "", ""])
+    def test_a_press_anywhere_starts_the_area_but_controls_scroll_bars_and_double_clicks(self):
+        # text or blank space alike (a pointerdown's detail is 0): a rectangle; a control, a scroll bar, another
+        # button: their own; the second and third press of a double or triple click: the browser's word or paragraph
+        self.assertEqual(self.md["areaPress"], ["area", "area", "", "", "", "", ""])
 
     def test_the_rectangle_while_it_is_drawn(self):
         r = self.md["areaRect"]
@@ -1346,7 +1345,7 @@ class Page(unittest.TestCase):
 # tint go at once, the panel gets their markdown (once), and a quiet "Copied" shows at the blocks' corner for about a
 # second (no Copy button, no corner handles); Esc while drawing drops the drag and copies nothing; one block alone
 # opens its own box and no frame; a click on a paragraph still opens its box (the empty box the drag opened closes);
-# a drag that starts on text draws no rectangle and copies nothing.
+# a drag that starts on text draws the rectangle too (one paragraph: its own box, copied).
 AREA_TEST = r"""<pre id="tout"></pre><script>
 const later = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
@@ -1400,7 +1399,8 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   const t = document.querySelector("#replies .reply:nth-child(2) .para"), tq = t.getBoundingClientRect(), n0 = document.querySelectorAll(".ansrow").length;
   const nCopies = T.area.length;
   await drag(t, tq.left + 2, tq.top + tq.height / 2, tq.left + 60, tq.top + tq.height / 2);
-  o.textDrag = [area.hidden, document.querySelectorAll(".ansrow").length - n0, T.area.length - nCopies];  // no rectangle, no box opened or shut, no copy
+  o.textDrag = [area.hidden, [...document.querySelectorAll(".ansrow")].length - n0, T.area.slice(nCopies),
+    document.activeElement.closest(".ansrow") && document.activeElement.closest(".ansrow").dataset.for];
   document.getElementById("tout").textContent = JSON.stringify(o);
 })().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
 </script>
@@ -1443,9 +1443,10 @@ class AreaPage(unittest.TestCase):
     def test_one_block_alone_opens_its_own_box_and_no_frame(self):
         self.assertEqual(self.o["lone"], ["m1#1", 0, True, 0, ["| a | b |\n|---|---|\n| 1 | 2 |"], True])
 
-    def test_a_click_and_a_drag_over_text_work_as_before(self):
+    def test_a_click_opens_its_box_and_a_drag_from_text_draws_the_area(self):
         self.assertEqual(self.o["click"], ["m1#0"])  # the empty box the drag opened closed; the clicked one opened
-        self.assertEqual(self.o["textDrag"], [True, 0, 0])
+        # the rectangle gone on release, the paragraph's own box opened with the caret, its text copied
+        self.assertEqual(self.o["textDrag"], [True, 1, ["Second reply."], "m2#0"])
 
 
 # An area answered as a whole, in the real page (headless Edge, events dispatched to the page): a drag across a
@@ -1643,6 +1644,130 @@ class AreaRedragPage(unittest.TestCase):
         self.assertEqual(self.o["first"], ["m1#1-3", [[1, 2, 3]], True])
         self.assertEqual(self.o["second"], ["m1#1-4", [[1, 2, 3, 4]], 1, 0, 0])
         self.assertEqual(self.o["copied"], ["## Plan\n\n1. One\n2. Two", "## Plan\n\n1. One\n2. Two\n3. Three"])
+
+
+# The area starts anywhere (headless Edge, events dispatched to the page): a press on text takes no text selection
+# (its mousedown is prevented) unless it is a double or triple click's second or third; a drag from the middle of a
+# sentence across three blocks frames them; a click on a paragraph under that frame opens its box although leaving the
+# empty area box moves the page under the pointer; a link opens on a click and a drag from it draws; a drag in an
+# answer box or on a code block's own scroll bar draws nothing; the rubber band and the frame have rounded corners.
+AREA_ANYWHERE_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+const errs = [];
+addEventListener("error", e => errs.push(e.message));
+(async () => {
+  const R = "The spend per job this week came out higher than planned, mostly from the scoring run.\n\n1. Cut the trend job\n2. Move scoring\n3. Keep the report\n\n" +
+    "```powershell\nGet-ChildItem -Recurse -Filter *.json | Where-Object { $_.Length -gt 100000 } | Sort-Object Length -Descending | Select-Object -First 20 FullName, Length\n```\n\nSee [the report](https://ex.com/r) now.";
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: R}], answers: {}, selections: [], note: "", pins: []});
+  await later(50);
+  const mk = (type, x, y, o) => new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type, Object.assign({bubbles: true,
+    cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1, pointerType: "mouse",
+    isPrimary: true, clientX: x, clientY: y, detail: type.startsWith("pointer") ? 0 : 1}, o));
+  const ev = (el, type, x, y, o) => { const e = mk(type, x, y, o); el.dispatchEvent(e); return e; };
+  const moves = (el, x0, y0, x1, y1) => { for (let k = 1; k <= 5; k++) ev(el, "pointermove", x0 + (x1 - x0) * k / 5, y0 + (y1 - y0) * k / 5); };
+  const B = n => document.querySelector(`#replies [data-n="${n}"]`).getBoundingClientRect();
+  const area = document.getElementById("area"), o = {};
+  const frame = () => [...document.querySelectorAll(".agroup")].map(g => [...g.querySelectorAll("[data-n]")].map(e => +e.dataset.n));
+  const rows = () => [...document.querySelectorAll(".ansrow")].map(r => r.dataset.for);
+  // a press on text: its mousedown is prevented (no text selection), the second press of a double click is not
+  const p0 = document.querySelector('#replies [data-n="0"]'), q0 = B(0), x = q0.left + 200, y = q0.top + q0.height / 2;
+  ev(p0, "pointerdown", x, y);
+  o.single = ev(p0, "mousedown", x, y).defaultPrevented;
+  ev(p0, "pointerup", x, y); ev(p0, "mouseup", x, y);
+  ev(p0, "pointerdown", x, y);
+  o.double = ev(p0, "mousedown", x, y, {detail: 2}).defaultPrevented;
+  moves(p0, x, y, x + 60, y + 40);
+  o.doubleDraws = !area.hidden;
+  ev(p0, "pointerup", x + 60, y + 40);
+  // a drag from the middle of the sentence down to the second item: three blocks framed, the rubber band rounded
+  ev(p0, "pointerdown", x, y); ev(p0, "mousedown", x, y);
+  moves(p0, x, y, x + 120, B(2).top + 8);
+  o.band = [!area.hidden, getComputedStyle(area).borderRadius, getSelection().toString()];
+  ev(p0, "pointerup", x + 120, B(2).top + 8); ev(p0, "mouseup", x + 120, B(2).top + 8); ev(p0, "click", x + 120, B(2).top + 8);
+  await later(30);
+  const g = document.querySelector(".agroup");
+  o.framed = [frame(), g && getComputedStyle(g, "::before").borderRadius, rows(), T.area.length];
+  // a drag inside the area's open box draws nothing
+  const t = document.activeElement, tq = t.getBoundingClientRect();
+  ev(t, "pointerdown", tq.left + 10, tq.top + 10); ev(t, "mousedown", tq.left + 10, tq.top + 10);
+  moves(t, tq.left + 10, tq.top + 10, tq.left + 200, tq.top + 60);
+  o.boxDrag = [!area.hidden, document.activeElement === t];
+  ev(t, "pointerup", tq.left + 200, tq.top + 60);
+  // a click on the third item, under the frame: leaving the empty area box lifts it, the click lands on what holds
+  // both, and still opens the item's own box
+  const it = document.querySelector('#replies [data-n="3"]'), iq = B(3), ix = iq.left + 60, iy = iq.top + iq.height / 2;
+  ev(it, "pointerdown", ix, iy); ev(it, "mousedown", ix, iy);
+  await later(10);
+  o.lifted = B(3).top < iy - iq.height / 2 - 1;
+  const under = document.elementFromPoint(ix, iy), common = under && under.contains(it) ? under : document.getElementById("replies");
+  ev(under || document.body, "pointerup", ix, iy); ev(common, "click", ix, iy);
+  await later(20);
+  o.shiftClick = [rows(), frame()];
+  document.activeElement.blur();
+  // a link: a click opens it; a drag from it draws the area and opens nothing more
+  const a = document.querySelector("#replies a.lnk"), aq = a.getBoundingClientRect(), ax = aq.left + 5, ay = aq.top + aq.height / 2;
+  ev(a, "pointerdown", ax, ay); ev(a, "mousedown", ax, ay); ev(a, "pointerup", ax, ay); ev(a, "mouseup", ax, ay); ev(a, "click", ax, ay);
+  await later(20);
+  o.linkClick = T.links.slice();
+  ev(a, "pointerdown", ax, ay); ev(a, "mousedown", ax, ay);
+  moves(a, ax, ay, ax + 80, ay - 60);
+  o.linkDrag = [!area.hidden];
+  ev(a, "pointerup", ax + 80, ay - 60); ev(a, "mouseup", ax + 80, ay - 60); ev(a, "click", ax + 80, ay - 60);
+  await later(20);
+  o.linkDrag.push(T.links.length);
+  document.activeElement.blur();
+  // the code block's own sideways scroll bar: a press there draws nothing; on its code it draws
+  const pre = document.querySelector("#replies .code pre"), pq = pre.getBoundingClientRect();
+  o.bar = pre.offsetHeight - pre.clientHeight;
+  const by = pq.top + pre.clientTop + pre.clientHeight + 2;
+  ev(pre, "pointerdown", pq.left + 40, by); ev(pre, "mousedown", pq.left + 40, by);
+  moves(pre, pq.left + 40, by, pq.left + 240, by);
+  o.barDraws = !area.hidden;
+  ev(pre, "pointerup", pq.left + 240, by);
+  ev(pre, "pointerdown", pq.left + 40, pq.top + 8); ev(pre, "mousedown", pq.left + 40, pq.top + 8);
+  moves(pre, pq.left + 40, pq.top + 8, pq.left + 240, pq.top + 20);
+  o.codeDraws = !area.hidden;
+  ev(pre, "pointerup", pq.left + 240, pq.top + 20);
+  o.errs = errs;
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class AreaAnywherePage(unittest.TestCase):
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(AREA_ANYWHERE_TEST, budget=5000)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+        self.assertEqual(self.o["errs"], [])
+
+    def test_a_press_on_text_takes_no_selection_but_a_double_click_does(self):
+        self.assertEqual((self.o["single"], self.o["double"], self.o["doubleDraws"]), (True, False, False))
+
+    def test_a_drag_from_the_middle_of_a_sentence_frames_three_blocks_with_round_corners(self):
+        self.assertEqual(self.o["band"], [True, "10px", ""])  # the rubber band: --r-ctl, no text selected
+        self.assertEqual(self.o["framed"], [[[0, 1, 2]], "10px", ["m1#0-2"], 1])
+
+    def test_a_drag_in_an_answer_box_draws_nothing(self):
+        self.assertEqual(self.o["boxDrag"], [False, True])
+
+    def test_a_click_under_the_frame_opens_its_box_although_the_page_moved(self):
+        self.assertTrue(self.o["lifted"])
+        self.assertEqual(self.o["shiftClick"], [["m1#3"], []])
+
+    def test_a_link_opens_on_a_click_and_a_drag_from_it_draws(self):
+        self.assertEqual(self.o["linkClick"], ["https://ex.com/r"])
+        self.assertEqual(self.o["linkDrag"], [True, 1])
+
+    def test_a_code_blocks_scroll_bar_scrolls_and_its_code_draws(self):
+        self.assertGreater(self.o["bar"], 0)  # the long line gives it a scroll bar
+        self.assertEqual((self.o["barDraws"], self.o["codeDraws"]), (False, True))
 
 
 class AreaAnswerText(unittest.TestCase):

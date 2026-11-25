@@ -36,11 +36,12 @@
      shows its reply in place of the latest ones, answer boxes and Send to Session as on them; Latest, a tab press or
      another session coming up shows the latest replies again. agent-panel.pyw keeps the pins with their text, 8 per
      session at most: a 9th asks, in a line under the head, to unpin the oldest first.
-     The area (2026-11-25): a drag that starts on blank space in the replies draws a rectangle (past the top or bottom
-     edge the replies scroll); every block it touches is tinted whole while it is drawn. Let go, the rectangle and the
-     tint go at once (no frame inside a frame), and those blocks go on the clipboard as Claude wrote them, with a short
-     "Copied" at the frame's corner; there is no Copy button. To change an area, drag again. A drag that starts on
-     text still selects text and copies nothing; a click still opens the answer box. Esc while drawing drops it.
+     The area (2026-11-25): a drag that starts anywhere in the replies, on text too, draws a rectangle (past the top or
+     bottom edge the replies scroll); every block it touches is tinted whole while it is drawn. Let go, the rectangle
+     and the tint go at once (no frame inside a frame), and those blocks go on the clipboard as Claude wrote them, with
+     a short "Copied" at the frame's corner; there is no Copy button. To change an area, drag again. A click still
+     opens the answer box; a double click selects a word and a triple click a paragraph (Ctrl+C copies them). Esc
+     while drawing drops it.
      The area answered as a whole (2026-11-25): when the rectangle is let go, the blocks it touches (in one reply) get
      one frame and one answer box under the last, caret in it; that answer is for every block in the
      frame (Send to Session quotes them and leads the answer with how many blocks it covers). A block inside keeps its
@@ -157,6 +158,8 @@ a.lnk code { color: var(--blue); }
 .para.li { display: grid; grid-template-columns: 22px minmax(0, 1fr); }
 .para.li > .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 #replies .para:hover { background: rgba(27, 77, 245, .04); }  /* with its tooltip, the hint that a click answers it */
+#replies { cursor: default; }  /* a drag on text draws the area, it does not select: no I-beam */
+.ans { cursor: text; }
 .hr { height: 1px; background: var(--line); margin: 10px 0; }
 code { font: 400 12.5px "Cascadia Mono", Consolas, monospace; background: var(--surface2); border-radius: 4px; padding: 1px 4px; }
 /* a code block: drawn open; a click on its head shuts it to one line, another opens it again */
@@ -211,22 +214,23 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .ghost { position: absolute; pointer-events: none; border-style: solid; border-color: transparent; color: var(--blue);
   white-space: pre-wrap; overflow-wrap: break-word; }
 .ghost .tail { opacity: .5; }
-/* the area: a rectangle drawn by a drag that starts on blank space in the replies, there only while the drag lasts;
+/* the area: a rectangle drawn by a drag that starts anywhere in the replies, there only while the drag lasts;
    the blocks it touches are tinted whole meanwhile and copied as markdown when it is let go, with a quiet "Copied"
    at the frame's corner (#areaNote: text, no button) */
 body.areaing, body.areaing * { user-select: none; }
 body.drawing #body, body.drawing #body * { cursor: crosshair !important; }
-#area { position: absolute; z-index: 5; border: 1.5px solid var(--blue); border-radius: 2px; background: rgba(27, 77, 245, .05);
+#area { position: absolute; z-index: 5; border: 1.5px solid var(--blue); border-radius: var(--r-ctl); background: rgba(27, 77, 245, .05);
   pointer-events: none; }
 #area[hidden], #areaNote[hidden] { display: none; }
 #areaNote { position: absolute; z-index: 6; pointer-events: none; padding: 0 6px; border-radius: 4px; background: var(--panel);
   color: var(--blue); font: 500 12px/18px "Segoe UI", system-ui, sans-serif; white-space: nowrap; animation: fade .16s ease-out; }
 #replies .inarea, #replies .inarea:hover { background-color: rgba(27, 77, 245, .09); }
 #replies .code.inarea { border-color: rgba(27, 77, 245, .45); }
-/* an area answered as a whole: its blocks in one frame (drawn round them, so nothing moves), its box under the last */
+/* an area answered as a whole: its blocks in one frame (drawn round them, so nothing moves), its box under the last;
+   --r-ctl round the blocks' own 6 px tint 4 px inside it, so the corners nest */
 .agroup { position: relative; z-index: 0; }
 .agroup::before { content: ""; position: absolute; z-index: -1; inset: -4px -10px; border: 1.5px solid rgba(27, 77, 245, .5);
-  border-radius: 8px; background: rgba(27, 77, 245, .025); pointer-events: none; }
+  border-radius: var(--r-ctl); background: rgba(27, 77, 245, .025); pointer-events: none; }
 .ansrow.area { margin: 6px 0 4px; }
 #empty { color: var(--muted); padding: 6px 0; }
 #empty[hidden], #miss[hidden] { display: none; }
@@ -414,11 +418,12 @@ function blockHtml(b, key) {
 
 // ---------- a click on a paragraph and its answer box (pure, so tools/test-reply.py runs it in node) ----------
 // c: own (the click's own target acts: a link, a code block, Pin, a ":N" badge, the box itself, or no paragraph),
-// moved (the pointer went 4 px or more between press and release), selected (text is selected after it), detail
-// (2 and more: part of a double click), box (the paragraph's box is open), text (the box holds text).
+// moved (the pointer went 4 px or more between press and release: a drag, which draws the area), detail (2 and more:
+// part of a double or triple click, which selects a word or a paragraph), box (the paragraph's box is open), text
+// (the box holds text).
 // Answers "open" (and focus it), "close", "focus" (a box holding text never closes on a click) or "" (nothing).
 function clickAction(c) {
-  if (c.own || c.moved || c.selected || c.detail > 1) return "";
+  if (c.own || c.moved || c.detail > 1) return "";
   if (!c.box) return "open";
   return c.text ? "focus" : "close";
 }
@@ -439,16 +444,15 @@ function tabTarget(n, i, back) {
 function holdsUpdates(o) { return !!(o.box && o.focused) || !!o.dictating; }
 
 // The area (asked 2026-11-25): a drag in the replies draws a rectangle; every block it touches is copied whole, as
-// Claude wrote it. Where the press goes down decides, so a plain click and a drag over words keep working as before:
-//   a press with another button than the left, or on a control (a link, a button, an answer box, a ":N" badge), or
-//     on the scroll bar: the control's own
-//   a press on a character of text (within AREA_SLACK px of it): the browser's own text selection
-//   a press on blank space (the margins, the gaps between blocks, right of a short line): a drag from it draws the
-//     rectangle once the pointer has gone 4 px (a click there stays a click, so a paragraph's box still opens)
-// c: {button, ctl, scrollbar, text}. Answers "area", "text" or "".
+// Claude wrote it. It starts anywhere, on text too (asked 2026-11-25: "Her yerden başlayabilsin çerçeve"):
+//   a press with another button than the left, or on a control (a button, an answer box and its row), or on a scroll
+//     bar (#body's, or a code block's or pre line's own sideways bar): the control's own
+//   the second or third press of a double or triple click (detail 2+): the browser's word or paragraph selection
+//   anything else (text, links, blank space): a drag from it draws the rectangle once the pointer has gone 4 px; a
+//     press released in place stays a click (a paragraph's box opens, a link opens)
+// c: {button, ctl, scrollbar, detail}. Answers "area" or "".
 function areaPress(c) {
-  if (c.button !== 0 || c.ctl || c.scrollbar) return "";
-  return c.text ? "text" : "area";
+  return c.button !== 0 || c.ctl || c.scrollbar || c.detail > 1 ? "" : "area";
 }
 // The rectangle while it is drawn: the press at p {x, y}, the pointer at q, b {w, h} the replies' own size. It spans
 // the two points whichever way the pointer went, kept inside b.
@@ -1385,37 +1389,44 @@ document.addEventListener("keydown", e => {
 }, true);
 
 // a click (not a drag) on a paragraph opens its box or closes an empty one; where the press went down tells a drag
-// that selects text (for copying or for the ":N" reply) apart from a click
+// (which draws the area) apart from a click
 let down = null;
-document.getElementById("body").addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY}; }, true);
+document.addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY, t: e.target}; }, true);
+function dragged(e) { return !!down && Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 4; }
+// what a click is on: what was pressed, also when the press made the page move under a still pointer (an empty box
+// left above it closes) and the click lands on what holds both
+function clickTarget(e) {
+  const t = down && down.t;
+  return t && t.isConnected && t !== e.target && e.target.contains(t) && !dragged(e) ? t : e.target;
+}
 document.addEventListener("click", e => {
-  const pb = e.target.closest(".rpin");
+  const tg = clickTarget(e);
+  const pb = tg.closest(".rpin");
   if (pb) { pinDo(pb.classList.contains("on") ? "unpin" : "pin", pb.closest(".reply").dataset.id); return; }
-  const sw = e.target.closest("#ask [data-swap]");
+  const sw = tg.closest("#ask [data-swap]");
   if (sw) { pinDo("swap", sw.dataset.swap); return; }
-  if (e.target.closest("#ask [data-cancel]")) { askHide(); return; }
-  const a = e.target.closest("a.lnk");
+  if (tg.closest("#ask [data-cancel]")) { askHide(); return; }
+  const a = tg.closest("a.lnk");
   if (a && a.dataset.settings) { e.preventDefault(); tipHide(); api().settings(a.dataset.settings); return; }  // its box stays
   if (a && a.closest("#head")) { e.preventDefault(); return; }  // the head's press opens it on release (below)
-  if (a) { e.preventDefault(); openLink(a); return; }  // never opened in the page itself; its paragraph's box is not opened or toggled
-  if (e.target.closest("#replies .lnote")) return;
-  const row = e.target.closest(".ansrow");
+  if (a) { e.preventDefault(); if (!dragged(e)) openLink(a); return; }  // never opened in the page itself; its paragraph's box is not opened or toggled
+  if (tg.closest("#replies .lnote")) return;
+  const row = tg.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
-  const hit = e.target.closest("#replies .para");
-  if (hit && !e.target.closest(".qb, a.lnk")) {
+  const hit = tg.closest("#replies .para");
+  if (hit && !tg.closest(".qb, a.lnk")) {
     // the paragraph as drawn now: an update held while a box had the keyboard is drawn when the press leaves it
     const p = $("replies").querySelector(`.para[data-key="${CSS.escape(hit.dataset.key)}"]`);
     const box = ownRow(p);
-    const sel = getSelection();
     const act = !p ? "" : clickAction({own: false, detail: e.detail, box: !!box, text: !!(box && box.firstChild.value.trim()),
-      moved: !!down && Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 4, selected: !!sel && !sel.isCollapsed});
+      moved: dragged(e)});
     tipHide();
     if (act === "open") openBox(p, undefined, true).focus();
     else if (act === "close") closeBox(box);
     else if (act === "focus") box.firstChild.focus();
     return;
   }
-  const code = e.target.closest(".code > button");
+  const code = tg.closest(".code > button");
   if (code) {
     const c = code.parentElement, open = c.classList.toggle("open");
     const n = c.querySelector("pre").textContent.split("\n").length;
@@ -1517,7 +1528,7 @@ $("send").addEventListener("click", () => {
   });
 });
 
-// ---------- the area: a drag on blank space draws a rectangle; the blocks it touches copy as markdown ----------
+// ---------- the area: a drag anywhere in the replies draws a rectangle; the blocks it touches copy as markdown ----------
 // areaPress() decides what a press starts. The rectangle is there only while the drag lasts: let go, it and the
 // tint go at once (asked 2026-11-25: no frame inside a frame), what stays is the frame round the touched blocks and
 // its answer box (areaSync()). Each release puts the blocks on the clipboard at once (areaCopy()), with a quiet
@@ -1525,7 +1536,7 @@ $("send").addEventListener("click", () => {
 // box keeps it. To change an area, drag again (a drag over an answered area extends it). The rectangle lives in
 // #body's own coordinates, so it scrolls with the replies; dragged within AREA_ZONE px of the top or bottom edge (or
 // past it) the replies scroll, faster the further out, so it can span more than one screen. Esc drops a drag.
-const AREA_SLACK = 3, AREA_ZONE = 28, AREA_STEP = 24, AREA_MOVE = 4, AREA_NOTE_MS = 1000;
+const AREA_ZONE = 28, AREA_STEP = 24, AREA_MOVE = 4, AREA_NOTE_MS = 1000;
 let area = null, adrag = null, apend = null, ascroll = null, acopied = null;  // acopied: the note's timer
 const aopened = new Set();  // paragraph boxes the rectangle opened: they close when left empty, as an area's box does
 function areaBounds() {  // the replies' own size in #body's coordinates (the window is as tall as they are)
@@ -1533,17 +1544,14 @@ function areaBounds() {  // the replies' own size in #body's coordinates (the wi
   return {w: b.clientWidth, h: rp.offsetTop + rp.offsetHeight + parseFloat(getComputedStyle(b).paddingBottom)};
 }
 function bodyPt(x, y) { const b = $("body"), r = b.getBoundingClientRect(); return {x: x - r.left + b.scrollLeft, y: y - r.top + b.scrollTop}; }
-function onGlyph(x, y) {  // whether (x, y) is on a character of text (a space between words too)
-  const r = document.caretRangeFromPoint && document.caretRangeFromPoint(x, y);
-  if (!r || r.startContainer.nodeType !== 3) return false;
-  const n = r.startContainer;
-  for (const j of [r.startOffset - 1, r.startOffset]) {
-    if (j < 0 || j >= n.length) continue;
-    const g = document.createRange();
-    g.setStart(n, j);
-    g.setEnd(n, j + 1);
-    for (const q of g.getClientRects())
-      if (x >= q.left - AREA_SLACK && x <= q.right + AREA_SLACK && y >= q.top - AREA_SLACK && y <= q.bottom + AREA_SLACK) return true;
+// whether a press at (x, y) on el is on a scroll bar: #body's own, or that of a code block or pre line that scrolls
+// sideways (so dragging that bar still scrolls it; a drag on its code draws the area). Tables wrap their cells.
+function onScrollbar(el, x, y) {
+  for (; el && el.nodeType === 1; el = el.parentElement) {
+    const st = getComputedStyle(el), r = el.getBoundingClientRect();
+    if (/auto|scroll/.test(st.overflowY) && el.scrollHeight > el.clientHeight && x >= r.left + el.clientLeft + el.clientWidth && x < r.right) return true;
+    if (/auto|scroll/.test(st.overflowX) && el.scrollWidth > el.clientWidth && y >= r.top + el.clientTop + el.clientHeight && y < r.bottom) return true;
+    if (el.id === "body") break;
   }
   return false;
 }
@@ -1670,15 +1678,21 @@ function dropArea(k) {  // an area taken into another: its answer, draft and box
   if (row) unframe(row);
 }
 $("body").addEventListener("pointerdown", e => {
-  const b = $("body"), r = b.getBoundingClientRect();
-  const c = {button: e.button, ctl: !!e.target.closest("button, a, textarea, .ansrow, .qb, .lnote"), scrollbar: e.clientX - r.left >= b.clientWidth};
-  if (!c.ctl && !c.scrollbar) c.text = onGlyph(e.clientX, e.clientY);
+  const c = {button: e.button, ctl: !!e.target.closest("button, textarea, .ansrow"), detail: 1};
+  c.scrollbar = !c.ctl && onScrollbar(e.target, e.clientX, e.clientY);
   if (areaPress(c) !== "area") return;
-  if (typing()) document.activeElement.blur();  // as a press on blank space always did: the box is left
-  apend = Object.assign({id: e.pointerId, cx: e.clientX, cy: e.clientY}, bodyPt(e.clientX, e.clientY));
+  if (typing()) document.activeElement.blur();  // as a press outside a box always did: the box is left
+  apend = Object.assign({id: e.pointerId, c, cx: e.clientX, cy: e.clientY}, bodyPt(e.clientX, e.clientY));
 });
-// no text selection starts from blank space (the click still comes, so a paragraph's box opens as before)
-$("body").addEventListener("mousedown", e => { if (apend) e.preventDefault(); });
+// the click count comes with mousedown (a pointerdown's detail is 0): the second and third press of a double or
+// triple click are the browser's (a word, a paragraph selected; Ctrl+C copies it). Any other press starts no text
+// selection and clears one left from before (the click still comes, so a paragraph's box or a link opens as before)
+$("body").addEventListener("mousedown", e => {
+  if (!apend) return;
+  if (areaPress(Object.assign({}, apend.c, {detail: e.detail})) !== "area") { apend = null; return; }
+  e.preventDefault();
+  getSelection().removeAllRanges();
+});
 addEventListener("pointermove", e => {
   if (apend && e.pointerId === apend.id) {
     if (!(e.buttons & 1)) { apend = null; return; }
