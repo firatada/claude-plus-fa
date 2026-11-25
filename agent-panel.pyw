@@ -70,6 +70,19 @@ def shown(s, now, hours):
     return not s.get("headless") or bool(s.get("status")) or now - s["mtime"] <= hours * 3600
 
 
+QUICK_ANSWERS = ["I approve"]  # the chips in an empty answer box of the reply window; "quick_answers" overrides them
+
+
+def quick_answers():
+    """The reply window's quick answers, each a chip in an empty answer box that puts its text in the box: the user's
+    "quick_answers" (a list of texts, in order; [] for none) from claude-plus.local.json, else QUICK_ANSWERS. Anything
+    but a list, and any entry but a non-blank text, is left out."""
+    v = local("quick_answers")
+    if not isinstance(v, list):
+        return list(QUICK_ANSWERS)
+    return [s.strip() for s in v if isinstance(s, str) and s.strip()]
+
+
 def strip_wanted():
     """The strip of the last three screenshots: shown unless claude-plus.local.json says "shot_strip": false."""
     return local("shot_strip") is not False
@@ -4372,7 +4385,8 @@ class Panel:
         else:
             note = "No reply since your prompt%s yet." % (" of " + pt if pt else "")
         state = {"sid": s["id"], "name": name, "replies": reps, "selections": sels, "note": note,
-                 "answers": self.drafts.get(s["id"]) if self.drafts else {}, "pins": self.pins_of(s["id"])}
+                 "answers": self.drafts.get(s["id"]) if self.drafts else {}, "pins": self.pins_of(s["id"]),
+                 "quick": quick_answers()}
         for r in t.replies():
             self.seen(s["id"], r["id"], r["text"], r["at"])
         for p in (self.pinned.get(s["id"]) if self.pinned else []):

@@ -22,6 +22,8 @@
      ":N" badge never open or close a box. Several boxes can be open. What the user types there is theirs, in blue on
      a light blue ground with a blue rule on the left, kept per session (agent-panel.pyw stores it through api.draft)
      until a newer prompt is typed (sending it keeps it); a box with a kept answer is open when the reply is shown.
+     An empty box shows the quick answers ("quick_answers" in claude-plus.local.json, else "I approve") as chips at
+     its right end; a click puts the chip's text in the box, the caret stays there (2026-11-25).
      Code blocks show shut, as one line (language, lines, first line), and open on a click. The passages selected
      in the terminal for the ":N" reply show marked where they stand, led by their ":N"; one that is not in the
      reply text is listed at the bottom. The bar at the bottom counts the answers and selections; Send to Session pastes
@@ -193,6 +195,17 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .ans:focus, .ans.has { border: 0; border-left: 2px solid var(--blue); border-radius: 0 var(--r-small) var(--r-small) 0;
   background: var(--ans-bg); padding-left: 10px; }
 .ans:focus { box-shadow: 0 0 0 3px rgba(27, 77, 245, .12); }
+/* quick answers: chips at the right end inside an empty box (Pin's look: 20 px, --r-small, quiet until hover); a
+   click puts the chip's text in the box. They go once the box holds text or Space is dictating, and while they show
+   the box's right padding (--qw, quickFit()) keeps the placeholder and the caret clear of them */
+.quick { position: absolute; top: 7px; right: 6px; display: flex; gap: 4px; }
+.quick button { height: 20px; padding: 0 7px; border: 1px solid var(--line); border-radius: var(--r-small);
+  background: var(--panel); color: var(--muted); font: 600 11px/1 "Segoe UI", system-ui, sans-serif; white-space: nowrap;
+  transition: transform .16s ease-out; }
+.quick button:hover { color: var(--blue); border-color: var(--blue); }
+.quick button:active { transform: scale(.97); }
+.quick:empty, .ans:not(:placeholder-shown) ~ .quick, .ans.listening ~ .quick, .ans.ghosted ~ .quick { display: none; }
+.ans:placeholder-shown:not(.listening):not(.ghosted) { padding-right: var(--qw, 10px); }
 /* Space held in a box: dictation. The line under the box says what is happening: "Keep holding…", "Starting Voice
    to Text…", listening (a red pulsing dot, the words, a five-bar level meter), "Transcribing…" (pulsing grey, as
    Claude Code's), or a note in amber */
@@ -426,6 +439,12 @@ function clickAction(c) {
   if (c.own || c.moved || c.detail > 1) return "";
   if (!c.box) return "open";
   return c.text ? "focus" : "close";
+}
+// a chip's text put in the box at the caret (pure, node-tested): v the box's text, s and e the selection, q the text.
+// Answers {value, caret}: the caret right after what was put in (in an empty box, its end)
+function quickInsert(v, s, e, q) {
+  const a = Math.max(0, Math.min(s, v.length)), b = Math.max(a, Math.min(e, v.length));
+  return {value: v.slice(0, a) + q + v.slice(b), caret: a + q.length};
 }
 function paraTip(kind) {  // the hint of a block whose box is shut (an open box's block has none)
   return `Click to answer this ${kind === "table" ? "table" : kind === "li" ? "item" : "paragraph"}`;
@@ -817,6 +836,41 @@ function grow(t) { t.style.height = "auto"; t.style.height = t.scrollHeight + "p
 function kindOf(p) { return p.classList.contains("table") ? "table" : p.classList.contains("li") ? "li" : "para"; }
 // a block's own box, right after it (an area's box after the area's last block is not that block's)
 function ownRow(p) { const r = p && p.nextElementSibling; return r && r.classList.contains("ansrow") && !r.classList.contains("area") ? r : null; }
+// The box: its textarea first (row.firstChild), then the quick answers (QUICK, from the panel's "quick"), each a chip
+// that puts its text in the box; out of the keyboard's order (tabindex -1), so Tab still goes from box to box
+let QUICK = [], quickKey = "[]";
+function boxHtml(label) {
+  return `<textarea class="ans" rows="1" placeholder="Type your answer, or hold Space to speak…" aria-label="${esc(label)}"></textarea>` +
+    `<span class="quick">${QUICK.map(q => `<button type="button" tabindex="-1" data-quick="${esc(q)}" data-tip="Puts this text in the box">${esc(q)}</button>`).join("")}</span>`;
+}
+function quickFit(row) {  // the box's right padding keeps its text clear of the chips while they show
+  const q = row.querySelector(".quick");
+  if (!q || !q.childElementCount) row.style.removeProperty("--qw");
+  else if (q.offsetWidth) row.style.setProperty("--qw", (q.offsetWidth + 12) + "px");  // 0: not laid out (folded)
+}
+// a chip pressed: the text goes in as typed (execCommand keeps Ctrl+Z; its input event saves the draft as typing
+// does), the caret stays in the box after it; the box is not left, so it neither closes nor redraws
+function quickPut(t, q) {
+  if (document.activeElement !== t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+  if (document.execCommand("insertText", false, q)) return;
+  const r = quickInsert(t.value, t.selectionStart, t.selectionEnd, q);
+  t.value = r.value;
+  t.setSelectionRange(r.caret, r.caret);
+  changed(t);
+}
+// the panel's list changed: every box open now gets the new chips
+function quickSync(list) {
+  const k = JSON.stringify(list || []);
+  if (k === quickKey) return;
+  quickKey = k;
+  QUICK = list || [];
+  const html = boxHtml("").replace(/^<textarea[^>]*><\/textarea>/, "");
+  for (const row of $("replies").querySelectorAll(".ansrow")) {
+    const old = row.querySelector(".quick");
+    if (old) old.outerHTML = html;
+    quickFit(row);
+  }
+}
 function openBox(p, text, animate) {
   let row = ownRow(p);
   opened.add(p.dataset.key);
@@ -824,8 +878,9 @@ function openBox(p, text, animate) {
     row = document.createElement("div");
     row.className = "ansrow" + (animate ? " new" : "");
     row.dataset.for = p.dataset.key;
-    row.innerHTML = '<textarea class="ans" rows="1" placeholder="Type your answer, or hold Space to speak…" aria-label="Your answer to this paragraph. Hold Space to speak it."></textarea>';
+    row.innerHTML = boxHtml("Your answer to this paragraph. Hold Space to speak it.");
     p.after(row);
+    quickFit(row);
   }
   const t = row.firstChild;
   if (text !== undefined) t.value = text;
@@ -867,8 +922,9 @@ function openAreaBox(key, text, animate) {
     row = document.createElement("div");
     row.className = "ansrow area" + (animate ? " new" : "");
     row.dataset.for = key;
-    row.innerHTML = '<textarea class="ans" rows="1" placeholder="Type your answer, or hold Space to speak…" aria-label="Your answer to everything in the frame. Hold Space to speak it."></textarea>';
+    row.innerHTML = boxHtml("Your answer to everything in the frame. Hold Space to speak it.");
     box.append(row);
+    quickFit(row);
   }
   const t = row.firstChild;
   if (text !== undefined) t.value = text;
@@ -1330,6 +1386,7 @@ function changed(t) {
   else delete answers[key];
   const prev = t.parentElement.previousElementSibling;
   if (prev && prev.classList.contains("para") && !t.parentElement.classList.contains("area")) tipFor(prev);
+  if (!t.value) quickFit(t.parentElement);  // emptied: the chips show, perhaps for the first time since drawn
   grow(t);
   count();
   clearTimeout(saveJob[key]);
@@ -1392,6 +1449,8 @@ document.addEventListener("keydown", e => {
 // (which draws the area) apart from a click
 let down = null;
 document.addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY, t: e.target}; }, true);
+// a press on a quick answer leaves the keyboard in its box: an empty box left would close before the click came
+document.addEventListener("mousedown", e => { if (e.target.closest(".quick")) e.preventDefault(); }, true);
 function dragged(e) { return !!down && Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 4; }
 // what a click is on: what was pressed, also when the press made the page move under a still pointer (an empty box
 // left above it closes) and the click lands on what holds both
@@ -1411,6 +1470,8 @@ document.addEventListener("click", e => {
   if (a && a.closest("#head")) { e.preventDefault(); return; }  // the head's press opens it on release (below)
   if (a) { e.preventDefault(); if (!dragged(e)) openLink(a); return; }  // never opened in the page itself; its paragraph's box is not opened or toggled
   if (tg.closest("#replies .lnote")) return;
+  const qb = tg.closest(".quick button");
+  if (qb) { tipHide(); quickPut(qb.closest(".ansrow").firstChild, qb.dataset.quick); return; }  // never the paragraph's click
   const row = tg.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
   const hit = tg.closest("#replies .para");
@@ -1802,6 +1863,7 @@ function apply() {
   const same = S.sid === shownSid;
   if (!same) { view = null; askHide(); }  // another session: its latest replies
   if (view && !(S.pins || []).some(p => p.id === view)) view = null;  // the pin shown was unpinned
+  quickSync(S.quick);
   drawChips();
   const key = JSON.stringify([S.sid, view, shownReplies().map(r => [r.id, r.text]), (S.pins || []).map(p => p.id)]);
   if (key !== shownKey) {
@@ -1817,7 +1879,7 @@ function apply() {
 }
 window.reply = {
   // state: {sid, name, replies: [{id, when, text}], answers: {key: {text, passage}}, selections: [{n, text}], note,
-  // pins: [{id, label, when, text}] in the order pinned}
+  // pins: [{id, label, when, text}] in the order pinned, quick: the quick answers' texts in order}
   show(state) {
     if (holding() && S) { held = state; pending = true; return natural(); }
     S = state;
@@ -1846,6 +1908,7 @@ function drawHead(h) {
   // the folder is a link: a click opens it in File Explorer (as a folder link in a reply opens); the name stays text
   $("meta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · <a class="lnk" data-url="${esc(h.meta.where)}" data-tip="Opens this folder in File Explorer">${esc(h.meta.where)}</a>${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
   document.body.classList.toggle("folded", !h.open);
+  if (h.open) $("replies").querySelectorAll(".ansrow").forEach(quickFit);  // boxes drawn while folded had no width
   tipHide();
   size();
   return natural();

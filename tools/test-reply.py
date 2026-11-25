@@ -551,6 +551,9 @@ out.areaMerge = {fresh: areaMerge([], "m1", 2, 3), over: areaMerge(["m1#1-4"], "
 out.areaSend = sendList({"m1#1-4": {text: "Onaylıyorum"}, "m1#4": {text: "only this"}, "m1#0": {text: "intro"}},
   {"m1#0": "Intro.", "m1#4": "3. c", "m1#1-4": "## H\n\n1. a\n2. b\n3. c"}, ["m1#0", "m1#1", "m1#2", "m1#3", "m1#4", "m1#1-4", "m1#5"],
   {"m1#0": 0, "m1#4": 6, "m1#1-4": 6}).map(a => [a.key, a.line]);
+// a quick answer put in the box: an empty box becomes the text; otherwise at the caret, over a selection
+out.quick = [quickInsert("", 0, 0, "Onaylıyorum"), quickInsert("ab", 1, 1, "X"), quickInsert("abcd", 1, 3, "X"),
+  quickInsert("ab", 9, 9, "X")];
 console.log(JSON.stringify(out));
 """
 
@@ -2207,6 +2210,181 @@ class VoiceTake(unittest.TestCase):
         self.assertEqual(c["line"], "")
         self.assertEqual(c["voice"], ["hold", "drop:let go before listening"])
 
+
+class QuickAnswers(unittest.TestCase):
+    """The quick answers the panel hands the page: the user's "quick_answers" from claude-plus.local.json, else
+    "I approve"; quick_answers() taken out of agent-panel.pyw by ast."""
+
+    def run_with(self, content):
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("local", "quick_answers")]
+        keep += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "QUICK_ANSWERS" for t in n.targets)]
+        d = tempfile.mkdtemp()
+        try:
+            path = os.path.join(d, "claude-plus.local.json")
+            if content is not None:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            ns = {"json": json, "LOCAL": path}
+            exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+            return ns["quick_answers"]()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_the_default_is_english(self):
+        self.assertEqual(self.run_with(None), ["I approve"])  # no file
+        self.assertEqual(self.run_with('{"reply_open": true}'), ["I approve"])  # no key
+        self.assertEqual(self.run_with("not json"), ["I approve"])
+        self.assertEqual(self.run_with('{"quick_answers": "Onaylıyorum"}'), ["I approve"])  # not a list
+
+    def test_the_users_own_list_in_order(self):
+        self.assertEqual(self.run_with('{"quick_answers": ["Onaylıyorum"]}'), ["Onaylıyorum"])
+        self.assertEqual(self.run_with('{"quick_answers": [" Evet ", "", 5, null, "Hayır"]}'), ["Evet", "Hayır"])
+        self.assertEqual(self.run_with('{"quick_answers": []}'), [])  # none: no chip
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class QuickInsert(unittest.TestCase):
+    def test_the_text_goes_in_at_the_caret(self):
+        self.assertEqual(node_markdown()["quick"], [{"value": "Onaylıyorum", "caret": 11}, {"value": "aXb", "caret": 2},
+                                                    {"value": "aXd", "caret": 2}, {"value": "abX", "caret": 3}])
+
+
+QUICK_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const R = "Intro paragraph.\n\n1. Birinci madde\n2. İkinci madde\n\nAfter.";
+  const st = (quick, answers, sid) => ({sid: sid || "s1", name: "x", replies: [{id: "m1", when: "10:00", text: R}], answers: answers || {},
+    selections: [], note: "", pins: [], quick});
+  reply.show(st(["Onaylıyorum", "Later"]));
+  await later(50);
+  const ev = (el, type, x, y) => el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type,
+    {bubbles: true, cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1,
+     pointerType: "mouse", isPrimary: true, clientX: x, clientY: y, detail: 1}));
+  const press = el => { const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    ev(el, "pointerdown", x, y); const md = new MouseEvent("mousedown", {bubbles: true, cancelable: true, button: 0, detail: 1, clientX: x, clientY: y});
+    el.dispatchEvent(md); ev(el, "pointerup", x, y); ev(el, "mouseup", x, y); ev(el, "click", x, y); return md.defaultPrevented; };
+  const shown = el => !!el && getComputedStyle(el).display !== "none" && el.offsetWidth > 0;
+  const o = {};
+  press(document.querySelector('#replies .para[data-key="m1#0"]'));
+  await later(30);
+  const t = document.activeElement, row = t.closest(".ansrow"), q = row.querySelector(".quick");
+  const tr = t.getBoundingClientRect(), qr = q.getBoundingClientRect(), pr = parseFloat(getComputedStyle(t).paddingRight);
+  o.open = {chips: [...q.querySelectorAll("button")].map(b => [b.textContent, b.tabIndex, b.dataset.tip]), shown: shown(q),
+    inside: qr.right <= tr.right && qr.left > tr.left && qr.top >= tr.top && qr.bottom <= tr.bottom,
+    room: pr >= qr.width + 6, same: [...q.querySelectorAll("button")].map(b => b.offsetHeight)};
+  o.kept = press(q.querySelector("button"));
+  await later(400);
+  o.after = {value: t.value, focus: document.activeElement === t, caret: [t.selectionStart, t.selectionEnd],
+    chips: shown(row.querySelector(".quick")), boxes: document.querySelectorAll("#replies .ansrow").length,
+    draft: (T.drafts || []).slice(-1)[0], count: document.getElementById("count").textContent,
+    pad: parseFloat(getComputedStyle(t).paddingRight)};
+  // emptied again: the chips come back
+  t.value = ""; t.dispatchEvent(new Event("input", {bubbles: true}));
+  o.back = shown(row.querySelector(".quick"));
+  // Tab from the box: the next block's box, never a chip
+  t.dispatchEvent(new KeyboardEvent("keydown", {key: "Tab", bubbles: true, cancelable: true}));
+  await later(30);
+  o.tab = document.activeElement.closest(".ansrow") && document.activeElement.closest(".ansrow").dataset.for;
+  // the panel's list changed (the same replies, no redraw): held while the box has the keyboard, then the open box
+  // takes the new chips
+  reply.show(st(["Yes"]));
+  await later(30);
+  o.held = [...document.querySelectorAll("#replies .ansrow .quick")].map(x => [...x.children].map(b => b.textContent));
+  document.activeElement.blur();
+  await later(30);
+  o.synced = [...document.querySelectorAll("#replies .ansrow .quick")].map(x => [...x.children].map(b => b.textContent));
+  // a box with a kept answer while the list changes (its chips hidden, so not measured), then emptied: room for the
+  // new chips
+  reply.show(st(["Yes"], {"m1#3": {text: "kept", passage: "After."}}, "s2"));  // another session: drawn afresh
+  await later(30);
+  reply.show(st(["Yes, go ahead with all of it"], {"m1#3": {text: "kept", passage: "After."}}, "s2"));
+  await later(30);
+  const kt = document.querySelector('.ansrow[data-for="m1#3"] .ans');
+  kt.focus(); kt.value = ""; kt.dispatchEvent(new Event("input", {bubbles: true}));
+  const kq = kt.parentElement.querySelector(".quick");
+  o.emptiedRoom = parseFloat(getComputedStyle(kt).paddingRight) >= kq.getBoundingClientRect().width + 6;
+  kt.blur();
+  await later(30);
+  // an area's box: a drag over the two items opens one box under them, with the chip
+  const B = n => document.querySelector(`#replies [data-n="${n}"]`).getBoundingClientRect(), left = document.getElementById("body").getBoundingClientRect().left + 4;
+  const el = document.getElementById("body"), x0 = left, y0 = B(1).top + 4, x1 = 400, y1 = B(2).top + 6;
+  ev(el, "pointerdown", x0, y0); ev(el, "mousedown", x0, y0);
+  for (let k = 1; k <= 5; k++) ev(el, "pointermove", x0 + (x1 - x0) * k / 5, y0 + (y1 - y0) * k / 5);
+  ev(el, "pointerup", x1, y1); ev(el, "mouseup", x1, y1); ev(el, "click", x1, y1);
+  await later(30);
+  const at = document.activeElement, arow = at.closest(".ansrow.area");
+  o.area = {area: !!arow, chips: shown(arow && arow.querySelector(".quick"))};
+  press(arow.querySelector(".quick button"));
+  await later(400);
+  o.areaAfter = {value: at.value, focus: document.activeElement === at, frame: document.querySelectorAll(".agroup").length,
+    key: (T.drafts || []).slice(-1)[0]};
+  // none in the list: no chip, the box's usual padding
+  at.blur();
+  reply.show(st([], {}));
+  await later(30);
+  press(document.querySelector('#replies .para[data-key="m1#0"]'));
+  await later(30);
+  o.none = [document.activeElement.closest(".ansrow").querySelectorAll(".quick button").length, getComputedStyle(document.activeElement).paddingRight];
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class QuickPage(unittest.TestCase):
+    """The quick answers in the real page: a chip in an empty box puts its text in, the box keeps the keyboard."""
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(QUICK_TEST, budget=6000)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_an_empty_box_shows_the_chips_inside_its_right_end(self):
+        o = self.o["open"]
+        tip = "Puts this text in the box"
+        self.assertEqual(o["chips"], [["Onaylıyorum", -1, tip], ["Later", -1, tip]])  # in order, no Tab stop
+        self.assertTrue(o["shown"] and o["inside"], o)
+        self.assertTrue(o["room"], o)  # the placeholder and the caret keep clear of them
+        self.assertEqual(len(set(o["same"])), 1)  # side by side, one height
+
+    def test_a_click_puts_the_text_in_and_keeps_the_box(self):
+        self.assertTrue(self.o["kept"])  # the press leaves the keyboard in the box (no focusout closing it)
+        a = self.o["after"]
+        self.assertEqual(a["value"], "Onaylıyorum")
+        self.assertTrue(a["focus"])
+        self.assertEqual(a["caret"], [11, 11])
+        self.assertFalse(a["chips"])  # text in the box: the chips go
+        self.assertEqual(a["boxes"], 1)  # no other box opened, this one not closed
+        self.assertEqual(a["draft"], ["s1", "m1#0", "Intro paragraph.", "Onaylıyorum"])  # saved as typing is
+        self.assertEqual(a["count"], "1 answer")
+        self.assertEqual(a["pad"], 10)
+        self.assertTrue(self.o["back"])  # emptied: back
+
+    def test_tab_never_lands_on_a_chip(self):
+        self.assertEqual(self.o["tab"], "m1#1")
+
+    def test_a_new_list_reaches_the_open_boxes(self):
+        self.assertEqual(self.o["held"], [["Onaylıyorum", "Later"]])
+        self.assertEqual(self.o["synced"], [["Yes"]])
+
+    def test_a_box_emptied_after_a_redraw_makes_room_for_them(self):
+        self.assertTrue(self.o["emptiedRoom"])
+
+    def test_an_areas_box_has_them_too(self):
+        self.assertEqual(self.o["area"], {"area": True, "chips": True})
+        a = self.o["areaAfter"]
+        long = "Yes, go ahead with all of it"
+        self.assertEqual((a["value"], a["focus"], a["frame"]), (long, True, 1))
+        self.assertEqual((a["key"][1], a["key"][3]), ("m1#1-2", long))
+
+    def test_an_empty_list_shows_no_chip(self):
+        self.assertEqual(self.o["none"], [0, "10px"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

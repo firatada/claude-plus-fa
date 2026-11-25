@@ -83,6 +83,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 
 - Claude gets each paragraph you answered, with your answer.
 - Hold **Space** in an answer box to speak your answer, as in Claude Code: a space appears, then *Listening…* with a level meter; your words appear at the cursor while you speak (the newest ones dim until they settle), and when you let go the rest is filled in. A quick tap still types a space. By default Claude Code's own voice input does the listening, in a hidden Claude Code that Field Agents keeps running for this; when it cannot, a local speech-to-text server takes that answer over (see [Dictation](#dictation)). Nothing is kept. When the microphone or the server is missing, the note under the box says so, with a link that helps.
+- An empty answer box shows **I approve** at its right end: click it to put that text in the box, then keep typing or press **Send to Session**. It goes once the box holds text. To use your own words, or more than one, put `"quick_answers": ["I approve", "Not now"]` in `~/.claude/claude-plus.local.json` (one button each, in that order; `[]` for none).
 - Links work here even when the terminal wraps them: click one to open it. Web links open in your browser; `file:///` links, and Windows paths such as `C:\Users\you\shot.png` that exist on your PC, open with the app Windows uses for that file or folder (a program or script is shown in File Explorer instead of being run). A missing file says *File not found* next to the link.
 - Your answers are kept until you type a new prompt in that session, even if you fold the window or restart. To remove one, empty its box.
 - With no answer typed, **Copy** and **Send to Session** take the reply as it is.
@@ -181,6 +182,7 @@ Put any of these in `~/.claude/claude-plus.local.json` (the installer never chan
 | `"screenshots": false` | Keeping screenshots, the strip and the numbered reply list |
 | `"paste_keys": false` | Fast picture paste with `Ctrl+V` and `Alt+V` |
 | `"shot_strip": false` | The strip and the numbered reply list (also the picture button in the panel's header) |
+| `"quick_answers": []` | The **I approve** button in an empty answer box |
 | `"rule": "<where your steps live>"` | The built-in 90 % steps: Claude follows yours instead, for example `"the global CLAUDE.md, section \"Saving work\""` |
 
 - The alert and its sound: the panel's tray menu, **Alerts** and **Alert Sound**.
