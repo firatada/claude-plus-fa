@@ -544,6 +544,16 @@ out.areaSpans = blocks(T1).map(b => [b.kind, b.from, b.to]);
 out.areaMd = {run: areaMarkdown([T1], [[0, [1, 2, 3, 4]]]), gap: areaMarkdown([T1], [[0, [0, 4]]]),
   two: areaMarkdown([T1, T2], [[0, [6, 5]], [1, [0, 1, 2]]]), unclosed: areaMarkdown([T3], [[0, [0]]]),
   none: areaMarkdown([T1], [[0, [99]]]), empty: areaMarkdown([], [])};
+// an area answered as a whole: its key, and the merge rule (two areas never overlap: a new one takes in what it touches)
+out.areaKeys = [areaKey("m1", 1, 4), areaRange("m1#1-4"), areaRange("a#b#12-30"), areaRange("m1#3"), areaRange("m1#"), areaRange("")];
+out.areaMerge = {fresh: areaMerge([], null, "m1", 2, 3), over: areaMerge(["m1#1-4"], null, "m1", 3, 3),
+  extend: areaMerge(["m1#1-4"], null, "m1", 4, 6), chain: areaMerge(["m1#5-6", "m1#1-2", "m1#8-9"], null, "m1", 2, 5),
+  apart: areaMerge(["m1#1-2", "m2#3-4"], null, "m1", 3, 4), moved: areaMerge(["m1#1-2"], "m1#1-2", "m1", 5, 6),
+  resized: areaMerge(["m1#1-2", "m1#4-5"], "m1#1-2", "m1", 1, 4), ownPara: areaMerge([], "m1#3", "m1", 3, 5)};
+// Send to Session's list: an area's answer stands after its blocks, after the last block's own answer
+out.areaSend = sendList({"m1#1-4": {text: "Onaylıyorum"}, "m1#4": {text: "only this"}, "m1#0": {text: "intro"}},
+  {"m1#0": "Intro.", "m1#4": "3. c", "m1#1-4": "## H\n\n1. a\n2. b\n3. c"}, ["m1#0", "m1#1", "m1#2", "m1#3", "m1#4", "m1#1-4", "m1#5"],
+  {"m1#0": 0, "m1#4": 6, "m1#1-4": 6}).map(a => [a.key, a.line]);
 console.log(JSON.stringify(out));
 """
 
@@ -559,8 +569,15 @@ def node_markdown():
     b = page.index("// ---------- drawing ----------")
     import subprocess
     keep.append("const PLAN = %s;" % json.dumps(PLAN))
-    r = subprocess.run([node, "-e", "\n".join(keep) + "\n" + page[a:b] + JS], capture_output=True, text=True,
-                       encoding="utf-8", timeout=30)
+    # from a file: the script outgrew Windows' command line (32,767 characters)
+    d = tempfile.mkdtemp()
+    try:
+        path = os.path.join(d, "markdown.js")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(keep) + "\n" + page[a:b] + JS)
+        r = subprocess.run([node, path], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
     if r.returncode:
         raise AssertionError(r.stderr)
     return json.loads(r.stdout)
@@ -1183,6 +1200,25 @@ class AreaRules(unittest.TestCase):
         self.assertEqual(self.md["areaSpans"], [["p", 0, 0], ["table", 2, 4], ["li", 6, 6], ["li", 7, 8], ["code", 10, 12],
                                                 ["hr", 14, 14], ["p", 16, 16]])
 
+    def test_an_area_answer_key_names_one_replys_blocks(self):
+        self.assertEqual(self.md["areaKeys"], ["m1#1-4", {"rid": "m1", "a": 1, "b": 4}, {"rid": "a#b", "a": 12, "b": 30},
+                                               None, None, None])
+
+    def test_two_areas_never_overlap_a_new_one_takes_in_what_it_touches(self):
+        m = self.md["areaMerge"]
+        self.assertEqual(m["fresh"], {"key": "m1#2-3", "a": 2, "b": 3, "from": []})
+        self.assertEqual(m["over"]["key"], "m1#1-4")  # inside an answered area: that area, its answer kept
+        self.assertEqual((m["over"]["from"], m["extend"]["key"], m["extend"]["from"]), (["m1#1-4"], "m1#1-6", ["m1#1-4"]))
+        # the grown range takes in what it then touches; one not touched stays apart
+        self.assertEqual((m["chain"]["key"], m["chain"]["from"]), ("m1#1-6", ["m1#1-2", "m1#5-6"]))
+        self.assertEqual(m["apart"]["key"], "m1#3-4")  # another reply's area is never taken in
+        self.assertEqual((m["moved"]["key"], m["moved"]["from"]), ("m1#5-6", ["m1#1-2"]))  # its answer goes with it
+        self.assertEqual((m["resized"]["key"], m["resized"]["from"]), ("m1#1-5", ["m1#1-2", "m1#4-5"]))
+        self.assertEqual(m["ownPara"]["from"], [])  # a paragraph's own answer is never taken into an area
+
+    def test_an_area_answer_goes_after_its_last_blocks_own_answer(self):
+        self.assertEqual(self.md["areaSend"], [["m1#0", 0], ["m1#4", 6], ["m1#1-4", 6]])
+
     def test_copy_takes_the_blocks_as_claude_wrote_them(self):
         m = self.md["areaMd"]
         # blocks side by side: one stretch of the reply, so a table, a link, list items and a code fence stay intact
@@ -1212,6 +1248,7 @@ const T_API = {
   send(sid, list) { (T.sends = T.sends || []).push([sid, list]); return Promise.resolve({t: "Pasted", err: false}); },
   copy(sid, list) { (T.copies = T.copies || []).push([sid, list]); return Promise.resolve(true); },
   copy_area(text) { (T.area = T.area || []).push(text); return Promise.resolve(true); },
+  draft(sid, key, passage, text) { (T.drafts = T.drafts || []).push([sid, key, passage, text]); return Promise.resolve(null); },
 };
 window.pywebview = {api: new Proxy(T_API, {get: (t, k) => k in t ? t[k] : () => Promise.resolve(null)})};
 </script>
@@ -1349,8 +1386,10 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   await later(20);
   o.esc = [area.hidden, cp.hidden, document.querySelectorAll(".inarea").length];
   await drag(body, box("#body").left + 4, tbl.top + 2, 300, tbl.bottom);
+  o.lone = [document.activeElement.closest(".ansrow") && document.activeElement.closest(".ansrow").dataset.for, document.querySelectorAll(".agroup").length];
   const p1 = document.querySelector("#replies .para"), q = p1.getBoundingClientRect();
-  ev(p1, "pointerdown", q.left + 3, q.top + q.height / 2); ev(p1, "pointerup", q.left + 3, q.top + q.height / 2); ev(p1, "click", q.left + 3, q.top + q.height / 2);
+  ev(p1, "pointerdown", q.left + 3, q.top + q.height / 2); document.activeElement.blur();  // what a real press does
+  ev(p1, "pointerup", q.left + 3, q.top + q.height / 2); ev(p1, "click", q.left + 3, q.top + q.height / 2);
   await later(20);
   o.outside = [area.hidden, document.querySelectorAll(".ansrow").length];  // cleared, and that click opened no box
   ev(p1, "pointerdown", q.left + 3, q.top + q.height / 2); ev(p1, "pointerup", q.left + 3, q.top + q.height / 2); ev(p1, "click", q.left + 3, q.top + q.height / 2);
@@ -1392,6 +1431,9 @@ class AreaPage(unittest.TestCase):
         self.assertEqual(self.o["copied"], ["| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```\n\nSecond reply.\n\nLast."])
         self.assertEqual(self.o["label"], "Copied")
 
+    def test_one_block_alone_opens_its_own_box_and_no_frame(self):
+        self.assertEqual(self.o["lone"], ["m1#1", 0])
+
     def test_esc_and_a_press_outside_clear_it(self):
         self.assertEqual(self.o["esc"], [True, True, 0])
         self.assertEqual(self.o["outside"], [True, 0])
@@ -1399,6 +1441,164 @@ class AreaPage(unittest.TestCase):
     def test_a_click_and_a_drag_over_text_work_as_before(self):
         self.assertEqual(self.o["click"], 1)
         self.assertEqual(self.o["textDrag"], [True, 0])
+
+
+# An area answered as a whole, in the real page (headless Edge, events dispatched to the page): a drag across a
+# heading and three items frames them and opens one box under the last, caret in it; the answer typed there is kept
+# as a draft under the area's key, counted, survives a redraw, and goes to Send to Session after the last item's own
+# answer; a drag over part of it reopens that area; one reaching past it extends it (the answer moves along); emptied
+# and left, it goes with its frame.
+AREA_ANSWER_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const R = "Intro.\n\n## 1. İki bölümü kaldırmak\n\n1. Birinci madde\n2. İkinci madde\n3. Üçüncü madde\n\nAfter.";
+  const st = (answers, extra) => ({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: R}].concat(extra || []), answers, selections: [], note: "", pins: []});
+  reply.show(st({}));
+  await later(50);
+  const ev = (el, type, x, y) => el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type,
+    {bubbles: true, cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1,
+     pointerType: "mouse", isPrimary: true, clientX: x, clientY: y}));
+  const drag = async (x0, y0, x1, y1) => {
+    const el = document.getElementById("body");
+    ev(el, "pointerdown", x0, y0); ev(el, "mousedown", x0, y0);
+    for (let k = 1; k <= 5; k++) ev(el, "pointermove", x0 + (x1 - x0) * k / 5, y0 + (y1 - y0) * k / 5);
+    ev(el, "pointerup", x1, y1); ev(el, "mouseup", x1, y1); ev(el, "click", x1, y1);
+    await later(30);
+  };
+  const B = n => document.querySelector(`#replies [data-n="${n}"]`).getBoundingClientRect(), left = document.getElementById("body").getBoundingClientRect().left + 4;
+  const frame = () => [...document.querySelectorAll(".agroup")].map(g => [...g.querySelectorAll("[data-n]")].map(e => +e.dataset.n));
+  const typeIn = (t, v) => { t.value = v; t.dispatchEvent(new Event("input", {bubbles: true})); };
+  const key = (t, k) => t.dispatchEvent(new KeyboardEvent("keydown", {key: k, bubbles: true, cancelable: true}));
+  const o = {};
+  await drag(left, B(1).top + 4, 400, B(4).top + 6);
+  const t = document.activeElement, cp = document.getElementById("areaCopy"), ar = document.getElementById("area");
+  o.opened = {focus: t.closest(".ansrow") && t.closest(".ansrow").dataset.for, isArea: t.closest(".ansrow").classList.contains("area"),
+    frame: frame(), last: t.closest(".ansrow").previousElementSibling.dataset.n, ph: t.placeholder, copy: !cp.hidden,
+    copyAbove: cp.getBoundingClientRect().bottom <= ar.getBoundingClientRect().top + 1};
+  typeIn(t, "Onaylıyorum");
+  await later(400);
+  o.typed = {count: document.getElementById("count").textContent, draft: T.drafts.slice(-1)[0]};
+  key(t, "Enter");
+  await later(20);
+  o.left = [document.activeElement === document.body, frame(), document.querySelectorAll(".ansrow.area").length];
+  document.body.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true}));
+  await later(20);
+  const it3 = document.querySelector('#replies [data-n="4"]'), q = it3.getBoundingClientRect();
+  ev(it3, "pointerdown", q.left + 40, q.top + q.height / 2); ev(it3, "pointerup", q.left + 40, q.top + q.height / 2); ev(it3, "click", q.left + 40, q.top + q.height / 2);
+  await later(20);
+  typeIn(document.activeElement, "Only this one needs a test.");
+  document.activeElement.blur();
+  await later(400);
+  o.both = {count: document.getElementById("count").textContent, rows: [...document.querySelectorAll("#replies .ansrow")].map(r => r.dataset.for), frame: frame()};
+  document.getElementById("send").click();
+  await later(30);
+  o.sent = T.sends[0][1];
+  // a redraw (a reply more): the frame, its answer and the item's own come back from the drafts
+  const kept = {};
+  for (const [, k, passage, text] of T.drafts) { if (text) kept[k] = {text, passage}; else delete kept[k]; }
+  reply.show(st(kept, [{id: "m2", when: "10:05", text: "Another reply."}]));
+  await later(50);
+  o.redrawn = {frame: frame(), area: document.querySelector('.ansrow.area .ans').value, own: document.querySelector('.ansrow[data-for="m1#4"] .ans').value,
+    count: document.getElementById("count").textContent};
+  // a drag over one item inside it: that area again, its answer in the box, no second frame
+  await drag(left, B(3).top + 4, 400, B(3).top + 8);
+  o.inside = [document.activeElement.closest(".ansrow").dataset.for, document.activeElement.value, frame()];
+  document.activeElement.blur();
+  // a drag from the last item down to "After.": the area grows to hold both, its answer goes along
+  T.drafts = [];
+  await drag(left, B(4).top + 4, 400, B(5).top + 6);
+  o.extended = [document.activeElement.closest(".ansrow").dataset.for, document.activeElement.value, frame(), T.drafts.map(d => [d[1], d[3]])];
+  // emptied and left: the area goes with its frame; the item's own answer stays
+  typeIn(document.activeElement, "");
+  document.activeElement.blur();
+  await later(400);
+  o.emptied = [frame(), document.querySelectorAll(".ansrow.area").length, document.getElementById("count").textContent];
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class AreaAnswerPage(unittest.TestCase):
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(AREA_ANSWER_TEST, budget=6000)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_a_drag_frames_the_blocks_and_opens_one_box_under_the_last_beside_copy(self):
+        o = self.o["opened"]
+        self.assertEqual((o["focus"], o["isArea"], o["frame"], o["last"]), ("m1#1-4", True, [[1, 2, 3, 4]], "4"))
+        self.assertEqual(o["ph"], "Type your answer, or hold Space to speak…")
+        self.assertTrue(o["copy"] and o["copyAbove"])  # Copy stays, above the rectangle so it covers no answer
+
+    def test_the_answer_is_a_draft_under_the_areas_key_and_counted(self):
+        sid, key, passage, text = self.o["typed"]["draft"]
+        self.assertEqual((sid, key, text), ("s1", "m1#1-4", "Onaylıyorum"))
+        self.assertEqual(passage, "## 1. İki bölümü kaldırmak\n\n1. Birinci madde\n2. İkinci madde\n3. Üçüncü madde")
+        self.assertEqual(self.o["typed"]["count"], "1 answer")
+        self.assertEqual(self.o["left"], [True, [[1, 2, 3, 4]], 1])  # Enter leaves it; the frame stays
+
+    def test_an_items_own_answer_inside_is_kept_beside_it(self):
+        b = self.o["both"]
+        self.assertEqual(b["rows"], ["m1#4", "m1#1-4"])
+        self.assertEqual((b["count"], b["frame"]), ("2 answers", [[1, 2, 3, 4]]))
+        self.assertEqual([(a["key"], a["line"], a["text"]) for a in self.o["sent"]],
+                         [("m1#4", 6, "Only this one needs a test."), ("m1#1-4", 6, "Onaylıyorum")])
+
+    def test_it_comes_back_after_a_redraw(self):
+        r = self.o["redrawn"]
+        self.assertEqual((r["frame"], r["area"], r["own"], r["count"]),
+                         ([[1, 2, 3, 4]], "Onaylıyorum", "Only this one needs a test.", "2 answers · sent"))  # what was sent, unchanged
+
+    def test_a_drag_inside_reopens_it_and_one_past_it_extends_it(self):
+        self.assertEqual(self.o["inside"], ["m1#1-4", "Onaylıyorum", [[1, 2, 3, 4]]])
+        key, text, frame, drafts = self.o["extended"]
+        self.assertEqual((key, text, frame), ("m1#1-5", "Onaylıyorum", [[1, 2, 3, 4, 5]]))
+        self.assertEqual(drafts, [["m1#1-4", ""], ["m1#1-5", "Onaylıyorum"]])  # the old key's draft goes, the new one holds it
+
+    def test_emptied_and_left_it_goes_with_its_frame(self):
+        self.assertEqual(self.o["emptied"], [[], 0, "1 answer"])
+
+    def test_send_to_session_quotes_the_area_as_one_with_the_answer_under_it(self):
+        P = panel_methods("seen", "reply_text")
+        p = P()
+        p.reply_mod, p.reply_seen = ar, {}
+        p.seen("s1", "m1", "Intro.\n\n## 1. İki bölümü kaldırmak\n\n1. Birinci madde\n2. İkinci madde\n3. Üçüncü madde\n\nAfter.", None)
+        self.assertEqual(p.reply_text("s1", self.o["sent"]),
+                         'My answers inside your reply (your reply is quoted with "> ", my answers are marked "My answer:"):\n\n'
+                         "> Intro.\n>\n> ## 1. İki bölümü kaldırmak\n>\n> 1. Birinci madde\n> 2. İkinci madde\n> 3. Üçüncü madde\n\n"
+                         "My answer: Only this one needs a test.\n\n"
+                         'My answer to all 4 blocks from "## 1. İki bölümü kaldırmak" down to here, as a whole: Onaylıyorum\n\n'
+                         "> After.")
+
+
+class AreaAnswerText(unittest.TestCase):
+    """How an area's answer reads inside the quoted reply (agent-reply.py lead(), answer_block())."""
+
+    def test_the_size_comes_from_the_key(self):
+        self.assertEqual([ar.area_size(b) for b in ("1-4", "3-3", "3", "", "4-1", "x-2")], [4, 1, 0, 0, 0, 0])
+
+    def test_the_lead_names_the_blocks_and_the_first_line(self):
+        self.assertEqual(ar.lead("x", 0), "My answer:")
+        self.assertEqual(ar.lead("```js\nx\n```", 1), "My answer:")  # one block: as a block's own answer
+        self.assertEqual(ar.lead("\n## Plan\n\n- a", 2), 'My answer to all 2 blocks from "## Plan" down to here, as a whole:')
+        long = ar.lead('Reply with :1 yes, "quoted" ' + "x" * 80, 3)
+        self.assertIn("from \"Reply with `:1` yes, 'quoted' xxx", long)  # no marker for quote-reply.py, no stray quote
+        self.assertIn('…" down to here', long)
+
+    def test_an_area_not_found_in_the_reply_goes_last_quoted_whole(self):
+        text = ar.answer_block("A\n\nB", "", [(9, "Gone one\n\nGone two", "yes", 2)])
+        self.assertEqual(text.split("\n")[2:], ["> A", ">", "> B", "", "> Gone one", ">", "> Gone two", "",
+                                                'My answer to all 2 blocks from "Gone one" down to here, as a whole: yes'])
+
+    def test_the_hook_takes_no_marker_from_an_area_answer(self):
+        text = ar.answer_block("Reply :1 or :2\n\nSecond.", "", [(2, "Reply :1 or :2\n\nSecond.", "fine :2", 2)])
+        self.assertEqual(load_quote_reply().parse(text, {1, 2}), ([], [], False))
 
 
 class AreaCopy(unittest.TestCase):

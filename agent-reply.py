@@ -22,6 +22,8 @@ MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
 HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers are marked "My answer:"):'
 ANSWER = "My answer:"  # leads each answer inside the quoted reply
 PLAIN = '%s, quoted with "> ":'  # leads a reply sent with no answer in it
+AREA = 'My answer to all %d blocks from "%s" down to here, as a whole:'  # leads an area's answer, after its last line
+AREA_CUT = 60          # characters of the area's first line named in AREA
 
 
 def stamp(ts):
@@ -320,6 +322,24 @@ def place(lines, line, passage):
     return next((k for k, l in enumerate(lines) if l.strip() and key(l) == key(want[-1])), None)
 
 
+def area_size(block):
+    """The number of blocks an area answer covers, from the block part of its key ("3-6": 4); 0 for a paragraph's
+    own answer ("3") or a reply sent whole ("")."""
+    m = re.fullmatch(r"(\d+)-(\d+)", block or "")
+    return int(m.group(2)) - int(m.group(1)) + 1 if m and int(m.group(2)) >= int(m.group(1)) else 0
+
+
+def lead(passage, n):
+    """What leads an answer: "My answer:", or for an area of several blocks AREA with their number and the area's
+    first line (cut at AREA_CUT; a ":N" in it in backticks, so quote-reply.py never takes it for a marker)."""
+    if n < 2:
+        return ANSWER
+    first = next((l.strip() for l in (passage or "").split("\n") if l.strip()), "")
+    if len(first) > AREA_CUT:
+        first = first[:AREA_CUT].rstrip() + "…"
+    return AREA % (n, MARKER.sub(lambda m: "`%s`" % m.group(0), first.replace('"', "'")))
+
+
 def quote(lines):
     return ["> " + l if l.strip() else ">" for l in lines]
 
@@ -328,9 +348,12 @@ def answer_block(text, when, answers):
     """One reply with the user's answers inside it, as Send to Session pastes it: a heading line, then the reply's
     lines exactly as stored, each quoted with "> ", and each answer unquoted right after the line that ends the block
     it answers, led by "My answer:" and parted from the quoted lines by a blank line (the quoted blank lines that
-    stood there are left out). answers: [(line, passage, answer)]. An answer whose block is not found in text (a
-    reply no longer stored) goes at the end after its own passage, quoted. "" when no answer has text. No answers at
-    all (answers []): the reply alone, quoted under PLAIN ("" when it holds no text)."""
+    stood there are left out). answers: [(line, passage, answer[, n])], n the blocks of an area answered as a whole
+    (area_size()): its passage is the area's markdown, line its last line, and its answer is led by AREA, so Claude
+    reads it as one answer to every block from the area's first line down to it; a block's own answer at that same
+    line comes first. An answer whose block is not found in text (a reply no longer stored) goes at the end after its
+    own passage, quoted. "" when no answer has text. No answers at all (answers []): the reply alone, quoted under
+    PLAIN ("" when it holds no text)."""
     lines = (text or "").replace("\r\n", "\n").split("\n")
     if not answers:
         while lines and not lines[0].strip():
@@ -340,10 +363,11 @@ def answer_block(text, when, answers):
         name = "Your reply of " + when if when else "Your reply"
         return "\n".join([PLAIN % name, ""] + quote(lines)) if lines else ""
     at, loose = {}, []
-    for line, passage, a in answers:
+    for line, passage, a, *n in answers:
         a = mine(a)
         if not a:
             continue
+        a = lead(passage, n[0] if n else 0) + " " + a
         k = place(lines, line, passage)
         if k is None:
             loose.append((passage, a))
@@ -359,10 +383,10 @@ def answer_block(text, when, answers):
         gap = False
         out += quote([l])
         for a in at.get(k, []):
-            out += ["", ANSWER + " " + a, ""]
+            out += ([] if out[-1] == "" else [""]) + [a, ""]  # two answers at one line: one blank line between
             gap = True
     for passage, a in loose:
-        out += [""] + quote(passage.strip("\n").split("\n")) + ["", ANSWER + " " + a, ""]
+        out += [""] + quote(passage.strip("\n").split("\n")) + ["", a, ""]
     while out and out[-1] in ("", ">"):
         out.pop()
     return "\n".join(out)

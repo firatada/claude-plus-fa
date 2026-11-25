@@ -39,7 +39,11 @@
      The area (2026-11-25): a drag that starts on blank space in the replies draws a rectangle (corners and edges
      resize it, inside moves it, past the top or bottom edge the replies scroll); every block it touches is tinted
      whole, and Copy at its corner copies those blocks as Claude wrote them. A drag that starts on text still selects
-     text; a click still opens the answer box. Esc or a press outside clears it. -->
+     text; a click still opens the answer box. Esc or a press outside clears it.
+     The area answered as a whole (2026-11-25): when the rectangle is let go, the blocks it touches (in one reply) get
+     one frame and one answer box under the last, caret in it, beside Copy; that answer is for every block in the
+     frame (Send to Session quotes them and leads the answer with how many blocks it covers). A block inside keeps its
+     own answer too. A rectangle over a framed area extends it; emptied and left, the area goes with its frame. -->
 <style>
 :root {
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
@@ -228,6 +232,11 @@ body.drawing #body, body.drawing #body * { cursor: crosshair !important; }
 #areaCopy { position: absolute; z-index: 6; animation: drop .16s var(--snap); }
 #replies .inarea, #replies .inarea:hover { background-color: rgba(27, 77, 245, .09); }
 #replies .code.inarea { border-color: rgba(27, 77, 245, .45); }
+/* an area answered as a whole: its blocks in one frame (drawn round them, so nothing moves), its box under the last */
+.agroup { position: relative; z-index: 0; }
+.agroup::before { content: ""; position: absolute; z-index: -1; inset: -4px -10px; border: 1.5px solid rgba(27, 77, 245, .5);
+  border-radius: 8px; background: rgba(27, 77, 245, .025); pointer-events: none; }
+.ansrow.area { margin: 6px 0 4px; }
 #empty { color: var(--muted); padding: 6px 0; }
 #empty[hidden], #miss[hidden] { display: none; }
 /* selections that are not in the reply text */
@@ -482,6 +491,31 @@ function areaMarkdown(texts, picks) {
   }
   return out.join("\n\n");
 }
+// An area answered as a whole (asked 2026-11-25: "this answer is for everything in the area"): its key is
+// "<message id>#<first block>-<last block>", blocks a to b of one reply as data-n numbers them (code blocks and rules
+// count); a paragraph's own answer keeps "<message id>#<n>". Its answer goes after the area's last line, led by the
+// number of blocks and the area's first line (agent-reply.py answer_block()).
+function areaKey(rid, a, b) { return `${rid}#${a}-${b}`; }
+function areaRange(key) { const m = /^(.*)#(\d+)-(\d+)$/.exec(String(key || "")); return m ? {rid: m[1], a: +m[2], b: +m[3]} : null; }
+// Two areas never overlap: a rectangle over blocks a..b of reply rid takes in every answered area it touches, and
+// those the grown range then touches, so one frame holds them all (extend, never replace). keys: the answered
+// areas; own: the area this rectangle made before (its answer goes with it when it is moved or resized). Answers
+// {key, a, b, from}: from, the areas whose answers join in the new one, in reading order (own among them).
+function areaMerge(keys, own, rid, a, b) {
+  let lo = a, hi = b, grew = true;
+  const from = new Set();
+  while (grew) {
+    grew = false;
+    for (const k of keys) {
+      const r = areaRange(k);
+      if (!r || r.rid !== rid || k === own || from.has(k) || r.a > hi || r.b < lo) continue;
+      from.add(k); lo = Math.min(lo, r.a); hi = Math.max(hi, r.b); grew = true;
+    }
+  }
+  if (areaRange(own)) from.add(own);
+  return {key: areaKey(rid, lo, hi), a: lo, b: hi, from: [...from].sort((x, y) => areaRange(x).a - areaRange(y).a)};
+}
+const span = (a, b) => Array.from({length: b - a + 1}, (_, i) => a + i);
 
 // Space in an answer box: hold it to speak, as Claude Code's own hold-to-talk feels. Its rule, read from Claude Code
 // 2.1.330 (a terminal has no key-up, so the key's own repeat tells a hold): the first Space types a space; from the
@@ -651,6 +685,8 @@ function draw() {
     const p = list.querySelector(`.para[data-key="${CSS.escape(key)}"]`);
     if (p) openBox(p, answers[key] ? answers[key].text : undefined, false);
   }
+  // the areas answered as a whole: framed, their box open with the answer (one in a reply not shown waits)
+  for (const key of Object.keys(answers)) if (areaRange(key)) openAreaBox(key, answers[key].text, false);
   mark();
   count();
   linkPaths();
@@ -793,10 +829,12 @@ function count() {
 // ---------- the answer box ----------
 function grow(t) { t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; size(); }
 function kindOf(p) { return p.classList.contains("table") ? "table" : p.classList.contains("li") ? "li" : "para"; }
+// a block's own box, right after it (an area's box after the area's last block is not that block's)
+function ownRow(p) { const r = p && p.nextElementSibling; return r && r.classList.contains("ansrow") && !r.classList.contains("area") ? r : null; }
 function openBox(p, text, animate) {
-  let row = p.nextElementSibling;
+  let row = ownRow(p);
   opened.add(p.dataset.key);
-  if (!row || !row.classList.contains("ansrow")) {
+  if (!row) {
     row = document.createElement("div");
     row.className = "ansrow" + (animate ? " new" : "");
     row.dataset.for = p.dataset.key;
@@ -812,15 +850,55 @@ function openBox(p, text, animate) {
 }
 function closeBox(row) {  // only an empty box closes
   if (!row || row.firstChild.value.trim()) return;
+  aopened.delete(row.dataset.for);
+  if (row.classList.contains("area")) { unframe(row); return; }
   const p = row.previousElementSibling;
   opened.delete(row.dataset.for);
   row.remove();
   if (p) tipFor(p);
   size();
 }
+// An area's box: its blocks (and the boxes open under them) go into one frame (.agroup), its box last in it. The
+// frame is drawn round them (::before), so no block moves. Answers its textarea, or null when the reply is not shown.
+function openAreaBox(key, text, animate) {
+  const g = areaRange(key), rr = g && shownReplies().find(r => r.id === g.rid);
+  const rep = rr && [...$("replies").querySelectorAll(".reply")].find(x => x.dataset.id === g.rid);
+  if (!rep) return null;
+  const bs = blocks(rr.text);
+  if (!bs[g.b]) return null;
+  sources[key] = areaMarkdown([rr.text], [[0, span(g.a, g.b)]]);
+  ends[key] = bs[g.b].to;
+  let row = rep.querySelector(`.ansrow.area[data-for="${CSS.escape(key)}"]`);
+  if (!row) {
+    const els = [...rep.querySelectorAll("[data-n]")].filter(el => +el.dataset.n >= g.a && +el.dataset.n <= g.b);
+    if (!els.length) return null;
+    let end = els[els.length - 1];
+    if (ownRow(end)) end = ownRow(end);  // the last block's own box
+    const box = document.createElement("div");
+    box.className = "agroup";
+    els[0].before(box);
+    for (let el = box.nextElementSibling; el; ) { const next = el.nextElementSibling; box.append(el); if (el === end) break; el = next; }
+    row = document.createElement("div");
+    row.className = "ansrow area" + (animate ? " new" : "");
+    row.dataset.for = key;
+    row.innerHTML = '<textarea class="ans" rows="1" placeholder="Type your answer, or hold Space to speak…" aria-label="Your answer to everything in the frame. Hold Space to speak it."></textarea>';
+    box.append(row);
+  }
+  const t = row.firstChild;
+  if (text !== undefined) t.value = text;
+  t.classList.toggle("has", !!t.value.trim());
+  grow(t);
+  return t;
+}
+function unframe(row) {  // an area's box goes, and its frame: the blocks stand where they stood
+  const box = row.parentElement;
+  row.remove();
+  if (box && box.classList.contains("agroup")) box.replaceWith(...box.childNodes);
+  size();
+  if (area) areaPaint();
+}
 function tipFor(p) {  // the paragraph's tooltip says what a click does; none while its box is open
-  const row = p.nextElementSibling;
-  if (row && row.classList.contains("ansrow")) delete p.dataset.tip;
+  if (ownRow(p)) delete p.dataset.tip;
   else p.dataset.tip = paraTip(kindOf(p));
 }
 // ---------- dictation: Space held in a box (spaceRule() decides). Claude Code's own hold-to-talk in the panel's hidden
@@ -1262,7 +1340,8 @@ function changed(t) {
   t.classList.toggle("has", !!t.value.trim());
   if (t.value.trim()) answers[key] = {text: t.value, passage: sources[key] || ""};
   else delete answers[key];
-  if (t.parentElement.previousElementSibling) tipFor(t.parentElement.previousElementSibling);
+  const prev = t.parentElement.previousElementSibling;
+  if (prev && prev.classList.contains("para") && !t.parentElement.classList.contains("area")) tipFor(prev);
   grow(t);
   count();
   clearTimeout(saveJob[key]);
@@ -1284,6 +1363,9 @@ document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
   if (spaceBox === e.target) spaceStep(e.target, {type: "blur"});
   if (!busy.has(e.target)) vline(e.target, "");  // "Transcribing…" stays: its text still comes
+  const row = e.target.parentElement;
+  if (row && document.hasFocus() && !busy.has(e.target) && !(rec && rec.t === e.target) && !e.target.value.trim() &&
+      (row.classList.contains("area") || aopened.has(row.dataset.for))) closeBox(row);  // an empty box the area opened
   release();  // Tab to the next box: still held
 });
 addEventListener("blur", release);  // another window in front: the box keeps the focus, but nothing is typed now
@@ -1291,7 +1373,8 @@ addEventListener("blur", release);  // another window in front: the box keeps th
 // view; a box left empty closes, so tabbing past blocks leaves no trail; at the last (first) block the box is only left.
 function tabMove(t, back) {
   const row = t.parentElement, all = [...$("replies").querySelectorAll(".para")];
-  const j = tabTarget(all.length, all.indexOf(row.previousElementSibling), back);
+  const before = all.filter(p => p.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).length;  // an area's box
+  const j = tabTarget(all.length, row.classList.contains("area") ? (back ? before : before - 1) : all.indexOf(row.previousElementSibling), back);
   if (j < 0) { t.blur(); closeBox(row); return; }
   const q = all[j], nt = openBox(q, undefined, true);
   nt.focus();
@@ -1339,7 +1422,7 @@ document.addEventListener("click", e => {
   if (hit && !e.target.closest(".qb, a.lnk")) {
     // the paragraph as drawn now: an update held while a box had the keyboard is drawn when the press leaves it
     const p = $("replies").querySelector(`.para[data-key="${CSS.escape(hit.dataset.key)}"]`);
-    const next = p && p.nextElementSibling, box = next && next.classList.contains("ansrow") ? next : null;
+    const box = ownRow(p);
     const sel = getSelection();
     const act = !p ? "" : clickAction({own: false, detail: e.detail, box: !!box, text: !!(box && box.firstChild.value.trim()),
       moved: !!down && Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 4, selected: !!sel && !sel.isCollapsed});
@@ -1407,8 +1490,8 @@ function askHide() {
 }
 
 // ---------- Copy and Send to Session ----------
-function ordered() {
-  return sendList(answers, sources, [...document.querySelectorAll("#replies .para")].map(p => p.dataset.key), ends);
+function ordered() {  // an area's answer stands after its last block's own one (its box is last in its frame)
+  return sendList(answers, sources, [...document.querySelectorAll("#replies .para, #replies .ansrow.area")].map(p => p.dataset.key || p.dataset.for), ends);
 }
 // What Copy and Send to Session hand the panel: the answers (ordered()); with none, each reply shown, as it is (a key
 // "<message id>#" with no text: agent-panel.pyw reply_text() quotes that reply whole, no answer inside)
@@ -1457,6 +1540,8 @@ $("send").addEventListener("click", () => {
 // out, so it can span more than one screen. Esc, a press outside it, or a redraw clears it.
 const AREA_SLACK = 3, AREA_ZONE = 28, AREA_STEP = 24, AREA_MOVE = 4;
 let area = null, adrag = null, apend = null, aswallow = false, ascroll = null, acopied = null;
+let alink = null;           // the key whose box the rectangle opened: an area's, or a lone paragraph's own
+const aopened = new Set();  // paragraph boxes the rectangle opened: they close when left empty, as an area's box does
 function areaBounds() {  // the replies' own size in #body's coordinates (the window is as tall as they are)
   const b = $("body"), rp = $("replies");
   return {w: b.clientWidth, h: rp.offsetTop + rp.offsetHeight + parseFloat(getComputedStyle(b).paddingBottom)};
@@ -1480,7 +1565,7 @@ function areaBlocks() {  // the blocks the rectangle touches, in reading order: 
   if (!area) return [];
   const out = [];
   $("replies").querySelectorAll(".reply").forEach((rep, r) => {
-    for (const el of rep.querySelectorAll(":scope > [data-n]")) {
+    for (const el of rep.querySelectorAll("[data-n]")) {  // a frame (.agroup) may hold some
       const q = el.getBoundingClientRect(), p = bodyPt(q.left, q.top);
       if (p.x < area.x + area.w && p.x + q.width > area.x && p.y < area.y + area.h && p.y + q.height > area.y) out.push({el, r, n: +el.dataset.n});
     }
@@ -1501,10 +1586,13 @@ function areaPaint() {
   if (!area) return;
   Object.assign(el.style, {left: area.x + "px", top: area.y + "px", width: area.w + "px", height: area.h + "px"});
   if (cp.hidden) return;
-  // Copy under the rectangle's bottom right corner; above its top right one when the replies end first; else inside
+  // Copy under the rectangle's bottom right corner; above its top right one when the replies end first or the
+  // area's answer box is open (under the frame, where Copy would cover what is typed); else inside
   const bd = areaBounds(), w = cp.offsetWidth, h = cp.offsetHeight;
+  const boxed = !!alink && !!$("replies").querySelector(`.ansrow[data-for="${CSS.escape(alink)}"]`);
   let y = area.y + area.h + 8;
-  if (y + h > bd.h) y = area.y - h - 8 >= 0 ? area.y - h - 8 : area.y + area.h - h - 8;
+  if (boxed) y = area.y - h - 8 >= 0 ? area.y - h - 8 : area.y + 8;
+  else if (y + h > bd.h) y = area.y - h - 8 >= 0 ? area.y - h - 8 : area.y + area.h - h - 8;
   cp.style.left = Math.max(0, Math.min(area.x + area.w - w, bd.w - w)) + "px";
   cp.style.top = Math.max(0, y) + "px";
   const n = bs.length;
@@ -1513,6 +1601,9 @@ function areaPaint() {
 function areaClear() {
   if (!area && !adrag && !apend) return;
   area = adrag = apend = null;
+  const old = alink;
+  alink = null;
+  leaveLink(old);
   cancelAnimationFrame(ascroll);
   ascroll = null;
   document.body.classList.remove("areaing", "drawing");
@@ -1550,7 +1641,54 @@ function areaEnd() {
   ascroll = null;
   document.body.classList.remove("areaing", "drawing");
   if (!areaBlocks().length) { areaClear(); return; }  // it touches nothing: no rectangle is left behind
+  areaSync();
   areaPaint();
+}
+// The rectangle drawn, moved or resized (or pressed in place): the blocks it touches get one frame and one answer
+// box under them, caret in it, beside Copy. One paragraph alone opens that paragraph's own box. An answered area it
+// touches is taken in (areaMerge()), its answer kept; the rectangle's own area follows it. Across two replies only
+// Copy: an area's answer goes inside one quoted reply.
+function areaSync() {
+  const bs = areaBlocks(), old = alink;
+  if (!bs.length || !S) return;
+  if (new Set(bs.map(b => b.r)).size > 1) { alink = null; leaveLink(old); return; }
+  const rid = bs[0].el.closest(".reply").dataset.id, ns = bs.map(b => b.n);
+  const done = Object.keys(answers).filter(k => areaRange(k) && String(answers[k].text || "").trim());
+  const m = areaMerge(done, areaRange(old) ? old : null, rid, Math.min(...ns), Math.max(...ns));
+  const text = m.from.map(k => answers[k] ? answers[k].text.trim() : "").filter(Boolean).join("\n\n");
+  const lone = m.a === m.b && !text && bs[0].el.classList.contains("para") ? bs[0].el : null;
+  const key = lone ? lone.dataset.key : m.key;
+  for (const k of m.from) if (k !== key) dropArea(k);  // taken in, or this rectangle's own before it moved
+  if (old !== key) leaveLink(old);
+  alink = key;
+  let t;
+  if (lone) {
+    if (!ownRow(lone)) aopened.add(key);
+    t = openBox(lone, undefined, true);
+  } else {
+    t = openAreaBox(key, text || undefined, true);
+    if (t && text && (!answers[key] || answers[key].text !== t.value)) {
+      answers[key] = {text: t.value, passage: sources[key]};
+      api().draft(S.sid, key, sources[key], t.value);
+    }
+  }
+  if (!t) return;
+  count();
+  t.focus();
+  t.setSelectionRange(t.value.length, t.value.length);
+  t.parentElement.scrollIntoView({block: "nearest"});
+}
+function dropArea(k) {  // an area taken into another: its answer, draft and box go (its text lives on in the other)
+  clearTimeout(saveJob[k]);
+  if (answers[k]) { delete answers[k]; api().draft(S.sid, k, "", ""); }
+  if (S && S.answers) delete S.answers[k];
+  const row = $("replies").querySelector(`.ansrow.area[data-for="${CSS.escape(k)}"]`);
+  if (row) unframe(row);
+}
+function leaveLink(k) {  // the box the rectangle opened, no longer its: it closes if empty and not being typed in
+  if (!k) return;
+  const row = $("replies").querySelector(`.ansrow[data-for="${CSS.escape(k)}"]`);
+  if (row && row.firstChild !== document.activeElement && (row.classList.contains("area") || aopened.has(k))) closeBox(row);
 }
 function areaCopied(on) {
   clearTimeout(acopied);
@@ -1561,6 +1699,8 @@ function areaCopied(on) {
 document.addEventListener("pointerdown", e => {
   aswallow = false;
   if (!area || e.target.closest("#area, #areaCopy")) return;
+  const own = e.target.closest(".ansrow");
+  if (own && own.dataset.for === alink) return;  // in the box the rectangle opened: the rectangle and Copy stay
   areaClear();
   aswallow = !!e.target.closest("#body");
 }, true);
@@ -1575,6 +1715,9 @@ $("body").addEventListener("pointerdown", e => {
 });
 // no text selection starts from blank space (the click still comes, so a paragraph's box opens as before)
 $("body").addEventListener("mousedown", e => { if (apend) e.preventDefault(); });
+// a press on the rectangle or its Copy leaves the keyboard in the area's box, so the box and its frame stay
+$("area").addEventListener("mousedown", e => e.preventDefault());
+$("areaCopy").addEventListener("mousedown", e => e.preventDefault());
 $("area").addEventListener("pointerdown", e => {
   if (e.button !== 0) return;
   e.preventDefault();

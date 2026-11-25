@@ -4459,7 +4459,8 @@ class Panel:
         """What Send to Session pastes and Copy copies: each reply answered, in the order its answers come
         ([{key "<message id>#<block>", passage, text, line}], as the page's sendList() gives them), its text as the
         window was handed it (reply_seen, by message id) with the answers inside it (agent-reply.py format_answered_replies()).
-        A key "<message id>#" (no block: the page's toSend() with no answer typed) names a reply sent as it is."""
+        A key "<message id>#" (no block: the page's toSend() with no answer typed) names a reply sent as it is; a key
+        "<message id>#<a>-<b>" an area answered as a whole (its blocks a to b, agent-reply.py area_size())."""
         mod, order, by = self.reply_mod, [], {}
         for a in answers:
             rid, _, block = str(a.get("key") or "").rpartition("#")
@@ -4472,7 +4473,7 @@ class Panel:
                 line = int(a.get("line"))
             except (TypeError, ValueError):
                 line = -1
-            by[rid].append((line, str(a.get("passage") or ""), str(a.get("text") or "")))
+            by[rid].append((line, str(a.get("passage") or ""), str(a.get("text") or ""), mod.area_size(block)))
         groups = []
         for rid in order:
             text, at = self.reply_seen.get((sid, rid)) or (None, None)
