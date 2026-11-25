@@ -449,6 +449,9 @@ out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}
 out.tips = [paraTip("p"), paraTip("li"), paraTip("table")];
 out.tab = [tabTarget(5, 0, false), tabTarget(5, 3, false), tabTarget(5, 4, false), tabTarget(5, 4, true), tabTarget(5, 0, true),
   tabTarget(1, 0, false), tabTarget(5, -1, false)];
+// what the panel sends is held only while a box has the keyboard of the window in front, or words are being dictated
+out.hold = [[true, true, false], [true, false, false], [false, true, false], [false, false, true], [true, false, true],
+  [false, false, false]].map(([box, focused, dictating]) => holdsUpdates({box, focused, dictating}));
 const run = (evs) => { let s = null; const acts = []; for (const e of evs) { const r = spaceRule(s, e); s = r.s; acts.push(r.act); } return [s && s.st, acts]; };
 const D = {type: "down", repeat: false}, R = {type: "down", repeat: true}, U = {type: "up"}, T = {type: "timer"},
   K = {type: "key"}, B = {type: "blur"}, F = {type: "fail"};
@@ -609,6 +612,11 @@ class Markdown(unittest.TestCase):
 
     def test_each_block_names_its_last_line_where_its_answer_goes(self):
         self.assertEqual(self.md["planEnds"], PLAN_ENDS)
+
+    def test_updates_wait_for_a_box_only_while_its_window_has_the_keyboard(self):
+        # a box in a window behind the terminal (it keeps the focus) holds nothing: the tab follows the terminal in
+        # front; words still being transcribed hold the page in any case, so they land in their own session's box
+        self.assertEqual(self.md["hold"], [True, False, False, True, True, False])
 
     def test_tab_goes_to_the_next_block_and_shift_tab_back_ending_at_either_end(self):
         self.assertEqual(self.md["tab"], [1, 4, -1, 3, -1, -1, -1])

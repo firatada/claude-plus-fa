@@ -403,6 +403,12 @@ function tabTarget(n, i, back) {
   const j = i + (back ? -1 : 1);
   return i >= 0 && j >= 0 && j < n ? j : -1;
 }
+// Whether what agent-panel.pyw sends is held (the page stays the session drawn): while an answer box has the keyboard
+// of a window that has it (box: the box is the focused element; focused: document.hasFocus()), or while a hold's
+// words are still being transcribed into a box (dictating), so they land in their own session's box. A box stays the
+// focused element after the user went to another window, so without `focused` the hold never ended and the tab no
+// longer followed the terminal in front (2026-11-25). The box's text is not lost: it is the session's draft.
+function holdsUpdates(o) { return !!(o.box && o.focused) || !!o.dictating; }
 
 // Space in an answer box: hold it to speak, as Claude Code's own hold-to-talk feels. Its rule, read from Claude Code
 // 2.1.330 (a terminal has no key-up, so the key's own repeat tells a hold): the first Space types a space; from the
@@ -1053,6 +1059,7 @@ async function finish() {  // Space let go (or the box, or the window, lost the 
   if (a && typeof a.text !== "string") vline(t, "note", a.note || "Voice to Text could not be reached.", a.link);
   else vline(t, "");
   dlog("done", {text: me.said});
+  release();  // the words are in: an update held for them is drawn when nothing else holds it
 }
 function putDictation(t, text) {  // at the caret, keeping the box's keyboard if it has it
   if (!t.isConnected) return;
@@ -1089,8 +1096,9 @@ document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
   if (spaceBox === e.target) spaceStep(e.target, {type: "blur"});
   if (!busy.has(e.target)) vline(e.target, "");  // "Transcribing…" stays: its text still comes
-  setTimeout(() => { if (pending && !typing()) { pending = false; flush(); } }, 0);  // Tab to the next box: still held
+  release();  // Tab to the next box: still held
 });
+addEventListener("blur", release);  // another window in front: the box keeps the focus, but nothing is typed now
 // Tab and Shift+Tab keep the box's text and open the next (previous) block's box with the caret in it, scrolled into
 // view; a box left empty closes, so tabbing past blocks leaves no trail; at the last (first) block the box is only left.
 function tabMove(t, back) {
@@ -1309,19 +1317,22 @@ function size() {
 }
 
 // ---------- from agent-panel.pyw ----------
-// While an answer box has the keyboard nothing is redrawn, and what agent-panel.pyw sends meanwhile (another session
-// shown: a prompt typed in another tab, another terminal brought forward) is held whole, S and the tabs included, until
-// the box is left: the page goes on being the session drawn, so the answers typed meanwhile are saved, counted and
+// While an answer box has the keyboard (holdsUpdates(): the window has it too) nothing is redrawn, and what
+// agent-panel.pyw sends meanwhile (another session shown: a prompt typed in another tab, another terminal brought
+// forward) is held whole, S and the tabs included, until the box is left or another window comes to the front (the
+// box keeps the focus then, the window does not): the page goes on being the session drawn, so the answers typed meanwhile are saved, counted and
 // sent as that session's. (Before 2026-11-23 S was swapped at once while only the redraw waited, so those answers were
 // saved under the other session and were gone when this one was shown again.)
 let pending = false, held = null, heldHead = null;
+function holding() { return holdsUpdates({box: typing(), focused: document.hasFocus(), dictating: !!rec || busy.size > 0}); }
+function release() { setTimeout(() => { if (pending && !holding()) { pending = false; flush(); } }, 0); }
 function flush() {
   if (heldHead) { const h = heldHead; heldHead = null; drawHead(h); }
   if (held) { S = held; held = null; }
   if (S) apply();
 }
 function apply() {
-  if (typing()) { pending = true; return; }
+  if (holding()) { pending = true; return; }
   const same = S.sid === shownSid;
   if (!same) { view = null; askHide(); }  // another session: its latest replies
   if (view && !(S.pins || []).some(p => p.id === view)) view = null;  // the pin shown was unpinned
@@ -1342,7 +1353,7 @@ window.reply = {
   // state: {sid, name, replies: [{id, when, text}], answers: {key: {text, passage}}, selections: [{n, text}], note,
   // pins: [{id, label, when, text}] in the order pinned}
   show(state) {
-    if (typing() && S) { held = state; pending = true; return natural(); }
+    if (holding() && S) { held = state; pending = true; return natural(); }
     S = state;
     apply();
     return natural();
@@ -1354,7 +1365,7 @@ window.reply = {
     // a head that shows another session waits with the state that goes with it (above); any other (the fold, the
     // dots, the times) is drawn at once
     const on = (h.tabs.find(t => t.on) || {}).sid;
-    if (typing() && S && on && on !== S.sid) { heldHead = h; pending = true; return natural(); }
+    if (holding() && S && on && on !== S.sid) { heldHead = h; pending = true; return natural(); }
     heldHead = null;
     return drawHead(h);
   },
