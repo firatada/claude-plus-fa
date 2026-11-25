@@ -395,35 +395,111 @@ def layout():
     agent-panel.pyw by ast."""
     with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
-    names = {"SHOT_W", "SHOT_H", "SHOT_MIN", "SHOT_PAD", "SHOT_GAP", "REPLY_W", "REPLY_MIN"}
+    names = {"SHOT_W", "SHOT_H", "SHOT_MIN", "SHOT_PAD", "SHOT_GAP", "REPLY_W", "REPLY_MIN", "REPLY_MIN_W", "REPLY_MIN_H"}
     keep = [n for n in tree.body if isinstance(n, ast.Assign) and any(
         getattr(t, "id", "") in names or any(getattr(e, "id", "") in names for e in getattr(t, "elts", [])) for t in n.targets)]
-    keep += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "band_layout"]
+    keep += [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("band_layout", "reply_height", "resized")]
     keep += [m for n in tree.body if isinstance(n, ast.ClassDef) for m in n.body
-             if isinstance(m, ast.FunctionDef) and m.name == "card_h"]
+             if isinstance(m, ast.FunctionDef) and m.name in ("card_h", "strip_rect")]
+    keep.insert(0, ast.parse("import math").body[0])
     ns = {}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
     return ns
 
 
 class Layout(unittest.TestCase):
-    """The reply window at the screen's left edge and the strip of screenshots right of it, SHOT_GAP apart, one width."""
+    """The reply window flush with the screen's left edge and the strip of screenshots right of it, SHOT_GAP apart,
+    one width. room is from the strip's right end to the screen's left edge: no gap at the left (2026-11-25)."""
     ns = layout()
 
-    def check(self, room, n, head):
-        cols, rows, sw, rw = self.ns["band_layout"](room, n, head)
+    def check(self, room, n, head, want=None):
+        cols, rows, sw, rw = self.ns["band_layout"](room, n, head, want)
         if head and n and rw:
             self.assertLessEqual(rw + self.ns["SHOT_GAP"] + sw, room)  # never overlapping, the gap kept
         return cols, rows, sw, rw
 
     def test_a_full_row_is_as_wide_as_the_reply_window(self):
-        self.assertEqual(self.check(1624, 6, True), (5, 2, 808, 808))  # 1920 screen, panel docked right
-        self.assertEqual(self.check(1624, 5, True), (5, 1, 808, 808))
+        self.assertEqual(self.check(1632, 6, True), (5, 2, 812, 812))  # 1920 screen, panel docked right
+        self.assertEqual(self.check(1632, 5, True), (5, 1, 812, 812))
         self.assertEqual(self.check(2400, 7, True), (5, 2, 820, 820))  # room to spare: both REPLY_W
         self.assertEqual(self.check(1000, 3, True), (3, 1, 496, 496))
 
     def test_fewer_than_a_row_keep_their_width_and_the_reply_window_its_own(self):
-        self.assertEqual(self.check(1624, 3, True), (3, 1, 474, 808))
+        self.assertEqual(self.check(1632, 3, True), (3, 1, 474, 812))
+
+    def test_the_users_width_is_the_strips_full_row_too(self):
+        self.assertEqual(self.check(1632, 6, True, 600), (3, 2, 600, 600))  # narrower: three columns spread over 600
+        self.assertEqual(self.check(2400, 9, True, 1100), (7, 2, 1100, 1100))  # wider, room to spare
+        self.assertEqual(self.check(1632, 6, True, 1100), (5, 2, 812, 812))  # wider than half the room: held there
+        self.assertEqual(self.check(1632, 0, True, 1100), (0, 0, 0, 1100))  # no screenshot: the whole width
+        self.assertEqual(self.check(1632, 0, True, 2000), (0, 0, 0, 1632))  # never past the room
+
+    def test_the_reply_window_stands_flush_with_the_left_edge(self):
+        wa = type("R", (), {"left": -1920, "top": 0, "right": 0, "bottom": 1040})()  # a screen left of the main one
+        for scale, n, want in ((1.0, 6, None), (1.25, 2, 700), (1.5, 0, None)):
+            P = type("P", (), {"scale": lambda self: scale, "head_h": 85, "reply_want": [want, None],
+                               "strip_anchor": lambda self: (-288, 0, wa), "work_area": lambda self, r=None: wa,
+                               "card_h": self.ns["card_h"], "strip_rect": self.ns["strip_rect"]})()
+            rect, cols = P.strip_rect(n, True)
+            x, y, w = P.reply_box
+            self.assertEqual((x, y), (wa.left, 0))  # no gap at the left
+            if rect:  # the strip SHOT_GAP right of it
+                self.assertGreaterEqual(rect[0] - (x + w), int(self.ns["SHOT_GAP"] * scale) - 1)
+
+    def test_sizing_keeps_the_minimum_and_leaves_the_side_not_dragged(self):
+        rz, mw, mh = self.ns["resized"], self.ns["REPLY_MIN_W"], self.ns["REPLY_MIN_H"]
+        self.assertEqual(rz("r", 812, 500, 100.4, 50), [912, None])
+        self.assertEqual(rz("b", 812, 500, 100, -60), [None, 440])
+        self.assertEqual(rz("rb", 812, 500, -700, -700), [mw, mh])
+        self.assertEqual((mw, mh), (540, 240))
+
+    def test_a_drag_of_the_corner_follows_the_pointer_and_keeps_the_size_shown(self):
+        """reply_sizing_follow(), reply_size_save() and reply_unsize() with a scripted pointer (no real input)."""
+        import ctypes, queue
+        from ctypes import wintypes as wt
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        meths = [m for n in tree.body if isinstance(n, ast.ClassDef) for m in n.body if isinstance(m, ast.FunctionDef)
+                 and m.name in ("reply_sizing_follow", "reply_size_save", "reply_unsize")]
+        path = [(100, 100, True), (160, 140, True), (-900, -900, True), (220, 180, False)]  # x, y, button held
+        at, saved = [0], {}
+
+        class U:  # the button is read first each turn, then the pointer: each read of the button is the next step
+            def GetSystemMetrics(self, i): return 0
+            def GetAsyncKeyState(self, b):
+                at[0] += 1
+                return 0x8000 if path[at[0]][2] else 0
+            def GetCursorPos(self, ref):
+                ref._obj.x, ref._obj.y = path[at[0]][:2]
+        ns = dict(self.ns, user32=U(), wt=wt, ctypes=ctypes, time=type("T", (), {"sleep": staticmethod(lambda t: None)}),
+                  save_local=lambda k, v: saved.__setitem__(k, v))
+        cls = ast.ClassDef(name="P", bases=[], keywords=[], body=meths, decorator_list=[], type_params=[])
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])), "agent-panel.pyw", "exec"), ns)
+        p = ns["P"]()
+        p.scale, p.events, p.size_queued, p.reply_want = (lambda: 1.25), queue.Queue(), False, [None, None]
+        p.update_strip = lambda: None
+        seen = []
+        p.events.put = lambda e, q=p.events: (seen.append((e, list(p.reply_want))), queue.Queue.put(q, e))
+        p.reply_sizing_follow("rb", (0, 0, 1000, 625))  # 800 x 500 logical at 125 %
+        self.assertEqual(seen[0], ("reply-size", [848, 532]))  # 60, 40 physical px = 48, 32 logical
+        self.assertEqual(seen[-1][0], "reply-sized:rb")
+        self.assertEqual(p.reply_want, [896, 564])  # the pointer where the button was let go
+        p.reply_now = (0, 0, 1000, 700)  # what the window shows: the screen held it to 1000 px wide
+        p.reply_size_save("rb")
+        self.assertEqual(saved, {"reply_width": 800, "reply_height": 560})
+        p.reply_unsize("b")
+        self.assertEqual((p.reply_want, saved["reply_height"]), ([800, None], None))
+
+    def test_height_is_the_users_when_sized_else_the_contents(self):
+        rh = self.ns["reply_height"]
+        self.assertEqual(rh(300, None, 1024, False), 300)  # never sized: the content's
+        self.assertEqual(rh(0, None, 1024, False), 120)  # not measured yet
+        self.assertEqual(rh(2000, None, 1024, False), 1024)  # longer than the screen: scrolls inside
+        self.assertEqual(rh(300, 700, 1024, False), 700)  # sized: the user's, the replies leave room below
+        self.assertEqual(rh(3000, 700, 1024, False), 700)  # ... or scroll inside
+        self.assertEqual(rh(300, 1500, 1024, False), 1024)  # never past the screen
+        self.assertEqual(rh(85, 700, 1024, True), 85)  # folded: the head alone
+        self.assertEqual(rh(10, None, 1024, True), 40)
 
     def test_no_screenshot_leaves_the_reply_window_alone(self):
         self.assertEqual(self.check(1600, 0, True), (0, 0, 0, 820))

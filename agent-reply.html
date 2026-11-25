@@ -31,7 +31,8 @@
      answer_text(): the reply quoted with "> ", each answer unquoted after the block it answers, led by "My answer to" and the block's first line);
      Copy puts the same text on the clipboard.
      The window grows with its content; taller than the screen allows, the replies scroll inside. agent-panel.pyw
-     sizes it from what api.size() reports. Spark tokens as in agent-panel.html.
+     sizes it from what api.size() reports. Its right edge, bottom and their corner size it by hand (2026-11-25): that
+     size is kept, the height then the window's own (the replies scroll inside or leave room below). Spark tokens as in agent-panel.html.
      Pins (2026-11-23): every reply carries Pin at the right of its top line (the strip's Pin: blue when on).
      A session with pinned replies shows a row of chips under its tabs: Latest first (the replies since the last
      prompt), then one chip per pin in the order pinned (its first words, its time, an x that unpins it). A chip
@@ -53,7 +54,7 @@
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
   --faint: #687189; --violet: #5c3bcd; --blue: #1b4df5; --green: #16a34a; --red: #e11d48; --red-deep: #be123c;
   --hit: #dbe4ff; --ans-bg: #f5f8ff; --r-ctl: 10px; --r-small: 6px; --tip-bg: rgba(10, 26, 64, .88);
-  --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2); --snap: cubic-bezier(0.23, 1, 0.32, 1); --edge: 20px;
+  --shadow-tip: 0 6px 16px rgba(10, 26, 64, .2); --snap: cubic-bezier(0.23, 1, 0.32, 1); --edge: 20px; --grip: 6px;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -67,6 +68,18 @@ button { cursor: pointer; }
 body.folded #head { border-bottom: 0; }
 body.folded #body, body.folded #miss, body.folded #foot, body.folded #ask { display: none; }
 body.moving, body.moving * { cursor: grabbing !important; }
+/* the grips: the right edge, the bottom and their corner size the window (agent-panel.pyw follows the pointer while
+   the button is held); the left edge and the top stand against the screen's edge and the strip's top, so they do
+   not. A double click on one forgets that size. Over everything, under the tooltip; folded, only the right edge. */
+.grip { position: fixed; z-index: 15; }
+.grip[data-edge="r"] { top: 0; right: 0; bottom: 0; width: var(--grip); cursor: ew-resize; }
+.grip[data-edge="b"] { left: 0; right: 0; bottom: 0; height: var(--grip); cursor: ns-resize; }
+.grip[data-edge="rb"] { right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+body.folded .grip:not([data-edge="r"]) { display: none; }
+body.sizing-r, body.sizing-r * { cursor: ew-resize !important; }
+body.sizing-b, body.sizing-b * { cursor: ns-resize !important; }
+body.sizing-rb, body.sizing-rb * { cursor: nwse-resize !important; }
+body[class*="sizing-"] { user-select: none; }
 /* the tabs: a grid of equal columns (tabFit()), more rows when they do not fit in one; a tab holds the session's name
    whole on one or two lines (nameFit() sets its size, 12 px down to 10) and under it the state dot and the time of
    its last reply in very small type; every tab and the fold button share --tabh */
@@ -128,7 +141,8 @@ body.moving, body.moving * { cursor: grabbing !important; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta b { font-weight: 600; color: var(--text); }
 .meta:empty { display: none; }
-#body { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 28px 10px var(--edge);
+#body { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 22px 10px var(--edge);
+  margin-right: var(--grip);  /* the scroll bar stays clear of the right edge's grip; the text keeps its place */
   scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 #replies { display: flow-root; }  /* holds its children's margins, so its height is the content's (natural()) */
 /* one reply; several are parted by a hairline and the time each came */
@@ -287,6 +301,7 @@ body.drawing #body, body.drawing #body * { cursor: crosshair !important; }
   <button type="button" class="b" id="copy"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
   <button type="button" class="b primary" id="send"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7h9M7.5 3.5L11 7l-3.5 3.5"/></svg>Send to Session</button>
 </div>
+<div class="grip" data-edge="r" aria-hidden="true"></div><div class="grip" data-edge="b" aria-hidden="true"></div><div class="grip" data-edge="rb" aria-hidden="true"></div>
 <script>
 const api = () => window.pywebview.api;
 const $ = id => document.getElementById(id);
@@ -2136,6 +2151,26 @@ $("head").addEventListener("pointerup", e => {
   });
 });
 $("head").addEventListener("lostpointercapture", () => { pressed = null; document.body.classList.remove("moving"); });
+
+// The grips (the right edge, the bottom, their corner): a press hands the side to agent-panel.pyw, which follows the
+// pointer and sizes the window until the button is let go, the strip's full row keeping its width; the cursor stays the
+// resize cursor meanwhile. Nothing else hears the press (no area drag, no tooltip, the keyboard stays put). A double
+// click forgets that size: the width goes back to its default, the height follows the content again.
+for (const g of document.querySelectorAll(".grip")) {
+  g.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { g.setPointerCapture(e.pointerId); } catch (_) {}
+    tipHide();
+    document.body.classList.add("sizing-" + g.dataset.edge);
+    api().resize(g.dataset.edge);
+  });
+  const done = () => document.body.classList.remove("sizing-r", "sizing-b", "sizing-rb");
+  g.addEventListener("pointerup", done);
+  g.addEventListener("lostpointercapture", done);
+  g.addEventListener("dblclick", e => { e.preventDefault(); api().unsize(g.dataset.edge); });
+}
 addEventListener("pywebviewready", () => { ready = true; api().ready(); });
 addEventListener("resize", size);
 </script>

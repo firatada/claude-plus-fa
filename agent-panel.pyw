@@ -98,6 +98,17 @@ def strip_at():
         return None
 
 
+def reply_wanted():
+    """The reply window's size the user dragged it to, [width, height] in logical pixels ("reply_width",
+    "reply_height" in claude-plus.local.json); None for a side never sized (the width is then REPLY_W, the height
+    its content's)."""
+    out = []
+    for key, low in (("reply_width", REPLY_MIN_W), ("reply_height", REPLY_MIN_H)):
+        v = local(key)
+        out.append(max(low, int(v)) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None)
+    return out
+
+
 def strip_pins():
     """The screenshots pinned in the strip, by the keeper's key, the capture time ("shot_pins": [at, ...]), in the
     order they were pinned (the strip numbers them so); a pinned one stays however many newer ones come, and keeps
@@ -287,9 +298,11 @@ REPLY_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-rep
 VOICE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-voice-host.py")
 VOICE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "claude-plus", "voice-host")
 REPLY_TITLE = "Field Agents Reply"
-REPLY_W = 820          # logical pixels: the reply window's width, left of the strip at the screen's left edge
+REPLY_W = 820          # logical pixels: the reply window's width, flush with the screen's left edge, until the user sizes it
 REPLY_MIN = REPLY_W    # logical pixels the reply window keeps beside a one-column strip on a narrow screen
 REPLY_BELOW = 8        # logical pixels the reply window keeps from the work area's bottom; taller, it scrolls inside
+REPLY_MIN_W, REPLY_MIN_H = 540, 240  # logical px, the smallest the user can size it: the bottom bar whole at its longest
+                       # count (530 measured), one row of tabs, the bottom bar and 3 lines of replies (69 px) between
 SEND_WAIT = 4          # seconds Send to Session waits for the terminal to read the line it pastes
 SEND_FRONT = 1.5       # seconds it gives the terminal to be in front, on top and showing the session's tab
 SEEN_MAX = 400         # replies kept by message id for Send to Session and Copy (Panel.reply_seen)
@@ -2337,27 +2350,49 @@ def err(t):
     return {"t": t, "err": True}
 
 
-def band_layout(room, n, head):
-    """Logical pixels. room: from the strip's right end to the screen's left edge (less SHOT_GAP with a head).
-    Returns (cols, rows, strip_w, reply_w): the columns and rows of a strip of n screenshots and its width (0 with
-    none), and the width of the reply window at the left edge (0 without a head). With a head and screenshots the
-    two windows share one width (REPLY_W, or half the room less SHOT_GAP when that is narrower): a full row of the
-    strip is exactly as wide as the reply window (the page spreads its cards over it), fewer screenshots than a row
-    holds keep their own width, and more wrap into rows. When that width holds fewer than two columns, the strip
-    takes one column and the reply window the rest (REPLY_MIN kept first). SHOT_GAP parts the two windows."""
+def band_layout(room, n, head, want=None):
+    """Logical pixels. room: from the strip's right end to the screen's left edge, where the reply window stands flush.
+    want: the width the user sized the reply window to (None: REPLY_W). Returns (cols, rows, strip_w, reply_w): the
+    columns and rows of a strip of n screenshots and its width (0 with none), and the width of the reply window at the
+    left edge (0 without a head). With a head and screenshots the two windows share one width (want, or half the room
+    less SHOT_GAP when that is narrower): a full row of the strip is exactly as wide as the reply window (the page
+    spreads its cards over it), fewer screenshots than a row holds keep their own width, and more wrap into rows. When
+    that width holds fewer than two columns, the strip takes one column and the reply window the rest (REPLY_MIN, or
+    want when smaller, kept first). SHOT_GAP parts the two windows."""
     step = SHOT_W + SHOT_PAD
+    pref = want or REPLY_W
     if head and n:
-        w = int(min(REPLY_W, (room - SHOT_GAP) // 2))
+        w = int(min(pref, (room - SHOT_GAP) // 2))
         fit = int((w - SHOT_PAD) // step)
         if fit >= 2:
             cols = min(n, fit)
             return cols, -(-n // cols), (w if n >= fit else SHOT_PAD + cols * step), w
-    fit = int((room - SHOT_PAD - (REPLY_MIN + SHOT_GAP if head else 0)) // step)
+    fit = int((room - SHOT_PAD - (min(pref, REPLY_MIN) + SHOT_GAP if head else 0)) // step)
     cols = max(1, min(n, fit)) if n else 0
     rows = -(-n // cols) if n else 0
     strip_w = SHOT_PAD + cols * step if n else 0
-    reply_w = max(0, min(REPLY_W, int(room - (strip_w + SHOT_GAP if n else 0)))) if head else 0
+    reply_w = max(0, min(pref, int(room - (strip_w + SHOT_GAP if n else 0)))) if head else 0
     return cols, rows, strip_w, reply_w
+
+
+def reply_height(natural, want, room, folded):
+    """Logical pixels: the reply window's height. Folded, its head (natural). Sized by the user (want), that height:
+    the replies scroll inside when they are longer and leave room below when shorter. Otherwise as tall as its content
+    (natural; 120 before the page has measured it). Never past room (down to REPLY_BELOW above the work area's bottom),
+    never under 40."""
+    if want and not folded:
+        h = max(min(REPLY_MIN_H, room), min(want, room))
+    else:
+        h = min(natural or 120, room)
+    return max(40, h)
+
+
+def resized(edge, w0, h0, dx, dy):
+    """Logical pixels: the reply window's [width, height] while its edge is dragged dx, dy from where it started
+    (w0 x h0): "r" the right edge, "b" the bottom, "rb" the corner. A side not dragged is None (left as it is); a
+    dragged one keeps REPLY_MIN_W, REPLY_MIN_H. The screen's limits are band_layout()'s and reply_height()'s."""
+    return [max(REPLY_MIN_W, int(round(w0 + dx))) if "r" in edge else None,
+            max(REPLY_MIN_H, int(round(h0 + dy))) if "b" in edge else None]
 
 
 def short(title, n=40, end=""):
@@ -2526,6 +2561,17 @@ class ReplyApi:
             self._p.head_h = head
             self._p.events.put("reply-head")
         self._p.events.put("reply")
+
+    def resize(self, edge):
+        # a press on the window's right edge ("r"), bottom ("b") or corner ("rb"): agent-panel.pyw follows the pointer
+        # and sizes the window until the button is let go
+        if edge in ("r", "b", "rb"):
+            self._p.reply_resize(edge)
+
+    def unsize(self, edge):
+        # a double click on an edge: that side forgets its size (the width REPLY_W again, the height its content's)
+        if edge in ("r", "b", "rb"):
+            self._p.reply_unsize(edge)
 
     def draft(self, sid, key, passage, text):
         d = self._p.drafts
@@ -2868,6 +2914,8 @@ class Panel:
         self.reply_open = local("reply_open") is not False
         self.reply_hwnd, self.reply_ready, self.reply_shown, self.reply_h = None, False, False, 0
         self.head_h = 0  # logical pixels: the reply window's head as its page measured it (ReplyApi.size)
+        self.reply_want = reply_wanted()  # [width, height] the user sized it to, None for a side never sized
+        self.reply_sizing, self.size_queued = None, False
         self.reply_key, self.head_key, self.reply_box, self.reply_now = None, None, None, None
         self.reply = None
         if self.reply_mod:
@@ -2963,6 +3011,12 @@ class Panel:
                         self.place_reply()
                     elif ev == "reply-head":
                         self.update_strip()  # a row of the strip follows the head's height
+                    elif ev == "reply-size":
+                        self.size_queued = False
+                        self.update_strip()  # the reply window at its new size, a full row of the strip as wide
+                    elif ev.startswith("reply-sized:"):
+                        self.update_strip()
+                        self.reply_size_save(ev[12:])
                     elif ev == "reply-state":
                         self.update_reply()
                     elif ev.startswith("dock:"):
@@ -4173,14 +4227,13 @@ class Panel:
     def strip_rect(self, n, head=False):
         """Screen pixels (x, y, w, h) of a strip of n screenshots (None with none), and how many columns they take.
         It grows left from its top-right corner (strip_anchor()) and wraps into rows below. With head (a session is
-        open) the reply window stands at the screen's left edge, SHOT_GAP in, its top on the strip's: self.reply_box
+        open) the reply window stands flush with the screen's left edge, its top on the strip's: self.reply_box
         = (x, y, w) in screen pixels (None without a head or room), laid out by band_layout(). Only asked while the
         panel shows: the strip is hidden with it."""
         s = self.scale()
-        gap = int(round(SHOT_GAP * s))
         right, top, wa = self.strip_anchor()
-        room = (right - wa.left - (gap if head else 0)) / s  # logical pixels from its right end to the left edge
-        cols, rows, sw, rw = band_layout(room, n, head)
+        room = (right - wa.left) / s  # logical pixels from its right end to the left edge
+        cols, rows, sw, rw = band_layout(room, n, head, self.reply_want[0])
         rect = None
         if n:
             w = int(math.ceil(sw * s))  # never a pixel short: the page would wrap early
@@ -4190,8 +4243,7 @@ class Panel:
             rect = (max(wb.left, min(x, wb.right - w)), max(wb.top, min(y, wb.bottom - h)), w, h)
         self.reply_box = None
         if head and rw > 0:
-            rx = right - int(round(room * s))
-            self.reply_box = (rx, rect[1] if rect else max(wa.top, top), int(math.ceil(rw * s)))
+            self.reply_box = (wa.left, rect[1] if rect else max(wa.top, top), int(math.ceil(rw * s)))
         return rect, cols
 
     def update_strip(self):
@@ -4449,10 +4501,10 @@ class Panel:
         return {"pins": self.pins_of(sid)}
 
     def place_reply(self):
-        """The reply window at self.reply_box (strip_rect(): the screen's left edge, its top on the strip's), as tall
-        as its page asks up to REPLY_BELOW above the work area's bottom (then its replies scroll inside); hidden
-        while no session is open or the strip is off. Folded, its page is the head alone. Owned by the panel as the
-        strip is."""
+        """The reply window at self.reply_box (strip_rect(): flush with the screen's left edge, its top on the
+        strip's), as tall as reply_height() says (the user's height, else its page's, up to REPLY_BELOW above the work
+        area's bottom; then its replies scroll inside); hidden while no session is open or the strip is off. Folded,
+        its page is the head alone. Owned by the panel as the strip is."""
         if not self.reply_ready or not self.hwnd:
             return
         box = self.reply_box
@@ -4468,11 +4520,72 @@ class Panel:
         s = self.scale()
         x, y, w = box
         wa = self.work_area((x, y, w, 1))
-        h = max(int(40 * s), min(int(math.ceil((self.reply_h or 120) * s)), wa.bottom - int(REPLY_BELOW * s) - y))
+        room = (wa.bottom - int(REPLY_BELOW * s) - y) / s
+        h = int(math.ceil(reply_height(self.reply_h, self.reply_want[1], room, not self.reply_open) * s))
         place = (x, y, w, h)
         if place != self.reply_now or not user32.IsWindowVisible(self.reply_hwnd):
             self.reply_now = place
             user32.SetWindowPos(self.reply_hwnd, 0, x, y, w, h, 0x0004 | 0x0010 | 0x0040)
+
+    def reply_resize(self, edge):
+        """A press on the reply window's right edge, bottom or corner (its page's grips): sizes it until the button is
+        let go (reply_sizing())."""
+        t = self.reply_sizing
+        if (t and t.is_alive()) or not self.reply_now:
+            return
+        self.reply_sizing = threading.Thread(target=self.reply_sizing_follow, args=(edge, self.reply_now), daemon=True)
+        self.reply_sizing.start()
+
+    def reply_sizing_follow(self, edge, start):
+        """While the button is held: the dragged side follows the pointer (resized(): REPLY_MIN_W, REPLY_MIN_H kept);
+        the poll loop places the reply window and lays the strip out again on each change ("reply-size"), so a full
+        row of the strip stays as wide. The left edge and the top stay where they are: the window stands flush with
+        the screen's left edge, and moves with the strip by its head. Let go, the size it shows is kept."""
+        button = 0x02 if user32.GetSystemMetrics(23) else 0x01  # SM_SWAPBUTTON: the primary button
+        s = self.scale()
+        w0, h0 = start[2] / s, start[3] / s
+        p0, pt = wt.POINT(), wt.POINT()
+        user32.GetCursorPos(ctypes.byref(p0))
+        held = True
+        while held:
+            held = bool(user32.GetAsyncKeyState(button) & 0x8000)
+            user32.GetCursorPos(ctypes.byref(pt))
+            w, h = resized(edge, w0, h0, (pt.x - p0.x) / s, (pt.y - p0.y) / s)
+            want = [w if w is not None else self.reply_want[0], h if h is not None else self.reply_want[1]]
+            if want != self.reply_want:
+                self.reply_want = want
+                if not self.size_queued:
+                    self.size_queued = True
+                    self.events.put("reply-size")
+            if held:
+                time.sleep(0.01)
+        self.events.put("reply-sized:" + edge)
+
+    def reply_size_save(self, edge):
+        """After a resize: the size the window shows (the screen may have held it narrower or shorter than dragged) is
+        kept in claude-plus.local.json, for the sides dragged, and used from then on."""
+        if not self.reply_now:
+            return
+        s = self.scale()
+        for side, key, i in (("r", "reply_width", 0), ("b", "reply_height", 1)):
+            if side in edge:
+                self.reply_want[i] = max((REPLY_MIN_W, REPLY_MIN_H)[i], int(round(self.reply_now[2 + i] / s)))
+                try:
+                    save_local(key, self.reply_want[i])
+                except OSError:
+                    pass
+        self.update_strip()
+
+    def reply_unsize(self, edge):
+        """A double click on an edge: the sides it sizes forget the user's size (width REPLY_W, height the content's)."""
+        for side, key, i in (("r", "reply_width", 0), ("b", "reply_height", 1)):
+            if side in edge:
+                self.reply_want[i] = None
+                try:
+                    save_local(key, None)
+                except OSError:
+                    pass
+        self.events.put("reply-size")
 
     def seen(self, sid, rid, text, at):
         k = (sid, rid)
