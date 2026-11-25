@@ -521,6 +521,14 @@ function areaMarkdown(texts, picks) {
 // count); a paragraph's own answer keeps "<message id>#<n>". Its answer goes after the area's last line, led by the
 // number of blocks and the area's first line (agent-reply.py answer_block()).
 function areaKey(rid, a, b) { return `${rid}#${a}-${b}`; }
+// The page's own copy of the answers follows the panel's store (agent-reply.py stale()): an answer the store no
+// longer holds stays here only while its reply can be shown (Latest or a pin: one typed in the last 300 ms is not
+// saved yet), so a reply unpinned or replaced by a newer prompt leaves no answer counted under another chip.
+function keptAnswers(answers, stored, shown) {
+  const out = {};
+  for (const [k, a] of Object.entries(answers)) if (k in stored || shown.has(k.slice(0, k.lastIndexOf("#")))) out[k] = a;
+  return out;
+}
 function areaRange(key) { const m = /^(.*)#(\d+)-(\d+)$/.exec(String(key || "")); return m ? {rid: m[1], a: +m[2], b: +m[3]} : null; }
 // Two areas never overlap: a rectangle over blocks a..b of reply rid takes in every answered area it touches, and
 // those the grown range then touches, so one frame holds them all (extend, never replace). keys: the answered
@@ -2046,6 +2054,7 @@ function apply() {
     shownSid = S.sid;
     if (!same) { answers = {}; opened.clear(); tipHide(); say(""); $("body").scrollTop = 0; }
     for (const [k, a] of Object.entries(S.answers || {})) if (!answers[k]) answers[k] = {text: a.text, passage: a.passage};
+    answers = keptAnswers(answers, S.answers || {}, new Set((S.replies || []).concat(S.pins || []).map(r => r.id)));
     draw();
   } else {
     mark();

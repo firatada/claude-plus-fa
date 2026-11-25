@@ -146,8 +146,8 @@ def locked(f):
 
 class Drafts:
     """The answers typed under a session's paragraphs, kept in DRAFTS across closes and restarts until they are
-    sent: {session id: {paragraph key: {"text", "passage", "at"}}}. A key is "<message id>#<block>". An answer goes
-    once the user types a newer prompt in that session than the answer (the reply it answered is gone then)."""
+    sent: {session id: {paragraph key: {"text", "passage", "at"}}}. A key is "<message id>#<block>". An answer lives
+    as long as the reply it answers can be shown (stale(): pinned or under Latest)."""
 
     def __init__(self, path=DRAFTS):
         self.path = path
@@ -193,16 +193,40 @@ class Drafts:
         return True
 
     @locked
-    def expire(self, sid, prompt_at):
-        """A prompt typed at prompt_at: the answers written before it go."""
+    def expire(self, sid, prompt_at, shown=(), gone=None):
+        """Every pass (prompt_at: the session's last typed prompt) and on an unpin (gone: that reply): stale()'s
+        answers go. shown: the replies the window can still show (shown_ids())."""
         d = self.data.get(sid)
-        if not d or not prompt_at:
-            return False
-        old = [k for k, a in d.items() if (a.get("at") or 0) < prompt_at]
+        old = stale(d, prompt_at, shown, gone) if d else []
         return self.clear(sid, old) if old else False
 
     def save(self):
         save_json(self.path, self.data)
+
+
+def reply_of(key):
+    """The reply an answer's key names: "<message id>#<block>" or "<message id>#<a>-<b>" (an area)."""
+    return key.rpartition("#")[0] or key
+
+
+def shown_ids(replies, pins):
+    """The replies the window can show for a session: those since its last prompt (Latest) and its pinned ones."""
+    return {r["id"] for r in replies or []} | {p["id"] for p in pins or []}
+
+
+def stale(answers, prompt_at, shown, gone=None):
+    """The keys of the answers that go. An answer lives as long as the text it answers can be shown: one on a reply
+    in shown (pinned, or under Latest) always stays, across prompts, restarts and sends. One on a reply not shown goes
+    once a prompt newer than the answer was typed (prompt_at), or at once when its reply is gone (just unpinned and
+    not under Latest). No prompt known: only gone's go."""
+    out = []
+    for k, a in (answers or {}).items():
+        rid = reply_of(k)
+        if rid in shown:
+            continue
+        if rid == gone or (prompt_at and (a.get("at") or 0) < prompt_at):
+            out.append(k)
+    return out
 
 
 def save_json(path, data):

@@ -206,6 +206,47 @@ class Drafts(unittest.TestCase):
         self.assertEqual(list(d.get("A")), ["new"])
         self.assertFalse(d.expire("A", 200))
 
+    def test_an_answer_lives_as_long_as_its_text_can_be_shown(self):
+        # the pure rule: a reply shown (pinned or under Latest) keeps its answers whatever their age
+        A = {"pin#0": {"at": 100}, "pin#2-4": {"at": 100}, "cur#1": {"at": 100}, "old#0": {"at": 100}, "new#0": {"at": 300}}
+        self.assertEqual(ar.stale(A, 200, {"pin", "cur"}), ["old#0"])
+        self.assertEqual(ar.stale(A, None, {"pin", "cur"}), [])  # no prompt known: nothing goes
+        self.assertEqual(sorted(ar.stale(A, None, {"cur"}, gone="pin")), ["pin#0", "pin#2-4"])  # unpinned
+        self.assertEqual(ar.stale(A, None, {"pin", "cur"}, gone="cur"), [])  # unpinned but still under Latest
+        self.assertEqual(ar.reply_of("a#b#12-30"), "a#b")
+        self.assertEqual(ar.shown_ids([{"id": "cur"}], [{"id": "pin"}]), {"cur", "pin"})
+
+    def test_a_new_prompt_keeps_a_pinned_replys_answers(self):
+        d = ar.Drafts(self.file)
+        d.put("A", "pin#0", "p", "keep me", now=100)
+        d.put("A", "pin#1-3", "p", "the area's", now=100)
+        d.put("A", "latest#0", "p", "goes", now=100)
+        d.put("B", "latest#0", "p", "another session's", now=100)
+        # prompt at 200: Latest is now "new"; "pin" is pinned and no longer in the transcript's Latest
+        self.assertTrue(d.expire("A", 200, ar.shown_ids([{"id": "new"}], [{"id": "pin"}])))
+        self.assertEqual(sorted(d.get("A")), ["pin#0", "pin#1-3"])
+        self.assertFalse(d.expire("A", 900, {"pin"}))  # more prompts: still there
+        self.assertEqual(list(d.get("B")), ["latest#0"])
+
+    def test_restart_keeps_a_pinned_replys_answers(self):
+        pins_file = os.path.join(self.dir, "sub", "reply-pins.json")
+        ar.Pins(pins_file).add("A", "pin", 50, "Ship it today?", now=60)
+        ar.Drafts(self.file).put("A", "pin#0", "Ship it today?", "yes", now=100)
+        # a restart: both files read back, the first pass with a newer prompt and no reply under Latest yet
+        d, pins = ar.Drafts(self.file), ar.Pins(pins_file)
+        self.assertFalse(d.expire("A", 500, ar.shown_ids([], pins.get("A"))))
+        self.assertEqual(ar.Drafts(self.file).get("A")["pin#0"]["text"], "yes")
+
+    def test_unpin_drops_its_answers_unless_the_reply_is_under_latest(self):
+        d = ar.Drafts(self.file)
+        d.put("A", "pin#0", "p", "typed after the prompt", now=300)
+        d.put("A", "cur#0", "p", "on Latest", now=300)
+        d.put("A", "other#0", "p", "another pin", now=100)
+        self.assertTrue(d.expire("A", None, {"cur", "other"}, gone="pin"))  # unpinned, not under Latest: goes
+        self.assertEqual(sorted(d.get("A")), ["cur#0", "other#0"])
+        self.assertFalse(d.expire("A", None, {"cur", "other"}, gone="cur"))  # a pin of a reply still under Latest
+        self.assertEqual(sorted(ar.Drafts(self.file).get("A")), ["cur#0", "other#0"])
+
     def test_page_calls_on_threads_of_their_own_lose_nothing(self):
         # pywebview runs each api.draft() on a thread of its own, beside the panel's loop
         import threading
@@ -640,6 +681,9 @@ const RC = "Intro.\n\n## Plan\n\n1. one\n2. two\n   more\n\nAfter.";
 out.areaClip = {area: areaClip("m1#1-3", RC, {"m1#1-3": {text: "Onaylıyorum"}, "m1#3": {text: "own"}, "m1#0": {text: "outside"}, "m1#1-2": {text: "x"}}),
   bare: areaClip("m1#1-3", RC, {"m1#1-3": {text: "  "}}), para: areaClip("m1#4", RC, {"m1#4": {text: "ok"}}),
   one: areaClip("m1#2-2", RC, {"m1#2-2": {text: "yes"}}), gone: areaClip("m1#7-9", RC, {}), none: areaClip("x", RC, {})};
+// the page's copy of the answers after the store expired some: kept when stored, or while its reply is shown
+out.kept = Object.keys(keptAnswers({"pin#0": {}, "pin#1-3": {}, "cur#2": {}, "old#0": {}, "gone#0": {}},
+  {"pin#0": {}, "pin#1-3": {}}, new Set(["cur"]))).sort();
 console.log(JSON.stringify(out));
 """
 
@@ -798,6 +842,9 @@ class Markdown(unittest.TestCase):
         self.assertEqual(self.md["join"], [{"s": "merhaba", "caret": 7}, {"s": " x", "caret": 2},
                                            {"s": "x ", "caret": 1}, {"s": " x", "caret": 2}, {"s": "x", "caret": 1}])
 
+
+    def test_the_pages_answers_follow_the_store_but_keep_what_is_on_screen(self):
+        self.assertEqual(self.md["kept"], ["cur#2", "pin#0", "pin#1-3"])
 
     def test_esc_cancels_a_take_clears_on_a_second_press_and_leaves_an_empty_box(self):
         self.assertEqual(self.md["esc"], [2000, "cancel", "cancel", "arm", "clear", "leave", "leave"])

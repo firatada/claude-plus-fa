@@ -4351,8 +4351,9 @@ class Panel:
             except (OSError, ValueError, TypeError, AttributeError):
                 typed = 0
             if self.drafts and t.prompt and t.prompt.get("at"):
-                try:
-                    self.drafts.expire(s["id"], t.prompt["at"])
+                try:  # a pinned reply's answers stay while it is pinned; Latest's go with a newer prompt
+                    shown = self.reply_mod.shown_ids(t.replies(), self.pinned.get(s["id"]) if self.pinned else [])
+                    self.drafts.expire(s["id"], t.prompt["at"], shown)
                 except OSError:
                     pass
             tabs.append({"s": s, "t": t, "typed": max(typed, (t.prompt or {}).get("at") or 0)})
@@ -4486,16 +4487,25 @@ class Panel:
         session's pins; "full" with the oldest one's words when PIN_MAX are pinned already."""
         if not self.pinned:
             return err("Pins are not available (the reply rules did not load).")
+        x = next((x for x in self.tabs if x["s"]["id"] == sid), None)
+        before = {p["id"] for p in self.pinned.get(sid)}
         if mode == "unpin":
             self.pinned.remove(sid, rid)
         else:
-            x = next((x for x in self.tabs if x["s"]["id"] == sid), None)
             r = next((r for r in (x["t"].replies() if x else []) if r["id"] == rid), None)
             at, text = (r["at"], r["text"]) if r else (None, text)
             res = (self.pinned.swap if mode == "swap" else self.pinned.add)(sid, rid, at, text)
             if res == "full":
                 pins = self.pins_of(sid)
                 return {"full": pins[0] if pins else None, "pins": pins}
+        if self.drafts and x:  # an unpinned reply's answers go with it (unpin, swap), unless it is still under Latest
+            after = self.pinned.get(sid)
+            shown = self.reply_mod.shown_ids(x["t"].replies(), after)
+            for gone in before - {p["id"] for p in after}:
+                try:
+                    self.drafts.expire(sid, None, shown, gone)
+                except OSError:
+                    pass
         self.reply_key = None
         self.events.put("reply-state")  # the poll loop sends the page its state again
         return {"pins": self.pins_of(sid)}
