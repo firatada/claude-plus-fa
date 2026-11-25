@@ -1,7 +1,7 @@
 # Tests for a minimised session terminal leaving the Field Agents panel on screen: follow_front() hooks
 # EVENT_SYSTEM_MINIMIZESTART; on_min() acts only for a session window the panel rides under while it shows;
 # stay_on_screen() waits for the window Windows makes the foreground next and puts the panel over it (surface(),
-# not activated), unless the panel itself or another session window came forward or the user moved on.
+# not activated), unless the panel itself, another session window or any terminal came forward or the user moved on.
 # Run: python -I tools/test-minimise.py            (fake user32: no window is touched)
 #      python -I tools/test-minimise.py --windows  (also real throwaway windows in processes of their own: a "back"
 #                                                   window, a "terminal" over it and a tool-window "panel"; only
@@ -31,9 +31,12 @@ def take(names, ns, methods=()):
 
 
 METHODS = ("follow_front", "stay_on_screen", "over", "surface", "beneath")
-ns = take({"LIFT_AGAIN", "MIN_FRONT_WAIT"}, {}, METHODS)
+ns = take({"LIFT_AGAIN", "MIN_FRONT_WAIT", "TERMINAL_CLASSES", "terminal_window"}, {}, METHODS)
 
 TERM, TERM2, BACK, OTHER, PANEL = 10, 11, 20, 21, 40
+SHELL = 22  # a Windows Terminal window holding no listed session (a plain shell tab)
+CLASSES = {TERM: "CASCADIA_HOSTING_WINDOW_CLASS", TERM2: "CASCADIA_HOSTING_WINDOW_CLASS",
+           SHELL: "CASCADIA_HOSTING_WINDOW_CLASS", BACK: "Chrome_WidgetWin_1", OTHER: "Notepad"}
 
 
 class User32:
@@ -55,6 +58,10 @@ class User32:
     def IsWindowVisible(self, h):
         return True
 
+    def GetClassNameW(self, h, buf, n):
+        buf.value = CLASSES.get(h, "")
+        return len(buf.value)
+
     def SetWindowPos(self, h, after, *a):
         self.calls.append(("SetWindowPos", h, after))
         if after == -1:
@@ -71,7 +78,9 @@ def panel(u, **kw):
 
 
 def fake(u):
-    ns.update(user32=u, own=lambda h: h == PANEL, time=types.SimpleNamespace(time=time.time, sleep=lambda s: None))
+    import ctypes
+    ns.update(user32=u, own=lambda h: h == PANEL, ctypes=ctypes,
+              time=types.SimpleNamespace(time=time.time, sleep=lambda s: None))
 
 
 class StayOnScreen(unittest.TestCase):
@@ -107,6 +116,12 @@ class StayOnScreen(unittest.TestCase):
 
     def test_another_session_window_in_front_is_left_to_lift(self):
         u = User32([TERM2, TERM, PANEL], fg=TERM2)
+        fake(u)
+        panel(u).stay_on_screen(TERM)
+        self.assertEqual(self.raised(u), [])
+
+    def test_terminal_holding_no_session_in_front_is_not_covered(self):
+        u = User32([SHELL, TERM, PANEL, BACK], fg=SHELL)  # Windows raised the next window, a plain shell's terminal
         fake(u)
         panel(u).stay_on_screen(TERM)
         self.assertEqual(self.raised(u), [])
@@ -239,7 +254,7 @@ class RealWindows(unittest.TestCase):
         u.ShowWindow(self.panel, 4)  # SW_SHOWNOACTIVATE
         u.SetWindowPos(self.panel, self.term, 0, 0, 0, 0, 0x13)  # lift(): right under the terminal
         time.sleep(0.2)
-        ns.update(user32=u, own=lambda h: h == self.panel, time=time)
+        ns.update(user32=u, own=lambda h: h == self.panel, time=time, ctypes=ctypes)
 
     def tearDown(self):
         for p in self.procs:

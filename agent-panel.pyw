@@ -895,6 +895,17 @@ def own(hwnd):
     return pid.value == os.getpid()
 
 
+TERMINAL_CLASSES = ("CASCADIA_HOSTING_WINDOW_CLASS", "ConsoleWindowClass")  # Windows Terminal, the classic console
+
+
+def terminal_window(hwnd):
+    """A terminal's window (Windows Terminal or a classic console), a session's or not: the band never surfaces
+    over one (stay_on_screen())."""
+    buf = ctypes.create_unicode_buffer(64)
+    user32.GetClassNameW(hwnd, buf, 64)
+    return buf.value in TERMINAL_CLASSES
+
+
 def top_window():
     """The window on top of the ordinary (not topmost) windows, leaving out this process's own: the one the user
     sees in front. Hidden, cloaked (a background UWP frame), minimised and empty windows do not count."""
@@ -2974,6 +2985,7 @@ class Panel:
             # the window in front, read once a turn: the reply window follows a session's terminal coming to the
             # front, and a copy is tied to the tab it was made in
             fg = user32.GetForegroundWindow()
+            self.keep_under(fg)  # a session's terminal in front stays over the band, whatever raised the band
             title = window_title(fg) if fg else ""
             front = (fg, shown_name(title)) if fg else None
             if self.follow_terminal((fg, title), front) | self.quote_poll(front):
@@ -3315,12 +3327,13 @@ class Panel:
         over the panel, which is not topmost, so the panel would vanish with the terminal. Wait for that window,
         then put the panel (and the strip, the reply window and the shadow it owns) over it, not activated, and
         look again as stay_over() does. Nothing is done when the panel itself or another session window comes
-        forward (lift() puts the panel under that one), or once the user has moved on to yet another window."""
+        forward (lift() puts the panel under that one), when any terminal does (a terminal in front is never covered
+        by the band, a session's or not), or once the user has moved on to yet another window."""
         end = time.time() + MIN_FRONT_WAIT
         while user32.GetForegroundWindow() == hwnd and time.time() < end:
             time.sleep(0.01)
         fg = user32.GetForegroundWindow()
-        if not fg or fg == hwnd or own(fg) or fg in set(self.wins.values()):
+        if not fg or fg == hwnd or own(fg) or fg in set(self.wins.values()) or terminal_window(fg):
             return
         for wait in (0,) + LIFT_AGAIN:
             time.sleep(wait)
@@ -3328,6 +3341,33 @@ class Panel:
                 return
             if not self.over(fg):
                 self.surface()
+
+    def keep_under(self, fg):
+        """Each poll turn, with the window in front: a session's terminal in front is never covered by the band. When
+        the panel, the strip, the reply window or the shadow is above it (whatever raised them: the panel surfaced
+        after a minimise, a terminal activated without being raised, the panel made topmost in a race with
+        bring_front()), the panel goes back right under it (lift()). The band comes over a terminal only while one of
+        its own windows is in front (a click on the reply window, the panel, Ctrl+Alt+C), and any other window the
+        user brings forward is left alone. True when it lifted."""
+        if not self.visible or self.dragging or not fg or fg not in set(self.wins.values()):
+            return False
+        if user32.IsIconic(fg) or user32.GetWindowLongW(fg, -20) & 0x8:  # WS_EX_TOPMOST: bring_front()'s moment
+            return False
+        if not self.covers(fg):
+            return False
+        self.lift(fg)
+        return True
+
+    def covers(self, hwnd):
+        """One of the panel's ordinary windows (the panel, the strip, the reply window, the shadow) shows above this
+        window. Its topmost ones (the alert, the preview, the card column) are meant to be over everything; the panel
+        itself counts even when topmost, which it only ever is by mistake."""
+        h = user32.GetWindow(hwnd, 3)  # GW_HWNDPREV
+        while h:
+            if own(h) and user32.IsWindowVisible(h) and (h == self.hwnd or not user32.GetWindowLongW(h, -20) & 0x8):
+                return True
+            h = user32.GetWindow(h, 3)
+        return False
 
     def over(self, hwnd):
         """The panel is somewhere above this window."""
