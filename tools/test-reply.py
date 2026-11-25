@@ -552,6 +552,10 @@ out.areaSend = sendList({"m1#1-4": {text: "Onaylıyorum"}, "m1#4": {text: "only 
   {"m1#0": "Intro.", "m1#4": "3. c", "m1#1-4": "## H\n\n1. a\n2. b\n3. c"}, ["m1#0", "m1#1", "m1#2", "m1#3", "m1#4", "m1#1-4", "m1#5"],
   {"m1#0": 0, "m1#4": 6, "m1#1-4": 6}).map(a => [a.key, a.line]);
 // a quick answer put in the box: an empty box becomes the text; otherwise at the caret, over a selection
+// Esc in an answer box: a take is cancelled whatever the box holds; text is cleared only by a second Esc in time
+const E = (o) => escAction(Object.assign({take: false, text: false, armed: false}, o));
+out.esc = [ESC_MS, E({take: true}), E({take: true, text: true, armed: true}), E({text: true}), E({text: true, armed: true}),
+  E({}), E({armed: true})];
 out.quick = [quickInsert("", 0, 0, "Onaylıyorum"), quickInsert("ab", 1, 1, "X"), quickInsert("abcd", 1, 3, "X"),
   quickInsert("ab", 9, 9, "X")];
 // the area's copy: what its frame holds, with every answer inside it (the blocks' own first, the area's last), lines
@@ -718,6 +722,9 @@ class Markdown(unittest.TestCase):
         self.assertEqual(self.md["join"], [{"s": "merhaba", "caret": 7}, {"s": " x", "caret": 2},
                                            {"s": "x ", "caret": 1}, {"s": " x", "caret": 2}, {"s": "x", "caret": 1}])
 
+
+    def test_esc_cancels_a_take_clears_on_a_second_press_and_leaves_an_empty_box(self):
+        self.assertEqual(self.md["esc"], [2000, "cancel", "cancel", "arm", "clear", "leave", "leave"])
 
     def test_words_two_passes_agree_on_are_committed_and_only_the_tail_changes(self):
         ag = self.md["agree"]
@@ -2602,6 +2609,243 @@ class ClipPage(unittest.TestCase):
 
     def test_another_boxs_typing_never_copies(self):
         self.assertEqual(self.o["other"], 0)
+
+
+# Live dictation in the real page (headless Edge, the panel's voice() a stand-in, keys dispatched to the page, never to
+# a window): the dim words stand where the final text goes, the placeholder is not drawn under them, in an empty box, a
+# box with text before the caret, a long take that wraps, an area's box; Esc cancels a take (held or transcribing), and
+# outside a take asks once, clears on a second press within ESC_MS (Ctrl+Z brings it back), leaves an empty box.
+ESC_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  navigator.mediaDevices.getUserMedia = () => Promise.reject(Object.assign(new Error("none"), {name: "NotFoundError"}));
+  let script = null;
+  T.voice = []; T.drafts = [];
+  T_API.voice = (step, why) => {
+    T.voice.push(why ? step + ":" + why : step);
+    if (step === "hold") return Promise.resolve({ok: true});
+    if (step === "read") return Promise.resolve(script.released ? {phase: "transcribing", text: script.text}
+      : {phase: "listening", text: script.text});
+    if (step === "release") { script.released = true; return Promise.resolve({ok: true}); }
+    return Promise.resolve({ok: true});
+  };
+  T_API.dictation = () => Promise.resolve({up: true});
+  T_API.draft = (sid, key, passage, text) => { T.drafts.push([key, text]); return Promise.resolve(null); };
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: "First paragraph.\n\nSecond paragraph.\n\nThird."}],
+    answers: {}, selections: [], note: "", pins: [], quick: ["I approve"]});
+  await later(50);
+  const sp = (t, type, repeat) => t.dispatchEvent(new KeyboardEvent(type, {code: "Space", key: " ", repeat, bubbles: true, cancelable: true}));
+  const esc = t => t.dispatchEvent(new KeyboardEvent("keydown", {code: "Escape", key: "Escape", bubbles: true, cancelable: true}));
+  const key = (t, k) => t.dispatchEvent(new KeyboardEvent("keydown", {code: "Key" + k.toUpperCase(), key: k, bubbles: true, cancelable: true}));
+  const line = t => { const l = t.parentElement && t.parentElement.querySelector(".vline"); return l ? l.textContent : ""; };
+  const look = t => {  // what the box draws: the placeholder's colour, the dim copy over it, both in one place
+    const g = t.parentElement.querySelector(".ghost"), tr = t.getBoundingClientRect(), q = t.parentElement.querySelector(".quick");
+    const gr = g && g.getBoundingClientRect(), px = (el, k) => parseFloat(getComputedStyle(el)[k]);
+    return {ph: getComputedStyle(t, "::placeholder").color, text: getComputedStyle(t).color,
+      ghost: g ? g.textContent.replace("​", "") : null, tail: g ? g.querySelector(".tail").textContent : null,
+      same: !!g && Math.abs(gr.left - tr.left) < 0.5 && Math.abs(gr.top - tr.top) < 0.5 && Math.abs(gr.width - tr.width) < 0.5
+        && px(g, "paddingLeft") === px(t, "paddingLeft") && px(g, "paddingRight") === px(t, "paddingRight"),
+      fits: !g || tr.height >= gr.height - 0.5, chips: !!q && getComputedStyle(q).display !== "none"};
+  };
+  async function hold(t, text) {  // Space pressed and held until listening; not let go
+    script = {text, released: false};
+    t.focus();
+    sp(t, "keydown", false);
+    await later(20);
+    for (let i = 0; i < 5; i++) { sp(t, "keydown", true); await later(30); }
+    await later(400);
+  }
+  const box = n => { document.querySelectorAll("#replies .para")[n].click(); return document.activeElement; };
+  const voice = () => T.voice.filter(v => v !== "read");
+  const o = {};
+  // 1. an empty box: the placeholder goes, the words stand at its start
+  let t = box(0);
+  o.emptyBefore = look(t);
+  await hold(t, "de göremedim hiçbir yerde");
+  o.empty = Object.assign(look(t), {line: line(t), value: t.value});
+  // Esc while listening: the take goes, the hidden prompt is dropped, nothing goes in
+  T.voice.length = 0;
+  esc(t);
+  await later(300);
+  o.cancel = {value: t.value, line: line(t), ghost: !!t.parentElement.querySelector(".ghost"), voice: voice(),
+    focus: document.activeElement === t, ph: getComputedStyle(t, "::placeholder").color, rec: !!rec, busy: busy.size};
+  sp(t, "keyup", false);  // the Space let go after Esc: nothing happens
+  await later(300);
+  o.afterKeyup = {value: t.value, line: line(t), voice: voice()};
+  // 2. a box with text before the caret
+  t.value = "Önce yazı"; t.dispatchEvent(new Event("input", {bubbles: true}));
+  t.setSelectionRange(t.value.length, t.value.length);
+  await hold(t, "sonra dikte");
+  o.text = look(t);
+  // Esc while transcribing (Space let go): the take goes, the box keeps what was there
+  sp(t, "keyup", false);
+  await later(200);
+  o.transcribing = line(t);
+  T.voice.length = 0;
+  esc(t);
+  await later(300);
+  o.cancelBusy = {value: t.value, line: line(t), voice: voice(), busy: busy.size};
+  // 3. a long take wraps like the box's own text and grows the box
+  t.value = ""; t.dispatchEvent(new Event("input", {bubbles: true}));
+  const h0 = t.getBoundingClientRect().height;
+  await hold(t, Array.from({length: 40}, (_, i) => "kelime" + i).join(" "));
+  o.long = Object.assign(look(t), {grew: t.getBoundingClientRect().height > h0 * 2});
+  // words committed meanwhile (Voice to Text commits while held) go too: the box is as the take found it
+  rec.said = "committed words";
+  putDictation(t, "committed words");
+  o.committed = t.value;
+  esc(t);
+  await later(300);
+  o.cancelCommitted = {value: t.value, h: Math.round(t.getBoundingClientRect().height), h0: Math.round(h0)};
+  sp(t, "keyup", false);
+  await later(100);
+  // 4. Esc at "Keep holding…": the press's space goes, the hold is dropped
+  t.value = "abc"; t.dispatchEvent(new Event("input", {bubbles: true}));
+  t.setSelectionRange(3, 3);
+  T.voice.length = 0;
+  script = {text: ""};
+  sp(t, "keydown", false);
+  await later(20);
+  sp(t, "keydown", true);
+  await later(50);
+  o.warmLine = line(t);
+  esc(t);
+  await later(100);
+  sp(t, "keyup", false);
+  await later(100);
+  o.warm = {value: t.value, line: line(t), voice: T.voice.slice()};
+  // 5. not dictating, text in the box: the first Esc asks, the second clears; the box keeps the keyboard
+  T.drafts.length = 0;
+  esc(t);
+  await later(50);
+  o.first = {value: t.value, line: line(t), focus: document.activeElement === t};
+  esc(t);
+  await later(400);
+  o.second = {value: t.value, line: line(t), focus: document.activeElement === t, drafts: T.drafts.slice(),
+    chips: getComputedStyle(t.parentElement.querySelector(".quick")).display !== "none"};
+  document.execCommand("undo");
+  await later(50);
+  o.undo = t.value;
+  // the hint goes after ESC_MS, and the Esc after it asks again
+  esc(t);
+  await later(ESC_MS + 200);
+  o.expired = line(t);
+  esc(t);
+  await later(50);
+  o.again = {value: t.value, line: line(t)};
+  // another key between two Escs: the second asks again
+  key(t, "x");
+  esc(t);
+  await later(50);
+  o.between = {value: t.value, line: line(t)};
+  // Enter still keeps the text and leaves the box
+  t.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", code: "Enter", bubbles: true, cancelable: true}));
+  await later(50);
+  o.enter = {value: t.value, focus: document.activeElement === t, open: t.isConnected};
+  // 6. an empty box: Esc leaves it and it closes
+  const t2 = box(1);
+  esc(t2);
+  await later(50);
+  o.leave = {open: t2.isConnected, focus: document.activeElement === document.body};
+  // 7. an area's box: the same, the placeholder gone under the words
+  const ta = openAreaBox(areaKey("m1", 1, 2), "", true);
+  ta.focus();
+  await hold(ta, "alanın cevabı");
+  o.area = look(ta);
+  esc(ta);
+  await later(300);
+  o.areaCancel = {value: ta.value, line: line(ta)};
+  sp(ta, "keyup", false);
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class EscAndLiveWords(unittest.TestCase):
+    o = None
+    CLEAR = "rgba(0, 0, 0, 0)"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(ESC_TEST, budget=30000)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_the_placeholder_shows_in_an_empty_box_and_goes_while_words_arrive(self):
+        self.assertNotEqual(self.o["emptyBefore"]["ph"], self.CLEAR)
+        e = self.o["empty"]
+        self.assertEqual(e["ph"], self.CLEAR)
+        self.assertEqual(e["text"], self.CLEAR)  # the box's own text is clear; the copy draws it
+        self.assertEqual((e["ghost"], e["tail"]), ("de göremedim hiçbir yerde", "de göremedim hiçbir yerde"))
+        self.assertTrue(e["same"])
+        self.assertFalse(e["chips"])  # the quick answer hides while dictating
+        self.assertEqual(e["value"], "")
+        self.assertEqual(e["line"], "Listening… release Space to stop.")
+
+    def test_words_follow_the_text_before_the_caret(self):
+        t = self.o["text"]
+        self.assertEqual((t["ghost"], t["tail"]), ("Önce yazı sonra dikte", " sonra dikte"))
+        self.assertTrue(t["same"])
+
+    def test_a_long_take_wraps_and_grows_the_box(self):
+        l = self.o["long"]
+        self.assertTrue(l["same"])
+        self.assertTrue(l["fits"])
+        self.assertTrue(l["grew"])
+
+    def test_an_area_box_draws_the_words_the_same_way(self):
+        a = self.o["area"]
+        self.assertEqual(a["ph"], self.CLEAR)
+        self.assertEqual(a["tail"], "alanın cevabı")
+        self.assertTrue(a["same"])
+        self.assertEqual(self.o["areaCancel"], {"value": "", "line": ""})
+
+    def test_esc_while_listening_cancels_the_take(self):
+        c = self.o["cancel"]
+        self.assertEqual((c["value"], c["line"], c["ghost"], c["rec"], c["busy"]), ("", "", False, False, 0))
+        self.assertEqual(c["voice"], ["drop:cancelled with Esc"])
+        self.assertTrue(c["focus"])
+        self.assertNotEqual(c["ph"], self.CLEAR)  # the placeholder is back
+        self.assertEqual(self.o["afterKeyup"], {"value": "", "line": "", "voice": ["drop:cancelled with Esc"]})
+
+    def test_esc_while_transcribing_cancels_and_keeps_the_text_before(self):
+        self.assertEqual(self.o["transcribing"], "Transcribing…")
+        c = self.o["cancelBusy"]
+        self.assertEqual((c["value"], c["line"], c["busy"]), ("Önce yazı", "", 0))
+        self.assertEqual(c["voice"], ["drop:cancelled with Esc"])
+
+    def test_esc_takes_committed_words_out_again(self):
+        self.assertEqual(self.o["committed"], "committed words")
+        c = self.o["cancelCommitted"]
+        self.assertEqual(c["value"], "")
+        self.assertEqual(c["h"], c["h0"])
+
+    def test_esc_at_keep_holding_takes_the_space_out_and_drops_the_hold(self):
+        self.assertEqual(self.o["warmLine"], "Keep holding…")
+        w = self.o["warm"]
+        self.assertEqual((w["value"], w["line"]), ("abc", ""))
+        self.assertEqual(w["voice"], ["hold", "drop:let go before listening"])
+
+    def test_first_esc_asks_second_clears_and_ctrl_z_brings_it_back(self):
+        self.assertEqual(self.o["first"], {"value": "abc", "line": "Press Esc again to clear", "focus": True})
+        s = self.o["second"]
+        self.assertEqual((s["value"], s["line"], s["focus"], s["chips"]), ("", "", True, True))
+        self.assertEqual(s["drafts"], [["m1#0", ""]])  # the draft goes, as an emptied answer's
+        self.assertEqual(self.o["undo"], "abc")
+
+    def test_the_hint_lasts_esc_ms_and_another_key_starts_over(self):
+        self.assertEqual(self.o["expired"], "")
+        self.assertEqual(self.o["again"], {"value": "abc", "line": "Press Esc again to clear"})
+        self.assertEqual(self.o["between"], {"value": "abc", "line": "Press Esc again to clear"})
+
+    def test_enter_keeps_the_text_and_leaves(self):
+        self.assertEqual(self.o["enter"], {"value": "abc", "focus": False, "open": True})
+
+    def test_esc_in_an_empty_box_leaves_and_closes_it(self):
+        self.assertEqual(self.o["leave"], {"open": False, "focus": True})
 
 
 if __name__ == "__main__":

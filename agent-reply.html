@@ -224,9 +224,12 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 /* while Space is held: the words heard but not yet committed, dim at the caret (ghost() draws the box's text over a
    clear box, so two colours can show in one textarea) */
 .ans.ghosted { color: transparent; caret-color: var(--blue); }
+/* the placeholder is not the box's text: color above leaves it drawn, under the dim words of an empty box. It goes
+   for the whole take (starting, listening, words showing, transcribing) */
+.ans.listening::placeholder, .ans.ghosted::placeholder, .ans.busy::placeholder { color: transparent; }
 .ghost { position: absolute; pointer-events: none; border-style: solid; border-color: transparent; color: var(--blue);
   white-space: pre-wrap; overflow-wrap: break-word; }
-.ghost .tail { opacity: .5; }
+.ghost .tail { opacity: .65; }
 /* the area: a rectangle drawn by a drag that starts anywhere in the replies, there only while the drag lasts;
    the blocks it touches are tinted whole meanwhile and copied as markdown when it is let go, with a quiet "Copied"
    at the frame's corner (#areaNote: text, no button) */
@@ -570,6 +573,15 @@ function spaceRule(s, ev) {
     case "fail": return st === "rec" ? {s: {st: "note", n: s.n}, act: ""} : {s, act: ""};
   }
   return {s, act: ""};
+}
+// Esc in an answer box, as Claude Code's prompt takes it. o: {take (Space held, listening or transcribing in this
+// box), text (the box holds any), armed (the last Esc in this box was under ESC_MS ago)}. Answers "cancel" (the take
+// goes, nothing it heard goes in), "arm" (say "Press Esc again to clear"), "clear" (empty the box) or "leave".
+const ESC_MS = 2000;
+function escAction(o) {
+  if (o.take) return "cancel";
+  if (o.text) return o.armed ? "clear" : "arm";
+  return "leave";
 }
 // The dictated text put in at the caret, between the text before and after it: a space before it unless the text
 // before is empty or ends in whitespace, and one after it unless the text after is empty or starts with whitespace
@@ -973,6 +985,15 @@ let spaceSt = null, spaceBox = null, holdTimer = 0, typedAt = -1, rec = null;
 let voiceAsk = null;  // the panel's answer to "hold" for the hold in progress, asked at "Keep holding…"
 const VOICE_READ_MS = 100;  // the hidden Claude Code's prompt line is read this often while a take lasts
 const busy = new Set();  // boxes whose recording is being transcribed: their line stays when they lose the keyboard
+function setBusy(t, on) { busy[on ? "add" : "delete"](t); t.classList.toggle("busy", on); }
+// the take of each box by its key (a box redrawn meanwhile is found again): live while Space is held (rec) or its
+// words are being transcribed (busy); Esc cancels it (cancelTake())
+const takes = new Map();
+function liveTake(t) {
+  const me = takes.get(t.parentElement.dataset.for);
+  if (me && !me.cancelled && (rec === me || busy.has(me.t) || busy.has(t))) return me;
+  return null;
+}
 function vline(t, kind, text, link) {  // the line under a box: "" (none), "warm", "start", "on", "busy" or "note";
   const row = t.parentElement;         // link: {text, uri}, what the note names, its words made a link to it
   if (!row) return null;
@@ -1050,6 +1071,7 @@ function micNote(e) {  // getUserMedia's failure as a note, with the Settings pa
   return {note: "This window cannot record the microphone."};
 }
 function failed(me, a) {  // listening could not start: the note, nothing recorded is kept
+  if (me.cancelled) return;
   if (rec === me) rec = null;
   me.stopped = true;
   stopMic(me);
@@ -1176,7 +1198,9 @@ async function openMic(me) {  // the page records every take: the level meter, a
 }
 async function listen(t) {
   const me = rec = {t, key: t.parentElement.dataset.for, stopped: false, mic: false, up: false, live: true, cut: 0,
-    piece: {done: [], prev: []}, last: null, out: null, sentAt: -1e9, said: "", before: "", interim: [], via: ""};
+    piece: {done: [], prev: []}, last: null, out: null, sentAt: -1e9, said: "", before: "", interim: [], via: "",
+    orig: t.value, at: t.selectionStart};  // the box as the take found it: Esc puts it back
+  takes.set(me.key, me);
   const ask = voiceAsk || askHold();
   voiceAsk = null;
   me.micUp = openMic(me);
@@ -1220,7 +1244,7 @@ async function claudeTake(me) {
   for (;;) {
     let r;
     try { r = await api().voice("read"); } catch (e) { r = null; }
-    if (me.via !== "claude") return;
+    if (me.via !== "claude" || me.cancelled) return;
     if (!r || r.phase === "idle") r = {phase: "error", why: "the take was lost"};
     if (r.phase === "error") { toWhisper(me, r.why || "an error"); return; }
     if (r.phase === "done") { claudeDone(me, r); return; }
@@ -1231,7 +1255,7 @@ async function claudeTake(me) {
   }
 }
 function claudeDone(me, r) {  // the final text in at the caret (Claude Code's own rule for the spaces round it)
-  busy.delete(me.t);
+  setBusy(me.t, false);
   const t = boxOf(me);
   me.interim = [];
   ghost(t, []);
@@ -1263,7 +1287,8 @@ async function toWhisper(me, why) {
     try { a = await api().dictate(wavOf(me, 0, me.lv.length), "audio/wav", "whole", ""); }
     catch (e) { a = {note: "Voice to Text could not be reached."}; }
   }
-  busy.delete(me.t);
+  if (me.cancelled) return;  // Esc meanwhile: nothing goes in
+  setBusy(me.t, false);
   const t = boxOf(me);
   if (a && typeof a.text === "string" && a.text) { me.said = a.text; putDictation(t, a.text); vline(t, ""); }
   else vline(t, "note", (a && a.note) || "Voice to Text could not be reached.", a && a.link);
@@ -1302,7 +1327,7 @@ async function pass(me, kind, from, to) {
   pump(me);
 }
 function land(me, out, text) {
-  if (out.from !== me.cut) return;
+  if (out.from !== me.cut || me.cancelled) return;
   const r = out.kind === "close" ? closeStep(me.piece, text) : agreeStep(me.piece, text);
   me.piece = r.piece;
   if (out.kind === "close") { me.cut = out.to; me.last = null; }  // me.before follows below, after the commit
@@ -1331,6 +1356,7 @@ function ghost(t, words) {
     return;
   }
   if (!g) { g = document.createElement("div"); g.className = "ghost"; g.setAttribute("aria-hidden", "true"); t.after(g); }
+  t.classList.add("ghosted");  // first: its padding (no room kept for the quick answers) is the one the copy takes
   const cs = getComputedStyle(t);
   for (const k of ["font", "letterSpacing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
     "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"]) g.style[k] = cs[k];
@@ -1342,7 +1368,6 @@ function ghost(t, words) {
   tail.className = "tail";
   tail.textContent = joinDictation(before, after, words.join(" ")).s;
   g.replaceChildren(before, tail, after + "​");
-  t.classList.add("ghosted");
   t.style.height = "auto";
   t.style.height = Math.max(t.scrollHeight, g.offsetHeight) + "px";
   size();
@@ -1355,7 +1380,7 @@ async function finish() {  // Space let go (or the box, or the window, lost the 
   if (me.via === "claude") {  // the hidden Claude Code transcribes; claudeTake() reads the final text
     api().voice("release");
     cancelAnimationFrame(me.raf);
-    busy.add(me.t);
+    setBusy(me.t, true);
     vline(me.t, "busy", "Transcribing…");
     me.flushing = me.mic ? flushTap(me) : Promise.resolve();  // kept to the end in case the take goes to Voice to Text
     await me.flushing;
@@ -1367,12 +1392,13 @@ async function finish() {  // Space let go (or the box, or the window, lost the 
   if (!me.mic) { vline(me.t, ""); return; }  // the microphone was not up yet (or the answer to "hold" not back): nothing is sent
   dlog("release", {});
   cancelAnimationFrame(me.raf);
-  busy.add(me.t);
+  setBusy(me.t, true);
   vline(me.t, "busy", "Transcribing…");
   await flushTap(me);
   me.closed = true;
   stopMic(me);
   if (me.out) await new Promise(ok => { me.out.done = ok; });
+  if (me.cancelled) return;  // Esc meanwhile: cancelTake() has put the box back
   const n = me.lv.length;
   let plan = finalPlan({last: me.last, cut: me.cut, n, lastSpeech: lastSpeech(me)}), a = null;
   if (plan === "none" && !me.said) plan = "send";  // nothing heard at all: the server says so, as before
@@ -1383,13 +1409,80 @@ async function finish() {  // Space let go (or the box, or the window, lost the 
     catch (e) { a = {note: "Voice to Text could not be reached."}; }
     if (a && typeof a.text === "string") land(me, {kind: "close", from: me.cut, to: n}, a.text);
   }
-  busy.delete(me.t);
+  if (me.cancelled) return;
+  setBusy(me.t, false);
   const t = boxOf(me);
   ghost(t, []);
   if (a && typeof a.text !== "string") vline(t, "note", a.note || "Voice to Text could not be reached.", a.link);
   else vline(t, "");
   dlog("done", {text: me.said});
   release();  // the words are in: an update held for them is drawn when nothing else holds it
+}
+// Esc while a take lasts (Space held, listening or transcribing): the take goes, as Claude Code's own Esc drops it.
+// Nothing it heard goes in, the hidden Claude Code lets go and empties its prompt ("drop"), and the box is as the take
+// found it (words already committed by Voice to Text taken out again).
+function cancelTake(me) {
+  me.cancelled = me.stopped = me.closed = true;
+  takes.delete(me.key);
+  if (rec === me) rec = null;
+  if (spaceBox) { spaceSt = null; spaceBox = null; clearTimeout(holdTimer); }  // Space still down: its key-up does nothing
+  if (me.via === "claude") api().voice("drop", "cancelled with Esc");
+  stopMic(me);
+  if (me.micUp) me.micUp.then(() => stopMic(me));
+  const t = boxOf(me);
+  setBusy(me.t, false);
+  setBusy(t, false);
+  me.interim = [];
+  ghost(t, []);
+  if (me.said) restoreText(t, me.orig, me.at);
+  vline(t, "");
+  dlog("cancel", {via: me.via});
+  release();
+}
+function restoreText(t, v, at) {  // as an edit (Ctrl+Z brings the words back), keeping the keyboard where it is
+  if (!t.isConnected || t.value === v) return;
+  if (document.activeElement === t) {
+    t.select();
+    if (!document.execCommand(v ? "insertText" : "delete", false, v)) { t.value = v; changed(t); }
+  } else { t.value = v; changed(t); }
+  const c = Math.min(at, v.length);
+  t.setSelectionRange(c, c);
+}
+// Esc in a box (escAction() decides): a take is cancelled; a box with text is cleared by a second Esc within ESC_MS,
+// the first one only saying so under the box (Claude Code's "Esc again to clear"); an empty box is left and closes.
+let escArm = null, escTimer = 0;
+function escape(t) {
+  const row = t.parentElement;
+  const held = spaceBox === t && !!spaceSt && (spaceSt.st === "wait" || spaceSt.st === "warm");
+  const me = liveTake(t);
+  const act = escAction({take: !!me || held, text: !!t.value,
+    armed: !!escArm && escArm.t === t && performance.now() - escArm.at < ESC_MS});
+  escArm = null;
+  clearTimeout(escTimer);
+  if (act === "cancel") {
+    if (me) cancelTake(me);
+    else { untype(t); spaceStep(t, {type: "key"}); }  // "Keep holding…": the press's space goes, the hold is dropped
+    vline(t, "");
+    return;
+  }
+  if (act === "arm") {
+    const at = performance.now();
+    escArm = {t, at};
+    vline(t, "hint", "Press Esc again to clear");
+    escTimer = setTimeout(() => {
+      if (escArm && escArm.at === at) escArm = null;
+      if (row.querySelector(".vline.hint")) vline(t, "");
+    }, ESC_MS);
+    return;
+  }
+  vline(t, "");
+  if (act === "clear") {  // as an emptied answer: it and its draft go (changed()); Ctrl+Z brings it back
+    t.select();
+    if (!document.execCommand("delete")) { t.value = ""; changed(t); }
+    return;
+  }
+  t.blur();  // empty: left, and closed as an empty box closes
+  if (row.isConnected) closeBox(row);
 }
 function putDictation(t, text) {  // at the caret, keeping the box's keyboard if it has it
   if (!t.isConnected) return;
@@ -1429,6 +1522,7 @@ document.addEventListener("focusout", e => {
   if (!e.target.classList.contains("ans")) return;
   if (clipJob) clipFollow(e.target, true);  // Enter or leaving the box: the copy waiting to follow its answer goes now
   if (spaceBox === e.target) spaceStep(e.target, {type: "blur"});
+  if (escArm && escArm.t === e.target) { escArm = null; clearTimeout(escTimer); }  // "Esc again" holds only in the box
   if (!busy.has(e.target)) vline(e.target, "");  // "Transcribing…" stays: its text still comes
   const row = e.target.parentElement;
   if (row && document.hasFocus() && !busy.has(e.target) && !(rec && rec.t === e.target) && !e.target.value.trim() &&
@@ -1450,21 +1544,24 @@ function tabMove(t, back) {
   q.scrollIntoView({block: "nearest"});
   nt.parentElement.scrollIntoView({block: "nearest"});
 }
-// Keys typed in an answer box stay in it: Enter and Esc finish the answer and leave the box (its text and draft kept,
-// the focus goes nowhere, so no tab, chip or button is reached or pressed); Tab and Shift+Tab move between the blocks'
-// boxes (tabMove()), never to another control; Shift+Enter is a new line; a plain Space goes to the dictation rule.
+// Keys typed in an answer box stay in it: Enter finishes the answer and leaves the box (its text and draft kept, the
+// focus goes nowhere, so no tab, chip or button is reached or pressed); Esc as Claude Code's prompt takes it (escape():
+// cancels a take, clears on a second press, leaves an empty box); Tab and Shift+Tab move between the blocks' boxes
+// (tabMove()), never to another control; Shift+Enter is a new line; a plain Space goes to the dictation rule.
 // stopPropagation: no other handler sees them.
 document.addEventListener("keydown", e => {
   sayClear();
   if (!e.target.classList.contains("ans")) return;
   e.stopPropagation();
+  if (e.key === "Escape" && !e.isComposing) { e.preventDefault(); escape(e.target); return; }
+  if (escArm) { escArm = null; clearTimeout(escTimer); }  // another key: the next Esc only asks again
   const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
   if (e.code === "Space" && plain && !e.isComposing) { e.preventDefault(); spaceStep(e.target, {type: "down", repeat: e.repeat}); return; }
   if (spaceBox === e.target && e.code !== "Space") spaceStep(e.target, {type: "key"});
   else if (!spaceBox && !busy.has(e.target)) vline(e.target, "");  // a note from an earlier hold goes with the next key
   if (e.isComposing) return;  // an IME's Enter confirms its own text
   if (e.key === "Tab") { e.preventDefault(); tabMove(e.target, e.shiftKey); }
-  else if ((e.key === "Enter" && !e.shiftKey) || e.key === "Escape") { e.preventDefault(); e.target.blur(); }
+  else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.target.blur(); }
 }, true);
 
 // a click (not a drag) on a paragraph opens its box or closes an empty one; where the press went down tells a drag
