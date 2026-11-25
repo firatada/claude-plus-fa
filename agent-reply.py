@@ -19,11 +19,12 @@ DRAFTS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel"
 PINS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-pins.json")
 PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
-HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers are marked "My answer:"):'
-ANSWER = "My answer:"  # leads each answer inside the quoted reply
+HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers start with "My answer"):'
+ANSWER = 'My answer to "%s":'  # leads a block's own answer inside the quoted reply, naming the block's first line
+ANSWER_BARE = "My answer:"  # leads an answer whose passage has no text to name
 PLAIN = '%s, quoted with "> ":'  # leads a reply sent with no answer in it
 AREA = 'My answer to all %d blocks from "%s" down to here, as a whole:'  # leads an area's answer, after its last line
-AREA_CUT = 60          # characters of the area's first line named in AREA
+NAME_CUT = 60          # characters of the first line named in ANSWER and AREA
 
 
 def stamp(ts):
@@ -305,7 +306,7 @@ def mine(text):
     while lines and not lines[-1].strip():
         lines.pop()
     if lines:
-        lines[0] = lines[0].lstrip()  # it follows "My answer: "
+        lines[0] = lines[0].lstrip()  # it follows its lead ("My answer to "…": ")
     lines =["\\" + l if l.lstrip().startswith(">") else l for l in lines]
     return MARKER.sub(lambda m: "`%s`" % m.group(0), "\n".join(lines))
 
@@ -330,14 +331,17 @@ def area_size(block):
 
 
 def lead(passage, n):
-    """What leads an answer: "My answer:", or for an area of several blocks AREA with their number and the area's
-    first line (cut at AREA_CUT; a ":N" in it in backticks, so quote-reply.py never takes it for a marker)."""
-    if n < 2:
-        return ANSWER
+    """What leads an answer, naming the first non-blank line of what it answers, so Claude reads which block it
+    belongs to: ANSWER for a block's own answer (and a one-block area), AREA with their number for an area of several
+    blocks; ANSWER_BARE when the passage has no text. The line is cut at NAME_CUT with "…", its double quotes become
+    single ones, and a ":N" in it goes in backticks, so quote-reply.py never takes it for a marker."""
     first = next((l.strip() for l in (passage or "").split("\n") if l.strip()), "")
-    if len(first) > AREA_CUT:
-        first = first[:AREA_CUT].rstrip() + "…"
-    return AREA % (n, MARKER.sub(lambda m: "`%s`" % m.group(0), first.replace('"', "'")))
+    if not first:
+        return ANSWER_BARE
+    if len(first) > NAME_CUT:
+        first = first[:NAME_CUT].rstrip() + "…"
+    first = MARKER.sub(lambda m: "`%s`" % m.group(0), first.replace('"', "'"))
+    return AREA % (n, first) if n >= 2 else ANSWER % first
 
 
 def quote(lines):
@@ -347,8 +351,8 @@ def quote(lines):
 def answer_block(text, when, answers):
     """One reply with the user's answers inside it, as Send to Session pastes it: a heading line, then the reply's
     lines exactly as stored, each quoted with "> ", and each answer unquoted right after the line that ends the block
-    it answers, led by "My answer:" and parted from the quoted lines by a blank line (the quoted blank lines that
-    stood there are left out). answers: [(line, passage, answer[, n])], n the blocks of an area answered as a whole
+    it answers, led by lead() (ANSWER: My answer to "<the block's first line>":) and parted from the quoted lines by
+    a blank line (the quoted blank lines that stood there are left out). answers: [(line, passage, answer[, n])], n the blocks of an area answered as a whole
     (area_size()): its passage is the area's markdown, line its last line, and its answer is led by AREA, so Claude
     reads it as one answer to every block from the area's first line down to it; a block's own answer at that same
     line comes first. An answer whose block is not found in text (a reply no longer stored) goes at the end after its

@@ -207,7 +207,7 @@ class Hook(unittest.TestCase):
         spec.loader.exec_module(ar)
         reply = "Pick one:\n\n- :1 keep it\n- :2 drop it\n\n| a | b |\n|---|---|\n| :3 | x |\n\nThen reply."
         text = ar.format_answered_replies([(reply, "10:00", [(2, "- :1 keep it", "keep, as in :2"), (8, "| :3 | x |", "fine")])])
-        self.assertIn("> - :1 keep it\n\nMy answer: keep, as in `:2`\n\n> - :2 drop it", text)
+        self.assertIn('> - :1 keep it\n\nMy answer to "- `:1` keep it": keep, as in `:2`\n\n> - :2 drop it', text)
         self.assertIsNone(qr.reply(text, A))
         self.assertEqual(self.reset_of(), {"gen": 7, "upto": 3})
         self.write({1: "first selection", 2: "second selection", 3: "third selection"})

@@ -236,17 +236,17 @@ PLAN = ("Here is the plan for the release.\n\n1. **Pricing:** monthly or yearly?
         "Reply with :1 yes or :2 no if you like.")
 PLAN_ENDS = [0, 2, 4, 5, 10, 12]  # the last line of each block of PLAN, as the page's blocks() counts them (Markdown)
 PLAN_SENT = (
-    'My answers inside your reply of 17:42 (your reply is quoted with "> ", my answers are marked "My answer:"):\n'
+    'My answers inside your reply of 17:42 (your reply is quoted with "> ", my answers start with "My answer"):\n'
     "\n"
     "> Here is the plan for the release.\n"
     "\n"
-    "My answer: Both, monthly first.\n"
+    'My answer to "Here is the plan for the release.": Both, monthly first.\n'
     "\n"
     "> 1. **Pricing:** monthly or yearly?\n"
     "> 2. Ship it on Thursday?\n"
     ">    It depends on QA.\n"
     "\n"
-    "My answer: Yes,\n"
+    'My answer to "2. Ship it on Thursday?": Yes,\n'
     "if QA passes `:3` cases\n"
     "\n"
     "> 3. Tell the team.\n"
@@ -256,7 +256,7 @@ PLAN_SENT = (
     "> | Docs | Ada |\n"
     "> | Tests | Deniz |\n"
     "\n"
-    "My answer: Add a row for Release notes.\n"
+    'My answer to "| Item | Owner |": Add a row for Release notes.\n'
     "\n"
     "> Reply with :1 yes or :2 no if you like.")
 PLAN_ANSWERS = [(0, "Here is the plan for the release.", "Both, monthly first."),
@@ -293,16 +293,16 @@ class Sent(unittest.TestCase):
         text = ar.format_answered_replies([("First reply.\n\nSecond paragraph.", "09:05", [(2, "Second paragraph.", "ok")]),
                                ("Not answered.", "09:10", [(0, "Not answered.", "   ")]),
                                ("Last one.", "", [(0, "Last one.", "fine")])])
-        self.assertEqual(text, 'My answers inside your reply of 09:05 (your reply is quoted with "> ", my answers are '
-                               'marked "My answer:"):\n\n> First reply.\n>\n> Second paragraph.\n\nMy answer: ok\n\n'
-                               'My answers inside your reply (your reply is quoted with "> ", my answers are marked '
-                               '"My answer:"):\n\n> Last one.\n\nMy answer: fine')
+        self.assertEqual(text, 'My answers inside your reply of 09:05 (your reply is quoted with "> ", my answers '
+                               'start with "My answer"):\n\n> First reply.\n>\n> Second paragraph.\n\nMy answer to "Second paragraph.": ok\n\n'
+                               'My answers inside your reply (your reply is quoted with "> ", my answers start with '
+                               '"My answer"):\n\n> Last one.\n\nMy answer to "Last one.": fine')
         self.assertEqual(ar.format_answered_replies([("x", "1", [(0, "x", " ")])]), "")
 
     def test_a_block_found_by_its_text_when_the_line_does_not_match_and_one_not_found_goes_last(self):
         text = ar.answer_block("A\n\nB\n\nC", "", [(0, "B", "b!"), (9, "Gone", "g!")])
-        self.assertEqual(text.split("\n")[2:], ["> A", ">", "> B", "", "My answer: b!", "", "> C", "", "> Gone", "",
-                                                "My answer: g!"])
+        self.assertEqual(text.split("\n")[2:], ["> A", ">", "> B", "", 'My answer to "B": b!', "", "> C", "", "> Gone", "",
+                                                'My answer to "Gone": g!'])
 
     def test_a_quoted_line_typed_in_an_answer_stays_the_users(self):
         self.assertEqual(ar.mine("> not Claude's\nmine"), "\\> not Claude's\nmine")
@@ -326,7 +326,7 @@ class Sent(unittest.TestCase):
         answers.append({"key": "pin#1", "passage": "Its question?", "text": "Yes.", "line": 2})
         text = p.reply_text("s1", answers)
         self.assertTrue(text.startswith(PLAN_SENT.replace("reply of 17:42", "reply")))
-        self.assertTrue(text.endswith("> An old pinned reply.\n>\n> Its question?\n\nMy answer: Yes."))
+        self.assertTrue(text.endswith("> An old pinned reply.\n>\n> Its question?\n\nMy answer to \"Its question?\": Yes."))
         self.assertNotIn("another session", text)
 
     def test_with_no_answer_the_reply_goes_as_it_is(self):
@@ -377,9 +377,9 @@ class Sent(unittest.TestCase):
                                                (299, "Last line.", "last")])])
         quoted = [l[2:] if l.startswith("> ") else "" for l in out.split("\n") if l.startswith(">")]
         self.assertEqual([l for l in quoted if l], [l for l in text.split("\n") if l])
-        self.assertEqual(out.count("My answer: "), 3)
-        self.assertTrue(out.endswith("> Last line.\n\nMy answer: last"))
-        self.assertIn("> and goes on.\n\nMy answer: middle\n\n> Paragraph 51", out)
+        self.assertEqual(out.count('My answer to "'), 3)
+        self.assertTrue(out.endswith('> Last line.\n\nMy answer to "Last line.": last'))
+        self.assertIn('> and goes on.\n\nMy answer to "Paragraph 50 says `:1` here.": middle\n\n> Paragraph 51', out)
         self.assertEqual(load_quote_reply().parse(out, set(range(10))), ([], [], False))
 
 
@@ -1579,9 +1579,9 @@ class AreaAnswerPage(unittest.TestCase):
         p.reply_mod, p.reply_seen = ar, {}
         p.seen("s1", "m1", "Intro.\n\n## 1. İki bölümü kaldırmak\n\n1. Birinci madde\n2. İkinci madde\n3. Üçüncü madde\n\nAfter.", None)
         self.assertEqual(p.reply_text("s1", self.o["sent"]),
-                         'My answers inside your reply (your reply is quoted with "> ", my answers are marked "My answer:"):\n\n'
+                         'My answers inside your reply (your reply is quoted with "> ", my answers start with "My answer"):\n\n'
                          "> Intro.\n>\n> ## 1. İki bölümü kaldırmak\n>\n> 1. Birinci madde\n> 2. İkinci madde\n> 3. Üçüncü madde\n\n"
-                         "My answer: Only this one needs a test.\n\n"
+                         'My answer to "3. Üçüncü madde": Only this one needs a test.\n\n'
                          'My answer to all 4 blocks from "## 1. İki bölümü kaldırmak" down to here, as a whole: Onaylıyorum\n\n'
                          "> After.")
 
@@ -1777,9 +1777,22 @@ class AreaAnswerText(unittest.TestCase):
         self.assertEqual([ar.area_size(b) for b in ("1-4", "3-3", "3", "", "4-1", "x-2")], [4, 1, 0, 0, 0, 0])
 
     def test_the_lead_names_the_blocks_and_the_first_line(self):
-        self.assertEqual(ar.lead("x", 0), "My answer:")
-        self.assertEqual(ar.lead("```js\nx\n```", 1), "My answer:")  # one block: as a block's own answer
+        self.assertEqual(ar.lead("x", 0), 'My answer to "x":')
+        self.assertEqual(ar.lead("\n  \n", 0), "My answer:")  # nothing to name
+        self.assertEqual(ar.lead("```js\nx\n```", 1), 'My answer to "```js":')  # one block: as a block's own answer
         self.assertEqual(ar.lead("\n## Plan\n\n- a", 2), 'My answer to all 2 blocks from "## Plan" down to here, as a whole:')
+
+    def test_a_blocks_own_lead_names_its_first_line(self):
+        item = "- İkinci seçenek: **✨ Find its place**. Daha düz, ama yerini bulmak biraz zaman alır.\n  İkinci satır."
+        self.assertEqual(ar.lead(item, 0), 'My answer to "- İkinci seçenek: **✨ Find its place**. Daha düz, ama yerini…":')
+        self.assertEqual(len(ar.lead(item, 0)), len('My answer to "":') + ar.NAME_CUT + 1)  # cut at NAME_CUT, then "…"
+        self.assertEqual(ar.lead('Name it "Plus" or "Max"?', 0), "My answer to \"Name it 'Plus' or 'Max'?\":")
+        self.assertEqual(ar.lead("Reply with :3 to keep it.", 0), 'My answer to "Reply with `:3` to keep it.":')
+
+    def test_the_hook_takes_no_marker_from_a_blocks_own_answer(self):
+        text = ar.answer_block("Pick :3 here.\n\nNext.", "", [(0, "Pick :3 here.", "ok")])
+        self.assertIn('> Pick :3 here.\n\nMy answer to "Pick `:3` here.": ok\n\n> Next.', text)
+        self.assertEqual(load_quote_reply().parse(text, {1, 2, 3}), ([], [], False))
         long = ar.lead('Reply with :1 yes, "quoted" ' + "x" * 80, 3)
         self.assertIn("from \"Reply with `:1` yes, 'quoted' xxx", long)  # no marker for quote-reply.py, no stray quote
         self.assertIn('…" down to here', long)
