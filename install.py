@@ -14,6 +14,7 @@
 #   agent-panel-shots.py -> ~/.claude       (the panel keeps your screenshots: Desktop\screenshots, then the pasted-into project)
 #   agent-reply.html, agent-reply.py -> ~/.claude  (the reply window under the strip: Claude's replies, your answers)
 #   agent-panel-paste.py -> ~/.claude       (Ctrl+V / Alt+V paste a picture fast in a session's terminal; started by the panel)
+#   agent-voice-host.py -> ~/.claude        (Space held in an answer box: Claude Code's own hold-to-talk in a hidden Claude Code)
 #   Field Agents.lnk -> the user's Desktop  (starts the panel, or brings the running one up; replaces Agent Panel.lnk)
 #   settings.json    <- the hook entries and statusLine (backed up first)
 #   z.ai key file    -> ~/.claudex/profiles/glm/.env (created with a placeholder if missing)
@@ -173,10 +174,11 @@ def install_panel():
     shutil.copy2(os.path.join(HERE, "agent-reply.html"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-reply.py"), CLAUDE_DIR)
     shutil.copy2(os.path.join(HERE, "agent-panel-paste.py"), CLAUDE_DIR)
+    shutil.copy2(os.path.join(HERE, "agent-voice-host.py"), CLAUDE_DIR)
     # replaced whole, so strips of an earlier mascot do not linger
     remove_tree(os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
     shutil.copytree(os.path.join(HERE, "mascot"), os.path.join(CLAUDE_DIR, "agent-panel-mascot"))
-    print("copied  agent-panel.pyw, agent-panel.html, agent-alert.html, agent-shots.html, agent-column.html, agent-panel-shots.py, agent-reply.html, agent-reply.py, agent-panel-paste.py and agent-panel-mascot -> %s" % CLAUDE_DIR)
+    print("copied  agent-panel.pyw, agent-panel.html, agent-alert.html, agent-shots.html, agent-column.html, agent-panel-shots.py, agent-reply.html, agent-reply.py, agent-panel-paste.py, agent-voice-host.py and agent-panel-mascot -> %s" % CLAUDE_DIR)
     r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywebview", "pystray", "pillow"],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -184,6 +186,13 @@ def install_panel():
               % r.stderr.strip()[-200:])
         return
     print("ok      pywebview, pystray and pillow installed")
+    # the hidden Claude Code that dictates into the reply window's answer boxes; without these the answer boxes use
+    # Voice to Text alone
+    r = subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "pywinpty", "pyte"],
+                       capture_output=True, text=True)
+    print("ok      pywinpty and pyte installed" if r.returncode == 0 else
+          "WARNING could not install pywinpty and pyte (%s); dictation in the reply window uses Voice to Text alone"
+          % r.stderr.strip()[-200:])
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     command = '"%s" "%s"' % (pythonw, PANEL)
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
@@ -272,6 +281,13 @@ def stop_panel():
     subprocess.run(["powershell.exe", "-NoProfile", "-Command",
                     "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
                     "Where-Object { $_.CommandLine -like '*agent-panel.pyw*' -or $_.CommandLine -like '*session-panel.pyw*' -or $_.CommandLine -like '*agent-panel-paste.py*' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                   capture_output=True)
+    # the hidden Claude Code that dictates (agent-voice-host.py), when the panel was forced and left it: its command
+    # line names its own settings file
+    subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | "
+                    "Where-Object { $_.CommandLine -like '*voice-host-settings.json*' } | "
                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
                    capture_output=True)
 

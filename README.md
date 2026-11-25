@@ -82,7 +82,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 3. Click **Send to Session**. The session's terminal comes to the front with each reply you answered pasted in full, with **My answer** under the passages you answered. Claude Code may show the block as a collapsed paste. Press Enter to send it. Your answers stay in their boxes: press **Send to Session** again to paste the same block once more, for example after deleting it in the terminal by mistake.
 
 - Claude gets each paragraph you answered, with your answer.
-- Hold **Space** in an answer box to speak your answer, as in Claude Code: a space appears, then *Listening…* with a level meter; your words appear at the cursor while you speak (the newest ones dim until they settle), and when you let go the rest is filled in. A quick tap still types a space. The speech is turned into text on your own PC by a local speech-to-text server (see [Dictation](#dictation)); nothing is kept. When the microphone or the server is missing, the note under the box says so, with a link that helps.
+- Hold **Space** in an answer box to speak your answer, as in Claude Code: a space appears, then *Listening…* with a level meter; your words appear at the cursor while you speak (the newest ones dim until they settle), and when you let go the rest is filled in. A quick tap still types a space. By default Claude Code's own voice input does the listening, in a hidden Claude Code that Field Agents keeps running for this; when it cannot, a local speech-to-text server takes that answer over (see [Dictation](#dictation)). Nothing is kept. When the microphone or the server is missing, the note under the box says so, with a link that helps.
 - Links work here even when the terminal wraps them: click one to open it. Web links open in your browser; `file:///` links, and Windows paths such as `C:\Users\you\shot.png` that exist on your PC, open with the app Windows uses for that file or folder (a program or script is shown in File Explorer instead of being run). A missing file says *File not found* next to the link.
 - Your answers are kept until you type a new prompt in that session, even if you fold the window or restart. To remove one, empty its box.
 - With no answer typed, **Copy** and **Send to Session** take the reply as it is.
@@ -187,10 +187,15 @@ Put any of these in `~/.claude/claude-plus.local.json` (the installer never chan
 
 ## Dictation
 
-Holding **Space** in a reply window answer box sends what you say to a speech-to-text server on your own PC: `POST <url>/api/dictate` with a stretch of audio (WAV) as the body and `language` and `prompt` as query parameters, answering `{"text": "..."}` (errors as `{"error": "..."}`); `GET <url>/api/health` answers while it runs. While Space is held the words since the last pause are sent again about every 1.5 s, one request at a time, so words show while you speak; on a CPU-only PC each request takes about 2 to 4 s, so the words come in steps of that size. Set it up in the same `~/.claude/claude-plus.local.json`:
+Holding **Space** in a reply window answer box goes, by default, to a hidden Claude Code that Field Agents starts for this (no window, no tools, no MCP servers, the small model, in `%LOCALAPPDATA%\claude-plus\voice-host`): its own hold-to-talk records and transcribes, exactly as in a terminal, so it needs Claude Code's voice mode and your Claude sign-in, and the sound goes to Anthropic as it does from any terminal. Nothing is ever submitted in it, so it leaves no session behind; its prompt is emptied after every answer. Field Agents restarts it if it stops and ends it when Field Agents quits. Its log, without your words, is `~/.claude/state/agent-panel/voice.log`.
+
+When the hidden Claude Code is not ready, cannot be read, or reports an error, that answer goes to the speech-to-text server below instead (from the window's own recording, so nothing said is lost), and the log says why. `"dictation": "whisper"` in `~/.claude/claude-plus.local.json` uses the server alone.
+
+The speech-to-text server runs on your own PC: `POST <url>/api/dictate` with a stretch of audio (WAV) as the body and `language` and `prompt` as query parameters, answering `{"text": "..."}` (errors as `{"error": "..."}`); `GET <url>/api/health` answers while it runs. While Space is held the words since the last pause are sent again about every 1.5 s, one request at a time, so words show while you speak; on a CPU-only PC each request takes about 2 to 4 s, so the words come in steps of that size. Set it up in the same `~/.claude/claude-plus.local.json`:
 
 | Setting | Default | What it does |
 |---|---|---|
+| `"dictation"` | `"claude"` | `"claude"`: Claude Code's own voice input, the server as the fallback; `"whisper"`: the server alone |
 | `"dictation_url"` | `"http://127.0.0.1:8765"` | Where the server listens |
 | `"dictation_server"` | none | The server's start script; a `.py` or `.pyw` is started hidden when the server is not running |
 | `"dictation_app"` | none | What **Open Voice to Text** in a note opens |

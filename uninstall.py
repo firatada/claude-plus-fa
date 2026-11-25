@@ -26,6 +26,7 @@ FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "agent-reply.html"),
     os.path.join(CLAUDE_DIR, "agent-reply.py"),
     os.path.join(CLAUDE_DIR, "agent-panel-paste.py"),
+    os.path.join(CLAUDE_DIR, "agent-voice-host.py"),
     os.path.join(CLAUDE_DIR, "session-panel.pyw"),
     os.path.join(HOME, ".local", "bin", "glm.cmd"),
 ]
@@ -121,6 +122,13 @@ def stop_panel():
                     "Where-Object { $_.CommandLine -like '*agent-panel.pyw*' -or $_.CommandLine -like '*session-panel.pyw*' -or $_.CommandLine -like '*agent-panel-paste.py*' } | "
                     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
                    capture_output=True)
+    # the hidden Claude Code that dictates (agent-voice-host.py), when the panel was forced and left it: its command
+    # line names its own settings file
+    subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='claude.exe'\" | "
+                    "Where-Object { $_.CommandLine -like '*voice-host-settings.json*' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
+                   capture_output=True)
 
 
 def remove_old_name():
@@ -169,6 +177,10 @@ def remove_panel():
         if os.path.isdir(panel_state):
             shutil.rmtree(panel_state, ignore_errors=True)
             print("deleted %s" % panel_state)
+    voice = os.path.join(os.environ.get("LOCALAPPDATA", HOME), "claude-plus", "voice-host")  # the hidden Claude Code's folder
+    if os.path.isdir(voice):
+        shutil.rmtree(voice, ignore_errors=True)
+        print("deleted %s" % voice)
 
 
 def terminal_copy():

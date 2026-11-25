@@ -182,6 +182,19 @@ def load_quote():
         return None
 
 
+def load_voice():
+    """agent-voice-host.py (the hidden Claude Code that dictates into the answer boxes) as a module; None when it is
+    missing or fails to load, and every hold goes to Voice to Text."""
+    try:
+        spec = importlib.util.spec_from_file_location("agent_voice_host", VOICE_PY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as e:
+        voice_log("could not load agent-voice-host.py:", repr(e))
+        return None
+
+
 def load_reply():
     """agent-reply.py (the reply window's rules: replies from a transcript, drafts, the line sent) as a module;
     None when it is missing or fails to load, and the strip has no reply window."""
@@ -256,6 +269,10 @@ SHOT_GAP = 8           # logical pixels between the strip and the screen's edge 
 SHOT_MOVE = 4          # logical pixels a press must travel before it drags the strip instead of clicking
 REPLY_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-reply.py")
 REPLY_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-reply.html")
+# dictation in an answer box through Claude Code's own hold-to-talk: a hidden Claude Code of the panel's own
+# (agent-voice-host.py), in VOICE_DIR; "dictation": "whisper" in claude-plus.local.json keeps Voice to Text instead
+VOICE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-voice-host.py")
+VOICE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "claude-plus", "voice-host")
 REPLY_TITLE = "Field Agents Reply"
 REPLY_W = 820          # logical pixels: the reply window's width, left of the strip at the screen's left edge
 REPLY_MIN = REPLY_W    # logical pixels the reply window keeps beside a one-column strip on a narrow screen
@@ -265,6 +282,7 @@ SEND_FRONT = 1.5       # seconds it gives the terminal to be in front, on top an
 SEEN_MAX = 400         # replies kept by message id for Send to Session and Copy (Panel.reply_seen)
 SEND_SETTLE = 0.25     # seconds between the terminal coming in front and the paste: the terminal reports the focus to
                        # Claude Code (a focus-in sequence) on its own, not in the same read as the pasted line
+VOICE_LOG = os.path.join(STATE_DIR, "voice.log")  # the hidden Claude Code and each take, why one went to Voice to Text (no text)
 SEND_LOG = os.path.join(STATE_DIR, "reply-send.log")  # one line per step of every Send to Session (no text sent)
 QUOTE = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "quote-reply.py"),  # run from the repo
          os.path.join(os.path.expanduser("~"), ".claude", "hooks", "quote-reply.py"))  # installed
@@ -459,6 +477,14 @@ def alive(pid):
     return bool(ok) and code.value == 259  # STILL_ACTIVE
 
 
+def is_voice_dir(cwd):
+    """The hidden Claude Code that dictates (VOICE_DIR) is no session of the panel's: never listed, never a tab."""
+    try:
+        return bool(cwd) and os.path.normcase(os.path.normpath(cwd)) == os.path.normcase(os.path.normpath(VOICE_DIR))
+    except (TypeError, ValueError):
+        return False
+
+
 def running():
     out = {}
     folder = os.path.join(CLAUDE, "sessions")
@@ -473,7 +499,7 @@ def running():
             o = json.load(open(os.path.join(folder, n), encoding="utf-8"))
         except Exception:
             continue
-        if o.get("sessionId") and o.get("pid") and alive(o["pid"]):
+        if o.get("sessionId") and o.get("pid") and alive(o["pid"]) and not is_voice_dir(o.get("cwd")):
             # waitingFor is set while a prompt in the session (a permission question, a dialog) waits
             # for an answer; the status then says "busy" (older versions) or "waiting" (2.1.319)
             out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"],
@@ -798,6 +824,16 @@ def links_log(*a):
 
 def send_log(*a):
     append_log(SEND_LOG, *a)
+
+
+def voice_log(*a):
+    append_log(VOICE_LOG, *a)
+
+
+def dictation_mode():
+    """"claude" (the hidden Claude Code's hold-to-talk, the default) or "whisper" (Voice to Text alone), from
+    "dictation" in claude-plus.local.json, read at every hold and every live pass."""
+    return "whisper" if str(local("dictation") or "").strip().lower() == "whisper" else "claude"
 
 
 def append_log(path, *a):
@@ -2486,6 +2522,35 @@ class ReplyApi:
         except Exception:
             return {"note": "Voice to Text could not be reached."}
 
+    def voice(self, step, why=""):
+        # Space held in an answer box, through the hidden Claude Code (agent-voice-host.py Dictation): "hold" ({ok}
+        # or {whisper: why}: this take goes to Voice to Text), "read" (the take's {phase, text, note, why}),
+        # "release" (Space let go), "drop" (the page gave the take to Voice to Text, why)
+        p = self._p
+        v = p.voice
+        try:
+            if step == "hold":
+                if dictation_mode() == "whisper":
+                    return {"whisper": ""}
+                if not v:
+                    voice_log("take to Voice to Text: agent-voice-host.py did not load")
+                    return {"whisper": "agent-voice-host.py did not load"}
+                if v.state == "off" and v.host is None:
+                    v.keep(True)  # first need: start it now (after its restart gap); this take goes to Voice to Text
+                return v.hold()
+            if not v:
+                return {"phase": "idle"}
+            if step == "read":
+                return v.read()
+            if step == "release":
+                return v.release()
+            if step == "drop":
+                return v.drop(str(why or ""))
+        except Exception as e:
+            voice_log("voice step", step, "failed:", repr(e))
+            return {"whisper": "error: %r" % e} if step == "hold" else {"phase": "error", "why": repr(e)}
+        return {}
+
     def dictate(self, audio, mime, kind="whole", context=""):
         # what was said (base64), a piece while Space is held or the rest when it is let go, to the server; answers
         # {text} or {note} (agent-reply.py Dictation.transcribe: kind, context)
@@ -2742,7 +2807,15 @@ class Panel:
                 self.pinned = self.reply_mod.Pins()
             except Exception:
                 self.pinned = None
-        # dictation in an answer box (Space held): the page's recording to the local speech-to-text server
+        # dictation in an answer box (Space held): the hidden Claude Code's hold-to-talk (self.voice), and the page's
+        # recording to the local speech-to-text server (self.dictation), its fallback
+        self.voice = None
+        voice_mod = load_voice()
+        if voice_mod:
+            try:
+                self.voice = voice_mod.Dictation(log=voice_log)
+            except Exception as e:
+                voice_log("could not set up dictation through Claude Code:", repr(e))
         self.dictation = None
         if self.reply_mod:
             try:
@@ -3118,6 +3191,17 @@ class Panel:
         self.push()
         self.check_alerts()
         self.watch_return()
+        self.keep_voice()
+
+    def keep_voice(self):
+        """The hidden Claude Code that dictates: started once the reply window has shown (or at the first hold),
+        kept warm, started again when it died, stopped when "dictation" is set to "whisper"."""
+        v = self.voice
+        if v:
+            try:
+                v.keep(dictation_mode() == "claude" and self.reply_shown)
+            except Exception as e:
+                voice_log("keep failed:", repr(e))
 
     def background(self, live):
         """What each open session runs in the background, for the badge on its card: its child runs (from the
@@ -4969,6 +5053,11 @@ class Panel:
         return err("It did not close in time, so it was not deleted. Try again once its window is gone.")
 
     def quit(self):
+        if getattr(self, "voice", None):
+            try:
+                self.voice.stop()  # Ctrl+C twice ends it and its session file; then a forced end of its tree
+            except Exception:
+                pass
         if getattr(self, "dock", None):
             self.dock.release()
         if self.icon:

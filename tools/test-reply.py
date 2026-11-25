@@ -1193,7 +1193,7 @@ const later = ms => new Promise(r => setTimeout(r, ms));
 """
 
 
-def page_run(test=PAGE_TEST, size="800,600"):
+def page_run(test=PAGE_TEST, size="800,600", budget=3000):
     with open(os.path.join(ROOT, "agent-reply.html"), encoding="utf-8") as f:
         page = f.read()
     at = page.index("<script>")
@@ -1207,7 +1207,7 @@ def page_run(test=PAGE_TEST, size="800,600"):
             f.write(page)
         import subprocess
         r = subprocess.run([EDGE, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-                            "--user-data-dir=" + os.path.join(d, "profile"), "--virtual-time-budget=3000", "--dump-dom",
+                            "--user-data-dir=" + os.path.join(d, "profile"), "--virtual-time-budget=%d" % budget, "--dump-dom",
                             "--window-size=" + size, "--force-device-scale-factor=1",
                             "file:///" + path.replace("\\", "/")], capture_output=True, text=True, encoding="utf-8",
                            timeout=90)
@@ -1453,6 +1453,177 @@ class Tabs(unittest.TestCase):
         tabs = self.o["eleven"]
         self.assertEqual(len({t["top"] for t in tabs}), 2)
         self.assertEqual([t["name"] for t in tabs if t["cut"]], ["one two three four five six seven eight"])
+
+
+# Space held in an answer box through the hidden Claude Code (agent-voice-host.py): the page asks "hold" at "Keep
+# holding…", reads the prompt line while the take lasts (dim words at the caret), says "release" on key-up and puts the
+# final text in; "No speech detected." is a short note; an error or a "whisper" answer goes to Voice to Text (the
+# dictation API). The stand-in voice() plays one script per take; headless Edge has no microphone, which the Claude
+# path does not need.
+VOICE_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  let script = [], reads = 0;
+  // a PC without a microphone (headless Edge never answers getUserMedia): the Claude path does not need the page's
+  navigator.mediaDevices.getUserMedia = () => Promise.reject(Object.assign(new Error("none"), {name: "NotFoundError"}));
+  T.voice = [];
+  T.dict = [];
+  T_API.voice = (step, why) => {
+    T.voice.push(why ? step + ":" + why : step);
+    if (step === "hold") return Promise.resolve(script.hold || {ok: true});
+    if (step === "read") { const r = script.reads[Math.min(reads, script.reads.length - 1)]; reads++;
+      return Promise.resolve(script.released && r.phase !== "error" ? script.after.shift() || {phase: "done", text: ""} : r); }
+    if (step === "release") { script.released = true; return Promise.resolve({ok: true}); }
+    return Promise.resolve({ok: true});
+  };
+  T_API.dictation = step => { T.dict.push(step); return Promise.resolve({up: true}); };
+  T_API.dictate = () => { T.dict.push("dictate"); return Promise.resolve({text: "whisper words"}); };
+  T_API.draft = () => Promise.resolve(null);
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: "First paragraph.\n\nSecond paragraph."}],
+    answers: {}, selections: [], note: "", pins: []});
+  await later(50);
+  const paras = document.querySelectorAll("#replies .para");
+  const key = (t, type, repeat) => t.dispatchEvent(new KeyboardEvent(type, {code: "Space", key: " ", repeat, bubbles: true, cancelable: true}));
+  const line = t => { const l = t.parentElement.querySelector(".vline"); return l ? l.textContent : ""; };
+  const ghostText = t => { const g = t.parentElement.querySelector(".ghost .tail"); return g ? g.textContent : ""; };
+  async function hold(t, steps) {  // a press, its repeats, a look while held, the release, a look after
+    t.focus();
+    key(t, "keydown", false);
+    const o = {afterPress: t.value};
+    await later(20);
+    key(t, "keydown", true);
+    await later(20);
+    o.warm = line(t);
+    for (let i = 0; i < 4; i++) { key(t, "keydown", true); await later(30); }
+    await later(steps || 400);
+    o.held = line(t);
+    o.ghost = ghostText(t);
+    o.valueHeld = t.value;
+    key(t, "keyup", false);
+    await later(30);
+    o.released = line(t);
+    await later(900);
+    o.value = t.value;
+    o.after = line(t);
+    o.ghostAfter = ghostText(t);
+    return o;
+  }
+  const out = {};
+  paras[0].click();
+  await later(20);
+  let t = document.querySelector("#replies .ans");
+  // 1. an ordinary take
+  script = {reads: [{phase: "warm", text: ""}, {phase: "listening", text: "merhaba"}, {phase: "listening", text: "merhaba dünya"}],
+    after: [{phase: "transcribing", text: "merhaba dünya"}, {phase: "done", text: "Merhaba dünya.", note: ""}]};
+  reads = 0;
+  out.ok = await hold(t);
+  out.okVoice = T.voice.slice(); T.voice.length = 0;
+  out.okDict = T.dict.slice(); T.dict.length = 0;
+  // 2. no speech: a short note, nothing typed
+  t.value = ""; t.dispatchEvent(new Event("input", {bubbles: true}));
+  script = {reads: [{phase: "listening", text: ""}], after: [{phase: "done", text: "", note: "No speech detected."}]};
+  reads = 0;
+  out.quiet = await hold(t);
+  T.voice.length = 0;
+  // 3. an error while held: the take goes to Voice to Text
+  key(t, "keydown", false); key(t, "keyup", false);  // a key clears the note; then empty the box
+  t.value = ""; t.dispatchEvent(new Event("input", {bubbles: true}));
+  script = {reads: [{phase: "listening", text: "yarım"}, {phase: "error", why: "Claude Code says: voice failed"}], after: []};
+  reads = 0;
+  out.err = await hold(t);
+  out.errVoice = T.voice.slice(); T.voice.length = 0;
+  out.errDict = T.dict.slice(); T.dict.length = 0;
+  // 4. the panel answers whisper (not ready, or "dictation": "whisper")
+  key(t, "keydown", false); key(t, "keyup", false);
+  t.value = ""; t.dispatchEvent(new Event("input", {bubbles: true}));
+  script = {hold: {whisper: "the hidden Claude Code is starting"}, reads: [{phase: "idle"}], after: []};
+  out.wh = await hold(t);
+  out.whVoice = T.voice.slice(); T.voice.length = 0;
+  out.whDict = T.dict.slice(); T.dict.length = 0;
+  // 5. let go at "Keep holding…": one space stays, the take is dropped
+  key(t, "keydown", false); key(t, "keyup", false);
+  t.value = ""; t.dispatchEvent(new Event("input", {bubbles: true}));
+  script = {reads: [{phase: "warm", text: ""}], after: []};
+  t.focus();
+  key(t, "keydown", false);
+  await later(20);
+  key(t, "keydown", true);
+  await later(30);
+  key(t, "keyup", false);
+  await later(100);
+  out.cold = {value: t.value, line: line(t), voice: T.voice.slice()};
+  // 6. an error after the release (Claude Code could not transcribe): Voice to Text gets the page's recording; with no
+  // microphone there is none, so the microphone note
+  key(t, "keydown", false); key(t, "keyup", false);
+  t.value = ""; t.dispatchEvent(new Event("input", {bubbles: true}));
+  T.voice.length = 0;
+  script = {reads: [{phase: "listening", text: "bir"}], after: [{phase: "transcribing", text: "bir"},
+    {phase: "error", text: "bir", why: "no final text within 15 s of the release"}]};
+  reads = 0;
+  out.late = await hold(t);
+  document.getElementById("tout").textContent = JSON.stringify(out);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class VoiceTake(unittest.TestCase):
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(VOICE_TEST, budget=20000)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_an_ordinary_take(self):
+        o = self.o["ok"]
+        self.assertEqual(o["afterPress"], " ")  # a first Space types a space, as before
+        self.assertEqual(o["warm"], "Keep holding…")
+        self.assertEqual(o["held"], "Listening… release Space to stop.")
+        self.assertEqual(o["ghost"], "merhaba dünya")  # the words so far, dim at the caret
+        self.assertEqual(o["valueHeld"], "")  # the typed space taken out; the dim words are not in the box
+        self.assertEqual(o["released"], "Transcribing…")
+        self.assertEqual(o["value"], "Merhaba dünya.")
+        self.assertEqual(o["after"], "")
+        self.assertEqual(o["ghostAfter"], "")
+
+    def test_the_take_talks_to_the_panel_only(self):
+        v = self.o["okVoice"]
+        self.assertEqual(v[0], "hold")
+        self.assertIn("release", v)
+        self.assertGreater(v.count("read"), 3)
+        self.assertEqual(self.o["okDict"], [])  # Voice to Text never asked
+
+    def test_no_speech_is_a_short_note(self):
+        o = self.o["quiet"]
+        self.assertEqual(o["value"], "")
+        self.assertEqual(o["after"], "No speech detected.")
+
+    def test_an_error_goes_to_the_fallback(self):
+        o = self.o["err"]
+        self.assertIn("ready", self.o["errDict"])  # Voice to Text asked for, in the same hold
+        self.assertEqual(o["ghost"], "")  # Claude Code's half words gone
+        # no microphone here: the Voice to Text take ends on the microphone note, as it always did
+        self.assertTrue(o["held"].startswith("No microphone found."), o["held"])
+
+    def test_a_whisper_answer_is_a_fallback_take(self):
+        self.assertEqual(self.o["whVoice"], ["hold"])
+        self.assertIn("ready", self.o["whDict"])
+
+    def test_an_error_after_the_release_goes_to_the_fallback(self):
+        o = self.o["late"]
+        self.assertEqual(o["released"], "Transcribing…")
+        self.assertEqual(o["value"], "")  # Claude Code's half words are not put in
+        self.assertTrue(o["after"].startswith("No microphone found."), o["after"])
+
+    def test_let_go_at_keep_holding_keeps_the_space_and_drops_the_take(self):
+        c = self.o["cold"]
+        self.assertEqual(c["value"], " ")
+        self.assertEqual(c["line"], "")
+        self.assertEqual(c["voice"], ["hold", "drop:let go before listening"])
 
 
 if __name__ == "__main__":

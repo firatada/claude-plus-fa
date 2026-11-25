@@ -746,8 +746,13 @@ function tipFor(p) {  // the paragraph's tooltip says what a click does; none wh
   if (row && row.classList.contains("ansrow")) delete p.dataset.tip;
   else p.dataset.tip = paraTip(kindOf(p));
 }
-// ---------- dictation: Space held in a box (spaceRule() decides; the panel hands the recording to Voice to Text) ----------
+// ---------- dictation: Space held in a box (spaceRule() decides). Claude Code's own hold-to-talk in the panel's hidden
+// Claude Code (agent-voice-host.py) by default: the panel sends it the held Space and the page reads its prompt line;
+// Voice to Text (the page's recording, sent by the panel) when the hidden Claude Code is not ready, its screen cannot
+// be read, it reports an error, or "dictation" is "whisper" in claude-plus.local.json ----------
 let spaceSt = null, spaceBox = null, holdTimer = 0, typedAt = -1, rec = null;
+let voiceAsk = null;  // the panel's answer to "hold" for the hold in progress, asked at "Keep holding…"
+const VOICE_READ_MS = 100;  // the hidden Claude Code's prompt line is read this often while a take lasts
 const busy = new Set();  // boxes whose recording is being transcribed: their line stays when they lose the keyboard
 function vline(t, kind, text, link) {  // the line under a box: "" (none), "warm", "start", "on", "busy" or "note";
   const row = t.parentElement;         // link: {text, uri}, what the note names, its words made a link to it
@@ -795,8 +800,13 @@ function spaceStep(t, ev) {
     clearTimeout(holdTimer);
     holdTimer = setTimeout(() => { if (spaceBox === t) spaceStep(t, {type: "timer"}); }, HOLD_MS);
   }
-  if (r.act === "warm") vline(t, "warm", "Keep holding…");
-  if (r.act === "cold") vline(t, "");
+  if (r.act === "warm") { vline(t, "warm", "Keep holding…"); voiceAsk = askHold(); }
+  if (r.act === "cold") {
+    vline(t, "");
+    const a = voiceAsk;
+    voiceAsk = null;
+    if (a) a.then(v => { if (v && v.ok) api().voice("drop", "let go before listening"); });
+  }
   if (r.act === "start") { untype(t); listen(t); }
   if (r.act === "stop") finish();
 }
@@ -930,19 +940,49 @@ function listening(me) {  // the microphone records and the server answers: say 
   if (rec !== me || me.stopped) return;
   me.bars = vline(me.t, "on", "Listening… release Space to stop.");
 }
-async function listen(t) {
-  const me = rec = {t, key: t.parentElement.dataset.for, stopped: false, mic: false, up: false, live: true, cut: 0,
-    piece: {done: [], prev: []}, last: null, out: null, sentAt: -1e9, said: "", before: "", interim: []};
-  const server = api().dictation("ready");
-  if (!navigator.mediaDevices) { failed(me, micNote(null)); return; }
+function askHold() {  // the hidden Claude Code takes the held Space from now on ({ok}), or this take is Voice to Text's
+  return new Promise(ok => ok(api().voice("hold"))).then(v => v || {whisper: "no answer"}, () => ({whisper: "the panel did not answer"}));
+}
+async function openMic(me) {  // the page records every take: the level meter, and the sound should it go to Voice to Text
+  if (!navigator.mediaDevices) return {err: null};
   try {
     me.stream = await navigator.mediaDevices.getUserMedia({audio: true});
-  } catch (e) { failed(me, micNote(e)); return; }
-  if (me.stopped) { stopMic(me); return; }  // let go before the microphone was up: nothing to send
-  try { await capture(me); } catch (e) { failed(me, micNote(e)); return; }
+  } catch (e) { return {err: e}; }
+  if (me.stopped && me.via !== "claude") { stopMic(me); return {gone: true}; }  // let go before it was up: nothing to send
+  try { await capture(me); } catch (e) { stopMic(me); return {err: e}; }
   me.mic = true;
   dlog("mic", {rate: me.rate, via: me.tap ? "worklet" : "script"});
   meter(me);
+  return {ok: true};
+}
+async function listen(t) {
+  const me = rec = {t, key: t.parentElement.dataset.for, stopped: false, mic: false, up: false, live: true, cut: 0,
+    piece: {done: [], prev: []}, last: null, out: null, sentAt: -1e9, said: "", before: "", interim: [], via: ""};
+  const ask = voiceAsk || askHold();
+  voiceAsk = null;
+  me.micUp = openMic(me);
+  const v = await ask;
+  if (v.ok) {
+    me.via = "claude";
+    if (me.stopped) {  // let go before the answer came: nothing was said
+      api().voice("drop", "let go before listening");
+      me.micUp.then(() => stopMic(me));
+      vline(me.t, "");
+      return;
+    }
+    dlog("claude", {});
+    claudeTake(me);
+    return;
+  }
+  me.via = "whisper";
+  if (v.whisper) dlog("whisper", {why: v.whisper});
+  whisperTake(me);
+}
+async function whisperTake(me) {  // Voice to Text: its server up (started when it is not), then passes while Space is held
+  const t = me.t, server = api().dictation("ready");
+  const m = await me.micUp;
+  if (m.gone) return;
+  if (!m.ok) { failed(me, micNote(m.err)); return; }
   let a = await server;
   if (me.stopped) return;  // let go meanwhile: finish() sends it, and the panel starts or waits for the server itself
   if (a && a.starting) {
@@ -954,6 +994,62 @@ async function listen(t) {
   me.up = true;
   listening(me);
   pump(me);
+}
+// ---------- a take through the hidden Claude Code: its prompt line read while the take lasts ----------
+const pause = ms => new Promise(ok => setTimeout(ok, ms));
+async function claudeTake(me) {
+  for (;;) {
+    let r;
+    try { r = await api().voice("read"); } catch (e) { r = null; }
+    if (me.via !== "claude") return;
+    if (!r || r.phase === "idle") r = {phase: "error", why: "the take was lost"};
+    if (r.phase === "error") { toWhisper(me, r.why || "an error"); return; }
+    if (r.phase === "done") { claudeDone(me, r); return; }
+    if (r.phase === "listening" && !me.heard) { me.heard = true; listening(me); }
+    me.interim = r.text ? r.text.split(/\s+/) : [];
+    ghost(boxOf(me), me.interim);
+    await pause(VOICE_READ_MS);
+  }
+}
+function claudeDone(me, r) {  // the final text in at the caret (Claude Code's own rule for the spaces round it)
+  busy.delete(me.t);
+  const t = boxOf(me);
+  me.interim = [];
+  ghost(t, []);
+  me.said = r.text || "";
+  dlog("done", {via: "claude", text: me.said, note: r.note});
+  if (me.said) putDictation(t, me.said);
+  if (r.note) vline(t, "note", r.note);
+  else vline(t, "");
+  release();
+}
+// Claude Code could not do this take (the panel says why and logs it): Voice to Text takes it over, from the page's own
+// recording of the whole hold; while Space is still held it goes on live as a Voice to Text take
+async function toWhisper(me, why) {
+  dlog("fallback", {why});
+  me.via = "whisper";
+  me.interim = [];
+  ghost(boxOf(me), []);
+  if (!me.stopped) {
+    vline(me.t, "start", "Starting Voice to Text…");
+    me.heard = false;
+    whisperTake(me);
+    return;
+  }
+  const m = await me.micUp;
+  if (me.flushing) await me.flushing;
+  let a;
+  if (!m.ok || !me.lv || !me.lv.length) a = m.ok ? {note: "Nothing was heard. Hold Space and speak again."} : micNote(m.err);
+  else {
+    try { a = await api().dictate(wavOf(me, 0, me.lv.length), "audio/wav", "whole", ""); }
+    catch (e) { a = {note: "Voice to Text could not be reached."}; }
+  }
+  busy.delete(me.t);
+  const t = boxOf(me);
+  if (a && typeof a.text === "string" && a.text) { me.said = a.text; putDictation(t, a.text); vline(t, ""); }
+  else vline(t, "note", (a && a.note) || "Voice to Text could not be reached.", a && a.link);
+  dlog("done", {via: "whisper", text: me.said});
+  release();
 }
 // ---------- text while speaking: planPass() decides, pass() sends, land() commits or shows the guess ----------
 const dlog = (e, o) => { if (window.dictLog) window.dictLog.push(Object.assign({e, t: performance.now()}, o)); };
@@ -1037,7 +1133,19 @@ async function finish() {  // Space let go (or the box, or the window, lost the 
   if (!me) return;
   rec = null;
   me.stopped = true;
-  if (!me.mic) { vline(me.t, ""); return; }  // the microphone was not up yet: listen() stops it, nothing is sent
+  if (me.via === "claude") {  // the hidden Claude Code transcribes; claudeTake() reads the final text
+    api().voice("release");
+    cancelAnimationFrame(me.raf);
+    busy.add(me.t);
+    vline(me.t, "busy", "Transcribing…");
+    me.flushing = me.mic ? flushTap(me) : Promise.resolve();  // kept to the end in case the take goes to Voice to Text
+    await me.flushing;
+    me.closed = true;
+    stopMic(me);
+    me.micUp.then(() => stopMic(me));
+    return;
+  }
+  if (!me.mic) { vline(me.t, ""); return; }  // the microphone was not up yet (or the answer to "hold" not back): nothing is sent
   dlog("release", {});
   cancelAnimationFrame(me.raf);
   busy.add(me.t);
