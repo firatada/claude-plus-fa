@@ -529,6 +529,21 @@ out.sendUnordered = sendList(ans, src, []).length;
 // (candidates until agent-panel.pyw says they exist), and what is not a path
 out.links = inline("See [the shot](file:///C:/Users/x/a%20b/shot.png), file:///C:/Users/x/a%20b/shot.png. Also " +
   "C:\\Users\\x\\plain.txt and (C:/Users/x/notes.md). Code `C:\\Users\\x\\a b\\shot.png` and `npm run C:` and https://ex.com/q");
+// the area: what a press starts, the rectangle after a drag, and what its Copy takes
+out.areaPress = [areaPress({button: 0, ctl: false, scrollbar: false, text: false}), areaPress({button: 0, ctl: false, scrollbar: false, text: true}),
+  areaPress({button: 0, ctl: true, scrollbar: false, text: false}), areaPress({button: 0, ctl: false, scrollbar: true, text: false}),
+  areaPress({button: 2, ctl: false, scrollbar: false, text: false})];
+const AB = {w: 800, h: 1000}, r0 = {x: 100, y: 100, w: 200, h: 100};
+out.areaResize = {draw: areaResize({x: 50, y: 60, w: 0, h: 0}, "se", 120, 80, AB), drawBack: areaResize({x: 50, y: 60, w: 0, h: 0}, "se", -30, -40, AB),
+  corner: areaResize(r0, "nw", -20, 30, AB), edge: areaResize(r0, "e", 50, 999, AB), flip: areaResize(r0, "n", 150, 150, AB),
+  clamp: areaResize(r0, "se", 2000, 2000, AB), move: areaResize(r0, "move", 40, -20, AB), moveOut: areaResize(r0, "move", 9999, -9999, AB)};
+const T1 = "Intro.\n\n| a | b |\n|---|--:|\n| [x](https://ex.com) | 2 |\n\n1. one\n2. two\n   more\n\n```js\nconst a = 1;\n```\n\n---\n\nEnd.",
+  T2 = "## Two\r\n\r\nSecond reply.\r\n\r\n> quoted\r\n> on",
+  T3 = "```\nnever closed\nstill code";
+out.areaSpans = blocks(T1).map(b => [b.kind, b.from, b.to]);
+out.areaMd = {run: areaMarkdown([T1], [[0, [1, 2, 3, 4]]]), gap: areaMarkdown([T1], [[0, [0, 4]]]),
+  two: areaMarkdown([T1, T2], [[0, [6, 5]], [1, [0, 1, 2]]]), unclosed: areaMarkdown([T3], [[0, [0]]]),
+  none: areaMarkdown([T1], [[0, [99]]]), empty: areaMarkdown([], [])};
 console.log(JSON.stringify(out));
 """
 
@@ -1138,6 +1153,49 @@ class Links(unittest.TestCase):
         self.assertEqual(got, [self.shot, fwd])
 
 
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class AreaRules(unittest.TestCase):
+    """The area: a drag that starts on blank space draws a rectangle, a drag on text selects text; the rectangle
+    after a drag of a corner, an edge or its inside; its Copy takes the blocks touched as Claude wrote them."""
+    md = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.md = node_markdown()
+
+    def test_where_the_press_goes_down_decides(self):
+        # blank space: a rectangle; a character of text: the browser's text selection; a control, the scroll bar or
+        # another button: their own
+        self.assertEqual(self.md["areaPress"], ["area", "text", "", "", ""])
+
+    def test_the_rectangle_after_a_drag(self):
+        r = self.md["areaResize"]
+        self.assertEqual(r["draw"], {"x": 50, "y": 60, "w": 120, "h": 80})
+        self.assertEqual(r["drawBack"], {"x": 20, "y": 20, "w": 30, "h": 40})  # drawn up and left of the press
+        self.assertEqual(r["corner"], {"x": 80, "y": 130, "w": 220, "h": 70})
+        self.assertEqual(r["edge"], {"x": 100, "y": 100, "w": 250, "h": 100})  # an edge moves along its own axis only
+        self.assertEqual(r["flip"], {"x": 100, "y": 200, "w": 200, "h": 50})  # past the opposite edge it turns over
+        self.assertEqual(r["clamp"], {"x": 100, "y": 100, "w": 700, "h": 900})  # never past the replies
+        self.assertEqual(r["move"], {"x": 140, "y": 80, "w": 200, "h": 100})
+        self.assertEqual(r["moveOut"], {"x": 600, "y": 0, "w": 200, "h": 100})
+
+    def test_every_block_knows_its_lines(self):
+        self.assertEqual(self.md["areaSpans"], [["p", 0, 0], ["table", 2, 4], ["li", 6, 6], ["li", 7, 8], ["code", 10, 12],
+                                                ["hr", 14, 14], ["p", 16, 16]])
+
+    def test_copy_takes_the_blocks_as_claude_wrote_them(self):
+        m = self.md["areaMd"]
+        # blocks side by side: one stretch of the reply, so a table, a link, list items and a code fence stay intact
+        self.assertEqual(m["run"], "| a | b |\n|---|--:|\n| [x](https://ex.com) | 2 |\n\n1. one\n2. two\n   more\n\n"
+                                   "```js\nconst a = 1;\n```")
+        self.assertEqual(m["gap"], "Intro.\n\n```js\nconst a = 1;\n```")  # pieces apart: a blank line between
+        # two replies, each in its own order (picks given out of order), a blank line between them, CRLF as LF
+        self.assertEqual(m["two"], "---\n\nEnd.\n\n## Two\n\nSecond reply.\n\n> quoted\n> on")
+        self.assertEqual(m["unclosed"], "```\nnever closed\nstill code")
+        self.assertEqual(m["none"], "")
+        self.assertEqual(m["empty"], "")
+
+
 EDGE = next((p for p in (os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
                          os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe")) if os.path.exists(p)), None)
 
@@ -1153,6 +1211,7 @@ const T_API = {
   fold() { T.folds++; return Promise.resolve(null); },
   send(sid, list) { (T.sends = T.sends || []).push([sid, list]); return Promise.resolve({t: "Pasted", err: false}); },
   copy(sid, list) { (T.copies = T.copies || []).push([sid, list]); return Promise.resolve(true); },
+  copy_area(text) { (T.area = T.area || []).push(text); return Promise.resolve(true); },
 };
 window.pywebview = {api: new Proxy(T_API, {get: (t, k) => k in t ? t[k] : () => Promise.resolve(null)})};
 </script>
@@ -1251,6 +1310,123 @@ class Page(unittest.TestCase):
 
     def test_links_work_in_a_pinned_reply(self):
         self.assertEqual(self.o["pinned"], [["old", "file:///C:/x/shot-old.png", ""], ["C:\\x\\plain.txt", "C:\\x\\plain.txt", ""]])
+
+
+# The area in the real page (headless Edge, events dispatched to the page, never to a window): a drag from the margin
+# across two replies draws the rectangle and tints the blocks it touches; a corner drag resizes it; Copy hands the
+# panel those blocks' markdown and says "Copied"; Esc clears it; a press outside clears it and opens no box; a plain
+# click on a paragraph still opens its box; a drag that starts on text draws no rectangle.
+AREA_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const R1 = "Intro line.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```";
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: R1}, {id: "m2", when: "10:01", text: "Second reply.\n\nLast."}],
+    answers: {}, selections: [], note: "", pins: []});
+  await later(50);
+  const ev = (el, type, x, y, o) => el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type,
+    Object.assign({bubbles: true, cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1,
+      pointerType: "mouse", isPrimary: true, clientX: x, clientY: y}, o)));
+  const drag = async (el, x0, y0, x1, y1) => {
+    ev(el, "pointerdown", x0, y0); ev(el, "mousedown", x0, y0);
+    for (let k = 1; k <= 5; k++) ev(el, "pointermove", x0 + (x1 - x0) * k / 5, y0 + (y1 - y0) * k / 5);
+    ev(el, "pointerup", x1, y1); ev(el, "mouseup", x1, y1); ev(el, "click", x1, y1);
+    await later(30);
+  };
+  const box = s => document.querySelector(s).getBoundingClientRect();
+  const o = {}, body = document.getElementById("body"), area = document.getElementById("area"), cp = document.getElementById("areaCopy");
+  const tbl = box("#replies .para.table"), second = [...document.querySelectorAll("#replies .reply")][1].querySelector(".para").getBoundingClientRect();
+  await drag(body, box("#body").left + 4, tbl.top + 2, 300, second.top + 4);
+  o.drawn = {shown: !area.hidden, copy: !cp.hidden, tinted: [...document.querySelectorAll(".inarea")].map(e => e.closest(".reply").dataset.id + "#" + e.dataset.n),
+    boxes: document.querySelectorAll(".ansrow").length, sel: getSelection().toString()};
+  const se = box("#area .hd[data-e=se]"), h0 = area.offsetHeight, last = [...document.querySelectorAll("#replies .reply")][1].querySelectorAll(".para")[1].getBoundingClientRect();
+  await drag(document.querySelector("#area .hd[data-e=se]"), se.left + 4, se.top + 4, se.left + 24, last.top + 8);
+  o.resized = [Math.round(area.offsetHeight - h0 - (last.top + 4 - se.top)), [...document.querySelectorAll(".inarea")].length];
+  cp.click();
+  await later(30);
+  o.copied = T.area;
+  o.label = cp.textContent;
+  document.body.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true}));
+  await later(20);
+  o.esc = [area.hidden, cp.hidden, document.querySelectorAll(".inarea").length];
+  await drag(body, box("#body").left + 4, tbl.top + 2, 300, tbl.bottom);
+  const p1 = document.querySelector("#replies .para"), q = p1.getBoundingClientRect();
+  ev(p1, "pointerdown", q.left + 3, q.top + q.height / 2); ev(p1, "pointerup", q.left + 3, q.top + q.height / 2); ev(p1, "click", q.left + 3, q.top + q.height / 2);
+  await later(20);
+  o.outside = [area.hidden, document.querySelectorAll(".ansrow").length];  // cleared, and that click opened no box
+  ev(p1, "pointerdown", q.left + 3, q.top + q.height / 2); ev(p1, "pointerup", q.left + 3, q.top + q.height / 2); ev(p1, "click", q.left + 3, q.top + q.height / 2);
+  await later(20);
+  o.click = document.querySelectorAll(".ansrow").length;  // a plain click still opens the box
+  document.activeElement.blur();
+  const t = document.querySelector("#replies .reply:nth-child(2) .para"), tq = t.getBoundingClientRect(), n0 = document.querySelectorAll(".ansrow").length;
+  await drag(t, tq.left + 2, tq.top + tq.height / 2, tq.left + 60, tq.top + tq.height / 2);
+  o.textDrag = [area.hidden, document.querySelectorAll(".ansrow").length - n0];  // no rectangle, no box opened or shut
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class AreaPage(unittest.TestCase):
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(AREA_TEST)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_a_drag_from_the_margin_draws_it_across_two_replies(self):
+        d = self.o["drawn"]
+        self.assertTrue(d["shown"] and d["copy"])
+        self.assertEqual(d["tinted"], ["m1#1", "m1#2", "m2#0"])  # the table, the code block, the second reply's first
+        self.assertEqual((d["boxes"], d["sel"]), (0, ""))  # no answer box, no text selected
+
+    def test_a_corner_drag_resizes_it(self):
+        grew, tinted = self.o["resized"]
+        self.assertEqual(grew, 0)  # by exactly the pointer's travel
+        self.assertEqual(tinted, 4)
+
+    def test_copy_hands_the_panel_the_markdown(self):
+        self.assertEqual(self.o["copied"], ["| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```\n\nSecond reply.\n\nLast."])
+        self.assertEqual(self.o["label"], "Copied")
+
+    def test_esc_and_a_press_outside_clear_it(self):
+        self.assertEqual(self.o["esc"], [True, True, 0])
+        self.assertEqual(self.o["outside"], [True, 0])
+
+    def test_a_click_and_a_drag_over_text_work_as_before(self):
+        self.assertEqual(self.o["click"], 1)
+        self.assertEqual(self.o["textDrag"], [True, 0])
+
+
+class AreaCopy(unittest.TestCase):
+    """The area's Copy on the panel's side: the page's text alone on the clipboard (the clipboard is a stand-in)."""
+
+    def api(self):
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ReplyApi")
+        keep = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in ("__init__", "copy_area")]
+        ns = {}
+        exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+        got = []
+        mod = type("M", (), {"set_clipboard_text": staticmethod(lambda t: got.append(t) or True)})
+        panel = type("P", (), {"reply_mod": mod})()
+        return type("A", (), {"__init__": ns["__init__"], "copy_area": ns["copy_area"]})(panel), got, mod
+
+    def test_the_text_goes_on_the_clipboard_as_it_is(self):
+        a, got, _ = self.api()
+        self.assertTrue(a.copy_area("| a |\n|---|\n\n```js\nx\n```"))
+        self.assertEqual(got, ["| a |\n|---|\n\n```js\nx\n```"])
+
+    def test_nothing_to_copy_or_a_busy_clipboard_is_false(self):
+        a, got, mod = self.api()
+        self.assertFalse(a.copy_area(""))
+        self.assertEqual(got, [])
+        mod.set_clipboard_text = staticmethod(lambda t: False)
+        self.assertFalse(a.copy_area("x"))
 
 
 # The folder in the head's line: a link drawn as the replies' links are; a press released in place opens it (the head

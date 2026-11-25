@@ -35,7 +35,11 @@
      prompt), then one chip per pin in the order pinned (its first words, its time, an x that unpins it). A chip
      shows its reply in place of the latest ones, answer boxes and Send to Session as on them; Latest, a tab press or
      another session coming up shows the latest replies again. agent-panel.pyw keeps the pins with their text, 8 per
-     session at most: a 9th asks, in a line under the head, to unpin the oldest first. -->
+     session at most: a 9th asks, in a line under the head, to unpin the oldest first.
+     The area (2026-11-25): a drag that starts on blank space in the replies draws a rectangle (corners and edges
+     resize it, inside moves it, past the top or bottom edge the replies scroll); every block it touches is tinted
+     whole, and Copy at its corner copies those blocks as Claude wrote them. A drag that starts on text still selects
+     text; a click still opens the answer box. Esc or a press outside clears it. -->
 <style>
 :root {
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
@@ -116,7 +120,7 @@ body.moving, body.moving * { cursor: grabbing !important; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .meta b { font-weight: 600; color: var(--text); }
 .meta:empty { display: none; }
-#body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 28px 10px var(--edge);
+#body { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 28px 10px var(--edge);
   scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 #replies { display: flow-root; }  /* holds its children's margins, so its height is the content's (natural()) */
 /* one reply; several are parted by a hairline and the time each came */
@@ -202,6 +206,28 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .ghost { position: absolute; pointer-events: none; border-style: solid; border-color: transparent; color: var(--blue);
   white-space: pre-wrap; overflow-wrap: break-word; }
 .ghost .tail { opacity: .5; }
+/* the area: a rectangle drawn by a drag that starts on blank space in the replies; its corners and edges resize it,
+   a drag inside moves it; the blocks it touches are tinted whole, and Copy at its corner copies them as markdown */
+body.areaing, body.areaing * { user-select: none; }
+body.drawing #body, body.drawing #body * { cursor: crosshair !important; }
+#area { position: absolute; z-index: 5; border: 1.5px solid var(--blue); border-radius: 2px; background: rgba(27, 77, 245, .05);
+  cursor: move; }
+#area[hidden], #areaCopy[hidden] { display: none; }
+#area .eg, #area .hd { position: absolute; }
+#area .eg[data-e="n"], #area .eg[data-e="s"] { left: 6px; right: 6px; height: 9px; cursor: ns-resize; }
+#area .eg[data-e="e"], #area .eg[data-e="w"] { top: 6px; bottom: 6px; width: 9px; cursor: ew-resize; }
+#area .eg[data-e="n"] { top: -5px; }
+#area .eg[data-e="s"] { bottom: -5px; }
+#area .eg[data-e="w"] { left: -5px; }
+#area .eg[data-e="e"] { right: -5px; }
+#area .hd { width: 10px; height: 10px; border: 1.5px solid var(--blue); border-radius: 2px; background: var(--panel); }
+#area .hd[data-e="nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
+#area .hd[data-e="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
+#area .hd[data-e="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+#area .hd[data-e="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+#areaCopy { position: absolute; z-index: 6; animation: drop .16s var(--snap); }
+#replies .inarea, #replies .inarea:hover { background-color: rgba(27, 77, 245, .09); }
+#replies .code.inarea { border-color: rgba(27, 77, 245, .45); }
 #empty { color: var(--muted); padding: 6px 0; }
 #empty[hidden], #miss[hidden] { display: none; }
 /* selections that are not in the reply text */
@@ -235,7 +261,7 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 <body>
 <div id="head"><div class="tabrow"><div class="tabs" id="tabs"></div><button type="button" id="fold" tabindex="-1"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4"/></svg></button></div><div class="chips" id="chips"></div><div class="meta" id="meta"></div></div>
 <div id="ask" role="alert" hidden></div>
-<div id="body"><div id="empty" hidden></div><div id="replies"></div></div>
+<div id="body"><div id="empty" hidden></div><div id="replies"></div><div id="area" hidden><i class="eg" data-e="n"></i><i class="eg" data-e="s"></i><i class="eg" data-e="w"></i><i class="eg" data-e="e"></i><i class="hd" data-e="nw"></i><i class="hd" data-e="ne"></i><i class="hd" data-e="sw"></i><i class="hd" data-e="se"></i></div><button type="button" class="b primary" id="areaCopy" tabindex="-1" hidden><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg><span>Copy</span></button></div>
 <div id="miss" hidden></div>
 <div id="foot"><span id="count"></span><span id="say" role="status"></span>
   <button type="button" class="b" id="copy"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
@@ -260,57 +286,59 @@ const opened = new Set();  // paragraph keys whose answer box is open while empt
 function blocks(text) {
   const lines = text.replace(/\r\n/g, "\n").split("\n"), out = [];
   // every block a box can answer carries last: the index of its last line in text's lines, where Send to Session
-  // puts its answer (agent-reply.py answer_block())
+  // puts its answer (agent-reply.py answer_block()); every block carries from and to, its first and last line, so the
+  // area's Copy takes it as Claude wrote it (areaMarkdown())
   let i = 0, para = null, paraAt = 0;
-  const flush = () => { if (para) { out.push({kind: "p", src: para.join("\n"), last: paraAt + para.length - 1}); para = null; } };
+  const flush = () => { if (para) { out.push({kind: "p", src: para.join("\n"), last: paraAt + para.length - 1, from: paraAt, to: paraAt + para.length - 1}); para = null; } };
   while (i < lines.length) {
     const line = lines[i];
     const fence = line.match(/^ {0,3}(`{3,}|~{3,})\s*([\w+#.-]*)/);
     if (fence) {
       flush();
-      const body = [];
+      const body = [], from = i;
       i++;
       while (i < lines.length && !(lines[i].trim().startsWith(fence[1]) && !lines[i].trim().slice(fence[1].length).trim())) body.push(lines[i++]);
+      const to = Math.min(i, lines.length - 1);
       i++;
-      out.push({kind: "code", lang: fence[2] || "", lines: body});
+      out.push({kind: "code", lang: fence[2] || "", lines: body, from, to});
       continue;
     }
     if (!line.trim()) { flush(); i++; continue; }
     let m;
-    if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flush(); out.push({kind: "h", level: m[1].length, src: line, text: m[2], last: i}); i++; continue; }
-    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); out.push({kind: "hr"}); i++; continue; }
+    if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) { flush(); out.push({kind: "h", level: m[1].length, src: line, text: m[2], last: i, from: i, to: i}); i++; continue; }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); out.push({kind: "hr", from: i, to: i}); i++; continue; }
     if (line.includes("|") && i + 1 < lines.length && SEP.test(lines[i + 1]) && lines[i + 1].includes("|")) {
       // a table (GFM): a header row, the row of dashes (colons set each column's alignment), then every
       // following line holding a "|"; the whole table is one paragraph, its source as Claude wrote it
       flush();
-      const head = cells(line), align = cells(lines[i + 1]).map(c => /^:-+:$/.test(c) ? "center" : /-:$/.test(c) ? "right" : /^:-/.test(c) ? "left" : "");
+      const from = i, head = cells(line), align = cells(lines[i + 1]).map(c => /^:-+:$/.test(c) ? "center" : /-:$/.test(c) ? "right" : /^:-/.test(c) ? "left" : "");
       const src = [line, lines[i + 1]], rows = [];
       i += 2;
       while (i < lines.length && lines[i].trim() && lines[i].includes("|")) { src.push(lines[i]); rows.push(cells(lines[i])); i++; }
-      out.push({kind: "table", src: src.join("\n"), head, align, rows, last: i - 1});
+      out.push({kind: "table", src: src.join("\n"), head, align, rows, last: i - 1, from, to: i - 1});
       continue;
     }
     if (/^\s*\|/.test(line)) {  // lines that start with "|" but are no table: kept as written, in monospace
       flush();
-      const rows = [];
+      const rows = [], from = i;
       while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
-      out.push({kind: "pre", src: rows.join("\n"), last: i - 1});
+      out.push({kind: "pre", src: rows.join("\n"), last: i - 1, from, to: i - 1});
       continue;
     }
     if ((m = line.match(/^\s*>\s?(.*)$/))) {
       flush();
-      const rows = [];
+      const rows = [], from = i;
       while (i < lines.length && (m = lines[i].match(/^\s*>\s?(.*)$/))) { rows.push(m[1]); i++; }
-      out.push({kind: "quote", src: rows.map(r => "> " + r).join("\n"), text: rows.join("\n"), last: i - 1});
+      out.push({kind: "quote", src: rows.map(r => "> " + r).join("\n"), text: rows.join("\n"), last: i - 1, from, to: i - 1});
       continue;
     }
     if ((m = line.match(/^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/))) {
       flush();
-      const src = [line], text = [m[3]], indent = m[1].length;
+      const src = [line], text = [m[3]], indent = m[1].length, from = i;
       i++;
       while (i < lines.length && lines[i].trim() && !/^(\s*)([-*+]|\d{1,3}[.)])\s+/.test(lines[i]) &&
              !/^ {0,3}(`{3,}|~{3,})/.test(lines[i]) && /^\s+/.test(lines[i])) { src.push(lines[i]); text.push(lines[i].trim()); i++; }
-      out.push({kind: "li", src: src.join("\n"), marker: /\d/.test(m[2]) ? m[2] : "•", indent, text: text.join(" "), last: i - 1});
+      out.push({kind: "li", src: src.join("\n"), marker: /\d/.test(m[2]) ? m[2] : "•", indent, text: text.join(" "), last: i - 1, from, to: i - 1});
       continue;
     }
     if (!para) { para = []; paraAt = i; }
@@ -409,6 +437,51 @@ function tabTarget(n, i, back) {
 // focused element after the user went to another window, so without `focused` the hold never ended and the tab no
 // longer followed the terminal in front (2026-11-25). The box's text is not lost: it is the session's draft.
 function holdsUpdates(o) { return !!(o.box && o.focused) || !!o.dictating; }
+
+// The area (asked 2026-11-25): a drag in the replies draws a rectangle; every block it touches is copied whole, as
+// Claude wrote it. Where the press goes down decides, so a plain click and a drag over words keep working as before:
+//   a press with another button than the left, or on a control (a link, a button, an answer box, a ":N" badge), or
+//     on the scroll bar: the control's own
+//   a press on a character of text (within AREA_SLACK px of it): the browser's own text selection
+//   a press on blank space (the margins, the gaps between blocks, right of a short line): a drag from it draws the
+//     rectangle once the pointer has gone 4 px (a click there stays a click, so a paragraph's box still opens)
+// c: {button, ctl, scrollbar, text}. Answers "area", "text" or "".
+function areaPress(c) {
+  if (c.button !== 0 || c.ctl || c.scrollbar) return "";
+  return c.text ? "text" : "area";
+}
+// The rectangle after a drag: r {x, y, w, h} where the press found it, how "move" or the edges held ("n", "se", …;
+// a new rectangle is drawn as its "se" corner from the press), dx and dy the pointer's travel since the press, b
+// {w, h} the replies' own size. Kept inside b; dragged past its opposite edge, an edge turns over.
+function areaResize(r, how, dx, dy, b) {
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  if (how === "move") return {x: clamp(r.x + dx, 0, Math.max(0, b.w - r.w)), y: clamp(r.y + dy, 0, Math.max(0, b.h - r.h)), w: r.w, h: r.h};
+  let x1 = r.x, y1 = r.y, x2 = r.x + r.w, y2 = r.y + r.h;
+  if (how.includes("w")) x1 += dx;
+  if (how.includes("e")) x2 += dx;
+  if (how.includes("n")) y1 += dy;
+  if (how.includes("s")) y2 += dy;
+  [x1, x2] = [clamp(Math.min(x1, x2), 0, b.w), clamp(Math.max(x1, x2), 0, b.w)];
+  [y1, y2] = [clamp(Math.min(y1, y2), 0, b.h), clamp(Math.max(y1, y2), 0, b.h)];
+  return {x: x1, y: y1, w: x2 - x1, h: y2 - y1};
+}
+// What the area's Copy puts on the clipboard: texts, the replies shown in order; picks [[reply index, [block
+// indexes]]] in reading order. Each reply's blocks go as the lines Claude wrote (links, tables, code fences
+// intact); blocks next to each other go as one stretch of the reply, with what stood between them; any other two
+// pieces, and two replies, are parted by a blank line.
+function areaMarkdown(texts, picks) {
+  const out = [];
+  for (const [r, ns] of picks) {
+    const text = String(texts[r] || ""), lines = text.replace(/\r\n/g, "\n").split("\n"), bs = blocks(text), runs = [];
+    for (const n of [...new Set(ns)].sort((a, b) => a - b)) {
+      const b = bs[n], last = runs[runs.length - 1];
+      if (!b) continue;
+      if (last && last.n === n - 1) { last.to = b.to; last.n = n; } else runs.push({from: b.from, to: b.to, n});
+    }
+    for (const run of runs) { const t = lines.slice(run.from, run.to + 1).join("\n").replace(/\s+$/, ""); if (t.trim()) out.push(t); }
+  }
+  return out.join("\n\n");
+}
 
 // Space in an answer box: hold it to speak, as Claude Code's own hold-to-talk feels. Its rule, read from Claude Code
 // 2.1.330 (a terminal has no key-up, so the key's own repeat tells a hold): the first Space types a space; from the
@@ -568,6 +641,10 @@ function draw() {
     const tip = on ? "Unpins this reply: its chip under the tabs goes" : "Keeps this reply as a chip under the tabs, after newer prompts and restarts";
     return `<div class="reply" data-id="${esc(r.id)}"><div class="rtop"><span class="when">${esc(r.when || "")}</span><button type="button" class="rpin${on ? " on" : ""}" aria-pressed="${on}" aria-label="Pin this reply" data-tip="${tip}">Pin</button></div>${bs.map((b, n) => blockHtml(b, r.id + "#" + n)).join("")}</div>`;
   }).join("");
+  // every block (code blocks and rules too) knows its place in its reply, for the area's Copy (areaMarkdown());
+  // the area itself goes: the blocks it touched are not drawn any more
+  list.querySelectorAll(".reply").forEach(rep => [...rep.children].filter(el => !el.classList.contains("rtop")).forEach((el, n) => { el.dataset.n = n; }));
+  areaClear();
   $("empty").hidden = !!reps.length;
   $("empty").textContent = reps.length ? "" : (S.note || "");
   for (const key of new Set([...opened, ...Object.keys(answers)])) {
@@ -1245,6 +1322,7 @@ document.addEventListener("keydown", e => {
 let down = null;
 document.getElementById("body").addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY}; }, true);
 document.addEventListener("click", e => {
+  if (aswallow) { aswallow = false; return; }  // the press that cleared the area (areaClear()) does nothing else
   const pb = e.target.closest(".rpin");
   if (pb) { pinDo(pb.classList.contains("on") ? "unpin" : "pin", pb.closest(".reply").dataset.id); return; }
   const sw = e.target.closest("#ask [data-swap]");
@@ -1372,6 +1450,171 @@ $("send").addEventListener("click", () => {
     count();
   });
 });
+
+// ---------- the area: a drag on blank space draws a rectangle; the blocks it touches copy as markdown ----------
+// areaPress() decides what a press starts. The rectangle lives in #body's own coordinates, so it scrolls with the
+// replies; dragged within AREA_ZONE px of the top or bottom edge (or past it) the replies scroll, faster the further
+// out, so it can span more than one screen. Esc, a press outside it, or a redraw clears it.
+const AREA_SLACK = 3, AREA_ZONE = 28, AREA_STEP = 24, AREA_MOVE = 4;
+let area = null, adrag = null, apend = null, aswallow = false, ascroll = null, acopied = null;
+function areaBounds() {  // the replies' own size in #body's coordinates (the window is as tall as they are)
+  const b = $("body"), rp = $("replies");
+  return {w: b.clientWidth, h: rp.offsetTop + rp.offsetHeight + parseFloat(getComputedStyle(b).paddingBottom)};
+}
+function bodyPt(x, y) { const b = $("body"), r = b.getBoundingClientRect(); return {x: x - r.left + b.scrollLeft, y: y - r.top + b.scrollTop}; }
+function onGlyph(x, y) {  // whether (x, y) is on a character of text (a space between words too)
+  const r = document.caretRangeFromPoint && document.caretRangeFromPoint(x, y);
+  if (!r || r.startContainer.nodeType !== 3) return false;
+  const n = r.startContainer;
+  for (const j of [r.startOffset - 1, r.startOffset]) {
+    if (j < 0 || j >= n.length) continue;
+    const g = document.createRange();
+    g.setStart(n, j);
+    g.setEnd(n, j + 1);
+    for (const q of g.getClientRects())
+      if (x >= q.left - AREA_SLACK && x <= q.right + AREA_SLACK && y >= q.top - AREA_SLACK && y <= q.bottom + AREA_SLACK) return true;
+  }
+  return false;
+}
+function areaBlocks() {  // the blocks the rectangle touches, in reading order: [{el, r: reply index, n: block index}]
+  if (!area) return [];
+  const out = [];
+  $("replies").querySelectorAll(".reply").forEach((rep, r) => {
+    for (const el of rep.querySelectorAll(":scope > [data-n]")) {
+      const q = el.getBoundingClientRect(), p = bodyPt(q.left, q.top);
+      if (p.x < area.x + area.w && p.x + q.width > area.x && p.y < area.y + area.h && p.y + q.height > area.y) out.push({el, r, n: +el.dataset.n});
+    }
+  });
+  return out;
+}
+function areaPicks(bs) {  // areaBlocks() as areaMarkdown() takes them
+  const picks = [];
+  for (const b of bs) { const last = picks[picks.length - 1]; if (last && last[0] === b.r) last[1].push(b.n); else picks.push([b.r, [b.n]]); }
+  return picks;
+}
+function areaPaint() {
+  const el = $("area"), cp = $("areaCopy"), bs = areaBlocks(), on = new Set(bs.map(b => b.el));
+  $("replies").querySelectorAll(".inarea").forEach(b => { if (!on.has(b)) b.classList.remove("inarea"); });
+  on.forEach(b => b.classList.add("inarea"));
+  el.hidden = !area;
+  cp.hidden = !area || !!adrag || !bs.length;
+  if (!area) return;
+  Object.assign(el.style, {left: area.x + "px", top: area.y + "px", width: area.w + "px", height: area.h + "px"});
+  if (cp.hidden) return;
+  // Copy under the rectangle's bottom right corner; above its top right one when the replies end first; else inside
+  const bd = areaBounds(), w = cp.offsetWidth, h = cp.offsetHeight;
+  let y = area.y + area.h + 8;
+  if (y + h > bd.h) y = area.y - h - 8 >= 0 ? area.y - h - 8 : area.y + area.h - h - 8;
+  cp.style.left = Math.max(0, Math.min(area.x + area.w - w, bd.w - w)) + "px";
+  cp.style.top = Math.max(0, y) + "px";
+  const n = bs.length;
+  cp.dataset.tip = `Copies the ${n === 1 ? "highlighted block" : n + " highlighted blocks"} as Claude wrote them (markdown). Esc clears the area.`;
+}
+function areaClear() {
+  if (!area && !adrag && !apend) return;
+  area = adrag = apend = null;
+  cancelAnimationFrame(ascroll);
+  ascroll = null;
+  document.body.classList.remove("areaing", "drawing");
+  areaCopied(false);
+  areaPaint();
+}
+function areaFollow() {  // the rectangle where the pointer has taken it (the replies may have scrolled meanwhile)
+  const p = bodyPt(adrag.cx, adrag.cy);
+  area = areaResize(adrag.r0, adrag.how, p.x - adrag.px, p.y - adrag.py, areaBounds());
+  areaPaint();
+}
+function areaScroll() {  // while a drag is near or past the top or bottom edge: scroll, and the rectangle follows
+  ascroll = null;
+  if (!adrag) return;
+  const b = $("body"), r = b.getBoundingClientRect();
+  const up = r.top + AREA_ZONE - adrag.cy, down = adrag.cy - (r.bottom - AREA_ZONE);
+  const v = up > 0 ? -Math.min(AREA_STEP, Math.ceil(up / 3)) : down > 0 ? Math.min(AREA_STEP, Math.ceil(down / 3)) : 0;
+  if (!v) return;
+  const before = b.scrollTop;
+  b.scrollTop += v;
+  if (b.scrollTop !== before) areaFollow();
+  ascroll = requestAnimationFrame(areaScroll);
+}
+function areaGo(e, how, r0, at) {  // a drag of the rectangle starts: drawn, resized or moved
+  adrag = {id: e.pointerId, how, r0, px: at.x, py: at.y, cx: e.clientX, cy: e.clientY};
+  document.body.classList.add("areaing");
+  document.body.classList.toggle("drawing", !area);
+  getSelection().removeAllRanges();
+  tipHide();
+}
+function areaEnd() {
+  if (!adrag) return;
+  adrag = null;
+  cancelAnimationFrame(ascroll);
+  ascroll = null;
+  document.body.classList.remove("areaing", "drawing");
+  if (!areaBlocks().length) { areaClear(); return; }  // it touches nothing: no rectangle is left behind
+  areaPaint();
+}
+function areaCopied(on) {
+  clearTimeout(acopied);
+  acopied = on ? setTimeout(() => areaCopied(false), 1500) : null;
+  $("areaCopy").lastElementChild.textContent = on ? "Copied" : "Copy";
+}
+// a press anywhere outside the rectangle clears it; in the replies, that press's click does nothing else
+document.addEventListener("pointerdown", e => {
+  aswallow = false;
+  if (!area || e.target.closest("#area, #areaCopy")) return;
+  areaClear();
+  aswallow = !!e.target.closest("#body");
+}, true);
+$("body").addEventListener("pointerdown", e => {
+  if (e.target.closest("#area, #areaCopy")) return;
+  const b = $("body"), r = b.getBoundingClientRect();
+  const c = {button: e.button, ctl: !!e.target.closest("button, a, textarea, .ansrow, .qb, .lnote"), scrollbar: e.clientX - r.left >= b.clientWidth};
+  if (!c.ctl && !c.scrollbar) c.text = onGlyph(e.clientX, e.clientY);
+  if (areaPress(c) !== "area") return;
+  if (typing()) document.activeElement.blur();  // as a press on blank space always did: the box is left
+  apend = Object.assign({id: e.pointerId, cx: e.clientX, cy: e.clientY}, bodyPt(e.clientX, e.clientY));
+});
+// no text selection starts from blank space (the click still comes, so a paragraph's box opens as before)
+$("body").addEventListener("mousedown", e => { if (apend) e.preventDefault(); });
+$("area").addEventListener("pointerdown", e => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  try { $("area").setPointerCapture(e.pointerId); } catch (_) {}
+  areaGo(e, e.target.dataset.e || "move", Object.assign({}, area), bodyPt(e.clientX, e.clientY));
+  areaPaint();
+});
+addEventListener("pointermove", e => {
+  if (apend && e.pointerId === apend.id) {
+    if (!(e.buttons & 1)) { apend = null; return; }
+    if (Math.hypot(e.clientX - apend.cx, e.clientY - apend.cy) < AREA_MOVE) return;
+    const at = {x: apend.x, y: apend.y};
+    apend = null;
+    try { $("body").setPointerCapture(e.pointerId); } catch (_) {}
+    areaGo(e, "se", {x: at.x, y: at.y, w: 0, h: 0}, at);
+  }
+  if (adrag && e.pointerId === adrag.id) {
+    adrag.cx = e.clientX;
+    adrag.cy = e.clientY;
+    areaFollow();
+    if (!ascroll) ascroll = requestAnimationFrame(areaScroll);
+  }
+});
+addEventListener("pointerup", e => {
+  if (apend && e.pointerId === apend.id) apend = null;  // a click: the paragraph's own (clickAction())
+  if (adrag && e.pointerId === adrag.id) areaEnd();
+});
+addEventListener("pointercancel", () => { apend = null; areaEnd(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && area && !(e.target.classList && e.target.classList.contains("ans"))) { e.preventDefault(); areaClear(); }
+}, true);
+$("areaCopy").addEventListener("click", () => {
+  const text = areaMarkdown(shownReplies().map(r => r.text), areaPicks(areaBlocks()));
+  if (!text) return;
+  Promise.resolve(api().copy_area(text)).then(ok => {
+    if (ok) areaCopied(true);
+    else say("Could not copy: another program holds the clipboard. Try again.", true);
+  });
+});
+addEventListener("resize", () => { if (area) { area = areaResize(area, "move", 0, 0, areaBounds()); areaPaint(); } });
 
 // ---------- tooltip: as the panel's (mindmap tooltip.md) ----------
 let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;

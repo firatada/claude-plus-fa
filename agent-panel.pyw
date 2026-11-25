@@ -2603,6 +2603,13 @@ class ReplyApi:
         except Exception:
             return False
 
+    def copy_area(self, text):
+        # the area's Copy: the blocks the rectangle touches, as their markdown (the page's areaMarkdown())
+        try:
+            return bool(text) and self._p.reply_mod.set_clipboard_text(str(text))
+        except Exception:
+            return False
+
 
 class ColumnApi:
     """What the column of an opened card (agent-column.html) may call."""

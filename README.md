@@ -88,6 +88,7 @@ Answer Claude's reply where you read it, paragraph by paragraph.
 - With no answer typed, **Copy** and **Send to Session** take the reply as it is.
 - Click **Pin** at the top right of a reply to keep it: it becomes a chip under the tabs, still there after newer prompts and restarts. Click the chip to read and answer it again, **Latest** to go back, its x to unpin it. A session keeps 8 pins.
 - **Copy** puts the same line and the paragraphs on the clipboard, to paste anywhere else.
+- To copy only part of what is shown, drag from blank space (the margin, the gap between two blocks, or the empty space right of a short line) to draw a rectangle. Every block it touches is highlighted whole; drag a corner or an edge to resize it, drag inside it to move it, or drag past the top or bottom edge to scroll. Click the **Copy** at its corner to copy those blocks as Claude wrote them (markdown: links, tables and code blocks intact). Esc or a click outside clears it. A drag that starts on text still selects text, and a click still opens the answer box.
 - The arrow at the top right folds the window to its tabs; click it or a tab to open it again. Drag the tabs' row to move the window and the strip together.
 - Send to Session types only into the session's own terminal window, at the cursor. Text already in the prompt stays as it is.
 - Codex sessions are not shown.
