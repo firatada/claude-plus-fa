@@ -1350,9 +1350,10 @@ class Page(unittest.TestCase):
 
 
 # The area in the real page (headless Edge, events dispatched to the page, never to a window): a drag from the margin
-# across two replies draws the rectangle and tints the blocks it touches; a corner drag resizes it; Copy hands the
-# panel those blocks' markdown and says "Copied"; Esc clears it; a press outside clears it and opens no box; a plain
-# click on a paragraph still opens its box; a drag that starts on text draws no rectangle.
+# across two replies draws the rectangle, tints the blocks it touches and hands the panel their markdown at once,
+# with a quiet "Copied" at its corner for about a second (no Copy button); a corner drag resizes it and copies again;
+# a press in place copies nothing; Esc clears it; a press outside clears it and opens no box; a plain click on a
+# paragraph still opens its box; a drag that starts on text draws no rectangle and copies nothing.
 AREA_TEST = r"""<pre id="tout"></pre><script>
 const later = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
@@ -1370,21 +1371,28 @@ const later = ms => new Promise(r => setTimeout(r, ms));
     await later(30);
   };
   const box = s => document.querySelector(s).getBoundingClientRect();
-  const o = {}, body = document.getElementById("body"), area = document.getElementById("area"), cp = document.getElementById("areaCopy");
+  const o = {}, body = document.getElementById("body"), area = document.getElementById("area"), nt = document.getElementById("areaNote");
+  o.button = !!document.getElementById("areaCopy");
   const tbl = box("#replies .para.table"), second = [...document.querySelectorAll("#replies .reply")][1].querySelector(".para").getBoundingClientRect();
   await drag(body, box("#body").left + 4, tbl.top + 2, 300, second.top + 4);
-  o.drawn = {shown: !area.hidden, copy: !cp.hidden, tinted: [...document.querySelectorAll(".inarea")].map(e => e.closest(".reply").dataset.id + "#" + e.dataset.n),
-    boxes: document.querySelectorAll(".ansrow").length, sel: getSelection().toString()};
+  const note = () => ({shown: !nt.hidden, text: nt.textContent, button: nt.tagName === "BUTTON" || nt.classList.contains("b"),
+    atCorner: !nt.hidden && Math.abs(nt.getBoundingClientRect().right - area.getBoundingClientRect().right) < 2});
+  o.drawn = {shown: !area.hidden, tinted: [...document.querySelectorAll(".inarea")].map(e => e.closest(".reply").dataset.id + "#" + e.dataset.n),
+    boxes: document.querySelectorAll(".ansrow").length, sel: getSelection().toString(), copied: (T.area || []).slice(), note: note()};
+  await later(1200);
+  o.noteGone = nt.hidden;
   const se = box("#area .hd[data-e=se]"), h0 = area.offsetHeight, last = [...document.querySelectorAll("#replies .reply")][1].querySelectorAll(".para")[1].getBoundingClientRect();
   await drag(document.querySelector("#area .hd[data-e=se]"), se.left + 4, se.top + 4, se.left + 24, last.top + 8);
   o.resized = [Math.round(area.offsetHeight - h0 - (last.top + 4 - se.top)), [...document.querySelectorAll(".inarea")].length];
-  cp.click();
-  await later(30);
-  o.copied = T.area;
-  o.label = cp.textContent;
+  o.copied = T.area.slice();
+  o.label = note();
+  const mid = area.getBoundingClientRect();
+  ev(area, "pointerdown", mid.left + 30, mid.top + 30); ev(area, "pointerup", mid.left + 30, mid.top + 30);
+  await later(20);
+  o.inPlace = T.area.length;
   document.body.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true}));
   await later(20);
-  o.esc = [area.hidden, cp.hidden, document.querySelectorAll(".inarea").length];
+  o.esc = [area.hidden, nt.hidden, document.querySelectorAll(".inarea").length];
   await drag(body, box("#body").left + 4, tbl.top + 2, 300, tbl.bottom);
   o.lone = [document.activeElement.closest(".ansrow") && document.activeElement.closest(".ansrow").dataset.for, document.querySelectorAll(".agroup").length];
   const p1 = document.querySelector("#replies .para"), q = p1.getBoundingClientRect();
@@ -1397,8 +1405,9 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   o.click = document.querySelectorAll(".ansrow").length;  // a plain click still opens the box
   document.activeElement.blur();
   const t = document.querySelector("#replies .reply:nth-child(2) .para"), tq = t.getBoundingClientRect(), n0 = document.querySelectorAll(".ansrow").length;
+  const nCopies = T.area.length;
   await drag(t, tq.left + 2, tq.top + tq.height / 2, tq.left + 60, tq.top + tq.height / 2);
-  o.textDrag = [area.hidden, document.querySelectorAll(".ansrow").length - n0];  // no rectangle, no box opened or shut
+  o.textDrag = [area.hidden, document.querySelectorAll(".ansrow").length - n0, T.area.length - nCopies];  // no rectangle, no box opened or shut, no copy
   document.getElementById("tout").textContent = JSON.stringify(o);
 })().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
 </script>
@@ -1411,25 +1420,34 @@ class AreaPage(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.o = page_run(AREA_TEST)
+        cls.o = page_run(AREA_TEST, budget=6000)
 
     def test_no_error(self):
         self.assertNotIn("error", self.o)
 
     def test_a_drag_from_the_margin_draws_it_across_two_replies(self):
         d = self.o["drawn"]
-        self.assertTrue(d["shown"] and d["copy"])
+        self.assertTrue(d["shown"])
         self.assertEqual(d["tinted"], ["m1#1", "m1#2", "m2#0"])  # the table, the code block, the second reply's first
         self.assertEqual((d["boxes"], d["sel"]), (0, ""))  # no answer box, no text selected
+
+    def test_the_drag_ending_copies_at_once_with_a_quiet_note_and_no_button(self):
+        d = self.o["drawn"]
+        self.assertEqual(d["copied"], ["| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```\n\nSecond reply."])
+        self.assertEqual(d["note"], {"shown": True, "text": "Copied", "button": False, "atCorner": True})
+        self.assertTrue(self.o["noteGone"])  # gone after about a second
+        self.assertFalse(self.o["button"])
 
     def test_a_corner_drag_resizes_it(self):
         grew, tinted = self.o["resized"]
         self.assertEqual(grew, 0)  # by exactly the pointer's travel
         self.assertEqual(tinted, 4)
 
-    def test_copy_hands_the_panel_the_markdown(self):
-        self.assertEqual(self.o["copied"], ["| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```\n\nSecond reply.\n\nLast."])
-        self.assertEqual(self.o["label"], "Copied")
+    def test_a_resize_copies_again_and_a_press_in_place_does_not(self):
+        self.assertEqual(self.o["copied"][1:], ["| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```\n\nSecond reply.\n\nLast."])
+        self.assertEqual(len(self.o["copied"]), 2)
+        self.assertEqual((self.o["label"]["shown"], self.o["label"]["text"]), (True, "Copied"))
+        self.assertEqual(self.o["inPlace"], 2)
 
     def test_one_block_alone_opens_its_own_box_and_no_frame(self):
         self.assertEqual(self.o["lone"], ["m1#1", 0])
@@ -1440,7 +1458,7 @@ class AreaPage(unittest.TestCase):
 
     def test_a_click_and_a_drag_over_text_work_as_before(self):
         self.assertEqual(self.o["click"], 1)
-        self.assertEqual(self.o["textDrag"], [True, 0])
+        self.assertEqual(self.o["textDrag"], [True, 0, 0])
 
 
 # An area answered as a whole, in the real page (headless Edge, events dispatched to the page): a drag across a
@@ -1471,10 +1489,11 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   const key = (t, k) => t.dispatchEvent(new KeyboardEvent("keydown", {key: k, bubbles: true, cancelable: true}));
   const o = {};
   await drag(left, B(1).top + 4, 400, B(4).top + 6);
-  const t = document.activeElement, cp = document.getElementById("areaCopy"), ar = document.getElementById("area");
+  const t = document.activeElement, nt = document.getElementById("areaNote"), ar = document.getElementById("area");
   o.opened = {focus: t.closest(".ansrow") && t.closest(".ansrow").dataset.for, isArea: t.closest(".ansrow").classList.contains("area"),
-    frame: frame(), last: t.closest(".ansrow").previousElementSibling.dataset.n, ph: t.placeholder, copy: !cp.hidden,
-    copyAbove: cp.getBoundingClientRect().bottom <= ar.getBoundingClientRect().top + 1};
+    frame: frame(), last: t.closest(".ansrow").previousElementSibling.dataset.n, ph: t.placeholder, note: !nt.hidden,
+    noteAbove: nt.getBoundingClientRect().bottom <= ar.getBoundingClientRect().top + 1, copied: (T.area || []).length,
+    caret: [t.selectionStart, t.selectionEnd, t.value.length]};
   typeIn(t, "Onaylıyorum");
   await later(400);
   o.typed = {count: document.getElementById("count").textContent, draft: T.drafts.slice(-1)[0]};
@@ -1530,11 +1549,13 @@ class AreaAnswerPage(unittest.TestCase):
     def test_no_error(self):
         self.assertNotIn("error", self.o)
 
-    def test_a_drag_frames_the_blocks_and_opens_one_box_under_the_last_beside_copy(self):
+    def test_a_drag_frames_the_blocks_copies_them_and_opens_one_box_under_the_last(self):
         o = self.o["opened"]
         self.assertEqual((o["focus"], o["isArea"], o["frame"], o["last"]), ("m1#1-4", True, [[1, 2, 3, 4]], "4"))
         self.assertEqual(o["ph"], "Type your answer, or hold Space to speak…")
-        self.assertTrue(o["copy"] and o["copyAbove"])  # Copy stays, above the rectangle so it covers no answer
+        self.assertEqual(o["copied"], 1)  # copied at once; the box keeps the keyboard and the caret
+        self.assertEqual(o["caret"], [0, 0, 0])
+        self.assertTrue(o["note"] and o["noteAbove"])  # "Copied" above the rectangle, so it covers no answer
 
     def test_the_answer_is_a_draft_under_the_areas_key_and_counted(self):
         sid, key, passage, text = self.o["typed"]["draft"]
@@ -1575,6 +1596,59 @@ class AreaAnswerPage(unittest.TestCase):
                          "My answer: Only this one needs a test.\n\n"
                          'My answer to all 4 blocks from "## 1. İki bölümü kaldırmak" down to here, as a whole: Onaylıyorum\n\n'
                          "> After.")
+
+
+# An area resized while its empty box has the keyboard (headless Edge): the old box goes without an error (Chromium
+# fires its focusout while it is being removed), the grown area gets its own box with the caret, and the blocks are
+# copied again.
+AREA_RESIZE_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+const errs = [];
+addEventListener("error", e => errs.push(e.message));
+(async () => {
+  const R = "Intro.\n\n## Plan\n\n1. One\n2. Two\n3. Three\n\nAfter.";
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: R}], answers: {}, selections: [], note: "", pins: []});
+  await later(50);
+  const ev = (el, type, x, y) => el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type,
+    {bubbles: true, cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1,
+     pointerType: "mouse", isPrimary: true, clientX: x, clientY: y}));
+  const drag = async (el, x0, y0, x1, y1) => {
+    ev(el, "pointerdown", x0, y0); ev(el, "mousedown", x0, y0);
+    for (let k = 1; k <= 5; k++) ev(el, "pointermove", x0 + (x1 - x0) * k / 5, y0 + (y1 - y0) * k / 5);
+    ev(el, "pointerup", x1, y1); ev(el, "mouseup", x1, y1); ev(el, "click", x1, y1);
+    await later(30);
+  };
+  const B = n => document.querySelector(`#replies [data-n="${n}"]`).getBoundingClientRect(), left = document.getElementById("body").getBoundingClientRect().left + 4;
+  const frame = () => [...document.querySelectorAll(".agroup")].map(g => [...g.querySelectorAll("[data-n]")].map(e => +e.dataset.n));
+  const o = {};
+  await drag(document.getElementById("body"), left, B(1).top + 4, 400, B(3).top + 6);
+  o.first = [document.activeElement.closest(".ansrow").dataset.for, frame()];
+  const se = document.querySelector("#area .hd[data-e=se]"), q = se.getBoundingClientRect();
+  await drag(se, q.left + 4, q.top + 4, q.left + 40, B(4).top + 8);
+  const t = document.activeElement;
+  o.resized = [t.closest(".ansrow") && t.closest(".ansrow").dataset.for, frame(), document.querySelectorAll(".ansrow").length, t.selectionStart];
+  o.copied = T.area;
+  o.errs = errs;
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class AreaResizePage(unittest.TestCase):
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(AREA_RESIZE_TEST)
+
+    def test_a_resize_with_the_empty_box_focused_moves_the_box_and_copies_again(self):
+        self.assertNotIn("error", self.o)
+        self.assertEqual(self.o["errs"], [])
+        self.assertEqual(self.o["first"], ["m1#1-3", [[1, 2, 3]]])
+        self.assertEqual(self.o["resized"], ["m1#1-4", [[1, 2, 3, 4]], 1, 0])
+        self.assertEqual(self.o["copied"], ["## Plan\n\n1. One\n2. Two", "## Plan\n\n1. One\n2. Two\n3. Three"])
 
 
 class AreaAnswerText(unittest.TestCase):
