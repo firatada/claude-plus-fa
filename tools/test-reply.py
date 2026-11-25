@@ -533,10 +533,9 @@ out.links = inline("See [the shot](file:///C:/Users/x/a%20b/shot.png), file:///C
 out.areaPress = [areaPress({button: 0, ctl: false, scrollbar: false, text: false}), areaPress({button: 0, ctl: false, scrollbar: false, text: true}),
   areaPress({button: 0, ctl: true, scrollbar: false, text: false}), areaPress({button: 0, ctl: false, scrollbar: true, text: false}),
   areaPress({button: 2, ctl: false, scrollbar: false, text: false})];
-const AB = {w: 800, h: 1000}, r0 = {x: 100, y: 100, w: 200, h: 100};
-out.areaResize = {draw: areaResize({x: 50, y: 60, w: 0, h: 0}, "se", 120, 80, AB), drawBack: areaResize({x: 50, y: 60, w: 0, h: 0}, "se", -30, -40, AB),
-  corner: areaResize(r0, "nw", -20, 30, AB), edge: areaResize(r0, "e", 50, 999, AB), flip: areaResize(r0, "n", 150, 150, AB),
-  clamp: areaResize(r0, "se", 2000, 2000, AB), move: areaResize(r0, "move", 40, -20, AB), moveOut: areaResize(r0, "move", 9999, -9999, AB)};
+const AB = {w: 800, h: 1000}, p0 = {x: 50, y: 60};
+out.areaRect = {draw: areaRect(p0, {x: 170, y: 140}, AB), drawBack: areaRect(p0, {x: 20, y: 20}, AB),
+  clamp: areaRect({x: 100, y: 100}, {x: 2000, y: 2000}, AB), out: areaRect({x: 100, y: 100}, {x: -40, y: -9}, AB)};
 const T1 = "Intro.\n\n| a | b |\n|---|--:|\n| [x](https://ex.com) | 2 |\n\n1. one\n2. two\n   more\n\n```js\nconst a = 1;\n```\n\n---\n\nEnd.",
   T2 = "## Two\r\n\r\nSecond reply.\r\n\r\n> quoted\r\n> on",
   T3 = "```\nnever closed\nstill code";
@@ -546,10 +545,9 @@ out.areaMd = {run: areaMarkdown([T1], [[0, [1, 2, 3, 4]]]), gap: areaMarkdown([T
   none: areaMarkdown([T1], [[0, [99]]]), empty: areaMarkdown([], [])};
 // an area answered as a whole: its key, and the merge rule (two areas never overlap: a new one takes in what it touches)
 out.areaKeys = [areaKey("m1", 1, 4), areaRange("m1#1-4"), areaRange("a#b#12-30"), areaRange("m1#3"), areaRange("m1#"), areaRange("")];
-out.areaMerge = {fresh: areaMerge([], null, "m1", 2, 3), over: areaMerge(["m1#1-4"], null, "m1", 3, 3),
-  extend: areaMerge(["m1#1-4"], null, "m1", 4, 6), chain: areaMerge(["m1#5-6", "m1#1-2", "m1#8-9"], null, "m1", 2, 5),
-  apart: areaMerge(["m1#1-2", "m2#3-4"], null, "m1", 3, 4), moved: areaMerge(["m1#1-2"], "m1#1-2", "m1", 5, 6),
-  resized: areaMerge(["m1#1-2", "m1#4-5"], "m1#1-2", "m1", 1, 4), ownPara: areaMerge([], "m1#3", "m1", 3, 5)};
+out.areaMerge = {fresh: areaMerge([], "m1", 2, 3), over: areaMerge(["m1#1-4"], "m1", 3, 3),
+  extend: areaMerge(["m1#1-4"], "m1", 4, 6), chain: areaMerge(["m1#5-6", "m1#1-2", "m1#8-9"], "m1", 2, 5),
+  apart: areaMerge(["m1#1-2", "m2#3-4"], "m1", 3, 4), ownPara: areaMerge(["m1#3"], "m1", 3, 5)};
 // Send to Session's list: an area's answer stands after its blocks, after the last block's own answer
 out.areaSend = sendList({"m1#1-4": {text: "Onaylıyorum"}, "m1#4": {text: "only this"}, "m1#0": {text: "intro"}},
   {"m1#0": "Intro.", "m1#4": "3. c", "m1#1-4": "## H\n\n1. a\n2. b\n3. c"}, ["m1#0", "m1#1", "m1#2", "m1#3", "m1#4", "m1#1-4", "m1#5"],
@@ -1173,7 +1171,7 @@ class Links(unittest.TestCase):
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class AreaRules(unittest.TestCase):
     """The area: a drag that starts on blank space draws a rectangle, a drag on text selects text; the rectangle
-    after a drag of a corner, an edge or its inside; its Copy takes the blocks touched as Claude wrote them."""
+    spans the press and the pointer; the copy takes the blocks touched as Claude wrote them."""
     md = None
 
     @classmethod
@@ -1185,16 +1183,12 @@ class AreaRules(unittest.TestCase):
         # another button: their own
         self.assertEqual(self.md["areaPress"], ["area", "text", "", "", ""])
 
-    def test_the_rectangle_after_a_drag(self):
-        r = self.md["areaResize"]
+    def test_the_rectangle_while_it_is_drawn(self):
+        r = self.md["areaRect"]
         self.assertEqual(r["draw"], {"x": 50, "y": 60, "w": 120, "h": 80})
         self.assertEqual(r["drawBack"], {"x": 20, "y": 20, "w": 30, "h": 40})  # drawn up and left of the press
-        self.assertEqual(r["corner"], {"x": 80, "y": 130, "w": 220, "h": 70})
-        self.assertEqual(r["edge"], {"x": 100, "y": 100, "w": 250, "h": 100})  # an edge moves along its own axis only
-        self.assertEqual(r["flip"], {"x": 100, "y": 200, "w": 200, "h": 50})  # past the opposite edge it turns over
         self.assertEqual(r["clamp"], {"x": 100, "y": 100, "w": 700, "h": 900})  # never past the replies
-        self.assertEqual(r["move"], {"x": 140, "y": 80, "w": 200, "h": 100})
-        self.assertEqual(r["moveOut"], {"x": 600, "y": 0, "w": 200, "h": 100})
+        self.assertEqual(r["out"], {"x": 0, "y": 0, "w": 100, "h": 100})
 
     def test_every_block_knows_its_lines(self):
         self.assertEqual(self.md["areaSpans"], [["p", 0, 0], ["table", 2, 4], ["li", 6, 6], ["li", 7, 8], ["code", 10, 12],
@@ -1212,8 +1206,6 @@ class AreaRules(unittest.TestCase):
         # the grown range takes in what it then touches; one not touched stays apart
         self.assertEqual((m["chain"]["key"], m["chain"]["from"]), ("m1#1-6", ["m1#1-2", "m1#5-6"]))
         self.assertEqual(m["apart"]["key"], "m1#3-4")  # another reply's area is never taken in
-        self.assertEqual((m["moved"]["key"], m["moved"]["from"]), ("m1#5-6", ["m1#1-2"]))  # its answer goes with it
-        self.assertEqual((m["resized"]["key"], m["resized"]["from"]), ("m1#1-5", ["m1#1-2", "m1#4-5"]))
         self.assertEqual(m["ownPara"]["from"], [])  # a paragraph's own answer is never taken into an area
 
     def test_an_area_answer_goes_after_its_last_blocks_own_answer(self):
@@ -1350,10 +1342,11 @@ class Page(unittest.TestCase):
 
 
 # The area in the real page (headless Edge, events dispatched to the page, never to a window): a drag from the margin
-# across two replies draws the rectangle, tints the blocks it touches and hands the panel their markdown at once,
-# with a quiet "Copied" at its corner for about a second (no Copy button); a corner drag resizes it and copies again;
-# a press in place copies nothing; Esc clears it; a press outside clears it and opens no box; a plain click on a
-# paragraph still opens its box; a drag that starts on text draws no rectangle and copies nothing.
+# across two replies shows the rectangle and tints the blocks it touches while it lasts; let go, the rectangle and the
+# tint go at once, the panel gets their markdown (once), and a quiet "Copied" shows at the blocks' corner for about a
+# second (no Copy button, no corner handles); Esc while drawing drops the drag and copies nothing; one block alone
+# opens its own box and no frame; a click on a paragraph still opens its box (the empty box the drag opened closes);
+# a drag that starts on text draws no rectangle and copies nothing.
 AREA_TEST = r"""<pre id="tout"></pre><script>
 const later = ms => new Promise(r => setTimeout(r, ms));
 (async () => {
@@ -1364,45 +1357,45 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   const ev = (el, type, x, y, o) => el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type,
     Object.assign({bubbles: true, cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1,
       pointerType: "mouse", isPrimary: true, clientX: x, clientY: y}, o)));
-  const drag = async (el, x0, y0, x1, y1) => {
+  const drag = async (el, x0, y0, x1, y1, mid) => {
     ev(el, "pointerdown", x0, y0); ev(el, "mousedown", x0, y0);
     for (let k = 1; k <= 5; k++) ev(el, "pointermove", x0 + (x1 - x0) * k / 5, y0 + (y1 - y0) * k / 5);
+    if (mid) mid();
     ev(el, "pointerup", x1, y1); ev(el, "mouseup", x1, y1); ev(el, "click", x1, y1);
     await later(30);
   };
   const box = s => document.querySelector(s).getBoundingClientRect();
+  const tinted = () => [...document.querySelectorAll(".inarea")].map(e => e.closest(".reply").dataset.id + "#" + e.dataset.n);
   const o = {}, body = document.getElementById("body"), area = document.getElementById("area"), nt = document.getElementById("areaNote");
   o.button = !!document.getElementById("areaCopy");
+  o.handles = area.children.length;
   const tbl = box("#replies .para.table"), second = [...document.querySelectorAll("#replies .reply")][1].querySelector(".para").getBoundingClientRect();
-  await drag(body, box("#body").left + 4, tbl.top + 2, 300, second.top + 4);
-  const note = () => ({shown: !nt.hidden, text: nt.textContent, button: nt.tagName === "BUTTON" || nt.classList.contains("b"),
-    atCorner: !nt.hidden && Math.abs(nt.getBoundingClientRect().right - area.getBoundingClientRect().right) < 2});
-  o.drawn = {shown: !area.hidden, tinted: [...document.querySelectorAll(".inarea")].map(e => e.closest(".reply").dataset.id + "#" + e.dataset.n),
-    boxes: document.querySelectorAll(".ansrow").length, sel: getSelection().toString(), copied: (T.area || []).slice(), note: note()};
+  await drag(body, box("#body").left + 4, tbl.top + 2, 300, second.top + 4, () => {
+    o.during = {shown: !area.hidden, tinted: tinted(), copied: (T.area || []).length, note: !nt.hidden};
+  });
+  const els = ["m1#1", "m1#2", "m2#0"].map(k => document.querySelector(`.reply[data-id="${k.split("#")[0]}"] [data-n="${k.split("#")[1]}"]`).getBoundingClientRect());
+  const top = Math.min(...els.map(q => q.top)), right = Math.max(...els.map(q => q.right)), nq = nt.getBoundingClientRect();
+  o.released = {shown: !area.hidden, tinted: tinted(), boxes: document.querySelectorAll(".ansrow").length, frames: document.querySelectorAll(".agroup").length,
+    sel: getSelection().toString(), copied: (T.area || []).slice(),
+    note: {shown: !nt.hidden, text: nt.textContent, button: nt.tagName === "BUTTON" || nt.classList.contains("b"),
+      onEdge: Math.abs(nq.top + nq.height / 2 - (top - 4)) <= 1, atRight: nq.right <= right + 10 && nq.right >= right - 20}};
   await later(1200);
   o.noteGone = nt.hidden;
-  const se = box("#area .hd[data-e=se]"), h0 = area.offsetHeight, last = [...document.querySelectorAll("#replies .reply")][1].querySelectorAll(".para")[1].getBoundingClientRect();
-  await drag(document.querySelector("#area .hd[data-e=se]"), se.left + 4, se.top + 4, se.left + 24, last.top + 8);
-  o.resized = [Math.round(area.offsetHeight - h0 - (last.top + 4 - se.top)), [...document.querySelectorAll(".inarea")].length];
-  o.copied = T.area.slice();
-  o.label = note();
-  const mid = area.getBoundingClientRect();
-  ev(area, "pointerdown", mid.left + 30, mid.top + 30); ev(area, "pointerup", mid.left + 30, mid.top + 30);
-  await later(20);
-  o.inPlace = T.area.length;
-  document.body.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true}));
-  await later(20);
-  o.esc = [area.hidden, nt.hidden, document.querySelectorAll(".inarea").length];
+  // Esc while drawing: the drag is dropped, nothing copied
+  const n1 = T.area.length;
+  await drag(body, box("#body").left + 4, tbl.top + 2, 300, tbl.bottom, () =>
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true})));
+  o.esc = [area.hidden, nt.hidden, tinted().length, T.area.length - n1, document.querySelectorAll(".ansrow").length];
+  // one block alone: its own box, no frame, still copied, no rectangle left
   await drag(body, box("#body").left + 4, tbl.top + 2, 300, tbl.bottom);
-  o.lone = [document.activeElement.closest(".ansrow") && document.activeElement.closest(".ansrow").dataset.for, document.querySelectorAll(".agroup").length];
+  o.lone = [document.activeElement.closest(".ansrow") && document.activeElement.closest(".ansrow").dataset.for, document.querySelectorAll(".agroup").length,
+    area.hidden, tinted().length, T.area.slice(n1), !nt.hidden];
+  // a click on the first paragraph: the empty box the drag opened closes, the paragraph's own box opens
   const p1 = document.querySelector("#replies .para"), q = p1.getBoundingClientRect();
   ev(p1, "pointerdown", q.left + 3, q.top + q.height / 2); document.activeElement.blur();  // what a real press does
   ev(p1, "pointerup", q.left + 3, q.top + q.height / 2); ev(p1, "click", q.left + 3, q.top + q.height / 2);
   await later(20);
-  o.outside = [area.hidden, document.querySelectorAll(".ansrow").length];  // cleared, and that click opened no box
-  ev(p1, "pointerdown", q.left + 3, q.top + q.height / 2); ev(p1, "pointerup", q.left + 3, q.top + q.height / 2); ev(p1, "click", q.left + 3, q.top + q.height / 2);
-  await later(20);
-  o.click = document.querySelectorAll(".ansrow").length;  // a plain click still opens the box
+  o.click = [...document.querySelectorAll(".ansrow")].map(r => r.dataset.for);
   document.activeElement.blur();
   const t = document.querySelector("#replies .reply:nth-child(2) .para"), tq = t.getBoundingClientRect(), n0 = document.querySelectorAll(".ansrow").length;
   const nCopies = T.area.length;
@@ -1425,39 +1418,33 @@ class AreaPage(unittest.TestCase):
     def test_no_error(self):
         self.assertNotIn("error", self.o)
 
-    def test_a_drag_from_the_margin_draws_it_across_two_replies(self):
-        d = self.o["drawn"]
+    def test_while_drawn_the_rectangle_shows_and_tints_what_it_touches(self):
+        d = self.o["during"]
         self.assertTrue(d["shown"])
         self.assertEqual(d["tinted"], ["m1#1", "m1#2", "m2#0"])  # the table, the code block, the second reply's first
-        self.assertEqual((d["boxes"], d["sel"]), (0, ""))  # no answer box, no text selected
+        self.assertEqual((d["copied"], d["note"]), (0, False))  # nothing copied before the release
+        self.assertEqual(self.o["handles"], 0)  # no corner or edge handles
 
-    def test_the_drag_ending_copies_at_once_with_a_quiet_note_and_no_button(self):
-        d = self.o["drawn"]
+    def test_let_go_the_rectangle_and_the_tint_go_and_the_blocks_are_copied_once(self):
+        d = self.o["released"]
+        self.assertEqual((d["shown"], d["tinted"]), (False, []))
+        self.assertEqual((d["boxes"], d["frames"], d["sel"]), (0, 0, ""))  # two replies: copied only, no box
         self.assertEqual(d["copied"], ["| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```\n\nSecond reply."])
-        self.assertEqual(d["note"], {"shown": True, "text": "Copied", "button": False, "atCorner": True})
-        self.assertTrue(self.o["noteGone"])  # gone after about a second
+
+    def test_a_quiet_copied_shows_at_the_corner_for_about_a_second(self):
+        n = self.o["released"]["note"]
+        self.assertEqual(n, {"shown": True, "text": "Copied", "button": False, "onEdge": True, "atRight": True})
+        self.assertTrue(self.o["noteGone"])
         self.assertFalse(self.o["button"])
 
-    def test_a_corner_drag_resizes_it(self):
-        grew, tinted = self.o["resized"]
-        self.assertEqual(grew, 0)  # by exactly the pointer's travel
-        self.assertEqual(tinted, 4)
-
-    def test_a_resize_copies_again_and_a_press_in_place_does_not(self):
-        self.assertEqual(self.o["copied"][1:], ["| a | b |\n|---|---|\n| 1 | 2 |\n\n```js\nconst a = 1;\n```\n\nSecond reply.\n\nLast."])
-        self.assertEqual(len(self.o["copied"]), 2)
-        self.assertEqual((self.o["label"]["shown"], self.o["label"]["text"]), (True, "Copied"))
-        self.assertEqual(self.o["inPlace"], 2)
+    def test_esc_while_drawing_drops_it_and_copies_nothing(self):
+        self.assertEqual(self.o["esc"], [True, True, 0, 0, 0])
 
     def test_one_block_alone_opens_its_own_box_and_no_frame(self):
-        self.assertEqual(self.o["lone"], ["m1#1", 0])
-
-    def test_esc_and_a_press_outside_clear_it(self):
-        self.assertEqual(self.o["esc"], [True, True, 0])
-        self.assertEqual(self.o["outside"], [True, 0])
+        self.assertEqual(self.o["lone"], ["m1#1", 0, True, 0, ["| a | b |\n|---|---|\n| 1 | 2 |"], True])
 
     def test_a_click_and_a_drag_over_text_work_as_before(self):
-        self.assertEqual(self.o["click"], 1)
+        self.assertEqual(self.o["click"], ["m1#0"])  # the empty box the drag opened closed; the clicked one opened
         self.assertEqual(self.o["textDrag"], [True, 0, 0])
 
 
@@ -1489,10 +1476,10 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   const key = (t, k) => t.dispatchEvent(new KeyboardEvent("keydown", {key: k, bubbles: true, cancelable: true}));
   const o = {};
   await drag(left, B(1).top + 4, 400, B(4).top + 6);
-  const t = document.activeElement, nt = document.getElementById("areaNote"), ar = document.getElementById("area");
+  const t = document.activeElement, nt = document.getElementById("areaNote");
   o.opened = {focus: t.closest(".ansrow") && t.closest(".ansrow").dataset.for, isArea: t.closest(".ansrow").classList.contains("area"),
     frame: frame(), last: t.closest(".ansrow").previousElementSibling.dataset.n, ph: t.placeholder, note: !nt.hidden,
-    noteAbove: nt.getBoundingClientRect().bottom <= ar.getBoundingClientRect().top + 1, copied: (T.area || []).length,
+    noteAbove: Math.abs(nt.getBoundingClientRect().top + nt.offsetHeight / 2 - (document.querySelector(".agroup").getBoundingClientRect().top - 4)) <= 1, copied: (T.area || []).length,
     caret: [t.selectionStart, t.selectionEnd, t.value.length]};
   typeIn(t, "Onaylıyorum");
   await later(400);
@@ -1555,7 +1542,7 @@ class AreaAnswerPage(unittest.TestCase):
         self.assertEqual(o["ph"], "Type your answer, or hold Space to speak…")
         self.assertEqual(o["copied"], 1)  # copied at once; the box keeps the keyboard and the caret
         self.assertEqual(o["caret"], [0, 0, 0])
-        self.assertTrue(o["note"] and o["noteAbove"])  # "Copied" above the rectangle, so it covers no answer
+        self.assertTrue(o["note"] and o["noteAbove"])  # "Copied" on the frame's top edge, so it covers no answer
 
     def test_the_answer_is_a_draft_under_the_areas_key_and_counted(self):
         sid, key, passage, text = self.o["typed"]["draft"]
@@ -1598,10 +1585,10 @@ class AreaAnswerPage(unittest.TestCase):
                          "> After.")
 
 
-# An area resized while its empty box has the keyboard (headless Edge): the old box goes without an error (Chromium
-# fires its focusout while it is being removed), the grown area gets its own box with the caret, and the blocks are
-# copied again.
-AREA_RESIZE_TEST = r"""<pre id="tout"></pre><script>
+# A second drag while the first area's empty box has the keyboard (headless Edge): the press on blank space leaves
+# that box, so it goes with its frame without an error (Chromium fires focusout while a box is being removed), the new
+# area gets its own box with the caret, frames never nest, and each release copies once.
+AREA_REDRAG_TEST = r"""<pre id="tout"></pre><script>
 const later = ms => new Promise(r => setTimeout(r, ms));
 const errs = [];
 addEventListener("error", e => errs.push(e.message));
@@ -1620,13 +1607,20 @@ addEventListener("error", e => errs.push(e.message));
   };
   const B = n => document.querySelector(`#replies [data-n="${n}"]`).getBoundingClientRect(), left = document.getElementById("body").getBoundingClientRect().left + 4;
   const frame = () => [...document.querySelectorAll(".agroup")].map(g => [...g.querySelectorAll("[data-n]")].map(e => +e.dataset.n));
-  const o = {};
-  await drag(document.getElementById("body"), left, B(1).top + 4, 400, B(3).top + 6);
-  o.first = [document.activeElement.closest(".ansrow").dataset.for, frame()];
-  const se = document.querySelector("#area .hd[data-e=se]"), q = se.getBoundingClientRect();
-  await drag(se, q.left + 4, q.top + 4, q.left + 40, B(4).top + 8);
+  const body = document.getElementById("body"), o = {};
+  await drag(body, left, B(1).top + 4, 400, B(3).top + 6);
+  o.first = [document.activeElement.closest(".ansrow").dataset.for, frame(), document.getElementById("area").hidden];
+  // the press leaves the empty box, which goes and lifts what stood under it: the end is measured after the press
+  const y0 = B(1).top + 4;
+  ev(body, "pointerdown", left, y0); ev(body, "mousedown", left, y0);
+  await later(10);
+  const y1 = B(4).top + 8;
+  for (let k = 1; k <= 5; k++) ev(body, "pointermove", left + (400 - left) * k / 5, y0 + (y1 - y0) * k / 5);
+  ev(body, "pointerup", 400, y1); ev(body, "mouseup", 400, y1); ev(body, "click", 400, y1);
+  await later(30);
   const t = document.activeElement;
-  o.resized = [t.closest(".ansrow") && t.closest(".ansrow").dataset.for, frame(), document.querySelectorAll(".ansrow").length, t.selectionStart];
+  o.second = [t.closest(".ansrow") && t.closest(".ansrow").dataset.for, frame(), document.querySelectorAll(".ansrow").length, t.selectionStart,
+    document.querySelectorAll(".agroup .agroup").length];
   o.copied = T.area;
   o.errs = errs;
   document.getElementById("tout").textContent = JSON.stringify(o);
@@ -1636,18 +1630,18 @@ addEventListener("error", e => errs.push(e.message));
 
 
 @unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
-class AreaResizePage(unittest.TestCase):
+class AreaRedragPage(unittest.TestCase):
     o = None
 
     @classmethod
     def setUpClass(cls):
-        cls.o = page_run(AREA_RESIZE_TEST)
+        cls.o = page_run(AREA_REDRAG_TEST)
 
-    def test_a_resize_with_the_empty_box_focused_moves_the_box_and_copies_again(self):
+    def test_a_new_drag_with_the_empty_box_focused_replaces_the_area_and_copies_again(self):
         self.assertNotIn("error", self.o)
         self.assertEqual(self.o["errs"], [])
-        self.assertEqual(self.o["first"], ["m1#1-3", [[1, 2, 3]]])
-        self.assertEqual(self.o["resized"], ["m1#1-4", [[1, 2, 3, 4]], 1, 0])
+        self.assertEqual(self.o["first"], ["m1#1-3", [[1, 2, 3]], True])
+        self.assertEqual(self.o["second"], ["m1#1-4", [[1, 2, 3, 4]], 1, 0, 0])
         self.assertEqual(self.o["copied"], ["## Plan\n\n1. One\n2. Two", "## Plan\n\n1. One\n2. Two\n3. Three"])
 
 

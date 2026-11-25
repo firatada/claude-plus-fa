@@ -36,15 +36,15 @@
      shows its reply in place of the latest ones, answer boxes and Send to Session as on them; Latest, a tab press or
      another session coming up shows the latest replies again. agent-panel.pyw keeps the pins with their text, 8 per
      session at most: a 9th asks, in a line under the head, to unpin the oldest first.
-     The area (2026-11-25): a drag that starts on blank space in the replies draws a rectangle (corners and edges
-     resize it, inside moves it, past the top or bottom edge the replies scroll); every block it touches is tinted
-     whole, and those blocks go on the clipboard as Claude wrote them whenever a drag of it ends (drawn, resized or
-     moved), with a short "Copied" at its corner; there is no Copy button (asked 2026-11-25). A drag that starts on
-     text still selects text and copies nothing; a click still opens the answer box. Esc or a press outside clears it.
+     The area (2026-11-25): a drag that starts on blank space in the replies draws a rectangle (past the top or bottom
+     edge the replies scroll); every block it touches is tinted whole while it is drawn. Let go, the rectangle and the
+     tint go at once (no frame inside a frame), and those blocks go on the clipboard as Claude wrote them, with a short
+     "Copied" at the frame's corner; there is no Copy button. To change an area, drag again. A drag that starts on
+     text still selects text and copies nothing; a click still opens the answer box. Esc while drawing drops it.
      The area answered as a whole (2026-11-25): when the rectangle is let go, the blocks it touches (in one reply) get
      one frame and one answer box under the last, caret in it; that answer is for every block in the
      frame (Send to Session quotes them and leads the answer with how many blocks it covers). A block inside keeps its
-     own answer too. A rectangle over a framed area extends it; emptied and left, the area goes with its frame. -->
+     own answer too. A rectangle over a framed area extends it; its box left empty, the area goes with its frame. -->
 <style>
 :root {
   --bg: #f4f6fb; --panel: #ffffff; --surface2: #eef2fb; --line: #e2e8f5; --text: #0a1a40; --muted: #4b5672;
@@ -211,26 +211,14 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .ghost { position: absolute; pointer-events: none; border-style: solid; border-color: transparent; color: var(--blue);
   white-space: pre-wrap; overflow-wrap: break-word; }
 .ghost .tail { opacity: .5; }
-/* the area: a rectangle drawn by a drag that starts on blank space in the replies; its corners and edges resize it,
-   a drag inside moves it; the blocks it touches are tinted whole and copied as markdown when a drag of it ends, with a
-   quiet "Copied" at its corner (#areaNote: text, no button) */
+/* the area: a rectangle drawn by a drag that starts on blank space in the replies, there only while the drag lasts;
+   the blocks it touches are tinted whole meanwhile and copied as markdown when it is let go, with a quiet "Copied"
+   at the frame's corner (#areaNote: text, no button) */
 body.areaing, body.areaing * { user-select: none; }
 body.drawing #body, body.drawing #body * { cursor: crosshair !important; }
 #area { position: absolute; z-index: 5; border: 1.5px solid var(--blue); border-radius: 2px; background: rgba(27, 77, 245, .05);
-  cursor: move; }
+  pointer-events: none; }
 #area[hidden], #areaNote[hidden] { display: none; }
-#area .eg, #area .hd { position: absolute; }
-#area .eg[data-e="n"], #area .eg[data-e="s"] { left: 6px; right: 6px; height: 9px; cursor: ns-resize; }
-#area .eg[data-e="e"], #area .eg[data-e="w"] { top: 6px; bottom: 6px; width: 9px; cursor: ew-resize; }
-#area .eg[data-e="n"] { top: -5px; }
-#area .eg[data-e="s"] { bottom: -5px; }
-#area .eg[data-e="w"] { left: -5px; }
-#area .eg[data-e="e"] { right: -5px; }
-#area .hd { width: 10px; height: 10px; border: 1.5px solid var(--blue); border-radius: 2px; background: var(--panel); }
-#area .hd[data-e="nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
-#area .hd[data-e="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
-#area .hd[data-e="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
-#area .hd[data-e="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
 #areaNote { position: absolute; z-index: 6; pointer-events: none; padding: 0 6px; border-radius: 4px; background: var(--panel);
   color: var(--blue); font: 500 12px/18px "Segoe UI", system-ui, sans-serif; white-space: nowrap; animation: fade .16s ease-out; }
 #replies .inarea, #replies .inarea:hover { background-color: rgba(27, 77, 245, .09); }
@@ -273,7 +261,7 @@ body.drawing #body, body.drawing #body * { cursor: crosshair !important; }
 <body>
 <div id="head"><div class="tabrow"><div class="tabs" id="tabs"></div><button type="button" id="fold" tabindex="-1"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 9l4-4 4 4"/></svg></button></div><div class="chips" id="chips"></div><div class="meta" id="meta"></div></div>
 <div id="ask" role="alert" hidden></div>
-<div id="body"><div id="empty" hidden></div><div id="replies"></div><div id="area" hidden><i class="eg" data-e="n"></i><i class="eg" data-e="s"></i><i class="eg" data-e="w"></i><i class="eg" data-e="e"></i><i class="hd" data-e="nw"></i><i class="hd" data-e="ne"></i><i class="hd" data-e="sw"></i><i class="hd" data-e="se"></i></div><span id="areaNote" role="status" hidden>Copied</span></div>
+<div id="body"><div id="empty" hidden></div><div id="replies"></div><div id="area" hidden></div><span id="areaNote" role="status" hidden>Copied</span></div>
 <div id="miss" hidden></div>
 <div id="foot"><span id="count"></span><span id="say" role="status"></span>
   <button type="button" class="b" id="copy"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
@@ -462,19 +450,12 @@ function areaPress(c) {
   if (c.button !== 0 || c.ctl || c.scrollbar) return "";
   return c.text ? "text" : "area";
 }
-// The rectangle after a drag: r {x, y, w, h} where the press found it, how "move" or the edges held ("n", "se", …;
-// a new rectangle is drawn as its "se" corner from the press), dx and dy the pointer's travel since the press, b
-// {w, h} the replies' own size. Kept inside b; dragged past its opposite edge, an edge turns over.
-function areaResize(r, how, dx, dy, b) {
-  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-  if (how === "move") return {x: clamp(r.x + dx, 0, Math.max(0, b.w - r.w)), y: clamp(r.y + dy, 0, Math.max(0, b.h - r.h)), w: r.w, h: r.h};
-  let x1 = r.x, y1 = r.y, x2 = r.x + r.w, y2 = r.y + r.h;
-  if (how.includes("w")) x1 += dx;
-  if (how.includes("e")) x2 += dx;
-  if (how.includes("n")) y1 += dy;
-  if (how.includes("s")) y2 += dy;
-  [x1, x2] = [clamp(Math.min(x1, x2), 0, b.w), clamp(Math.max(x1, x2), 0, b.w)];
-  [y1, y2] = [clamp(Math.min(y1, y2), 0, b.h), clamp(Math.max(y1, y2), 0, b.h)];
+// The rectangle while it is drawn: the press at p {x, y}, the pointer at q, b {w, h} the replies' own size. It spans
+// the two points whichever way the pointer went, kept inside b.
+function areaRect(p, q, b) {
+  const clamp = (v, hi) => Math.max(0, Math.min(hi, v));
+  const x1 = clamp(Math.min(p.x, q.x), b.w), x2 = clamp(Math.max(p.x, q.x), b.w);
+  const y1 = clamp(Math.min(p.y, q.y), b.h), y2 = clamp(Math.max(p.y, q.y), b.h);
   return {x: x1, y: y1, w: x2 - x1, h: y2 - y1};
 }
 // What the area's Copy puts on the clipboard: texts, the replies shown in order; picks [[reply index, [block
@@ -502,20 +483,18 @@ function areaKey(rid, a, b) { return `${rid}#${a}-${b}`; }
 function areaRange(key) { const m = /^(.*)#(\d+)-(\d+)$/.exec(String(key || "")); return m ? {rid: m[1], a: +m[2], b: +m[3]} : null; }
 // Two areas never overlap: a rectangle over blocks a..b of reply rid takes in every answered area it touches, and
 // those the grown range then touches, so one frame holds them all (extend, never replace). keys: the answered
-// areas; own: the area this rectangle made before (its answer goes with it when it is moved or resized). Answers
-// {key, a, b, from}: from, the areas whose answers join in the new one, in reading order (own among them).
-function areaMerge(keys, own, rid, a, b) {
+// areas. Answers {key, a, b, from}: from, the areas whose answers join in the new one, in reading order.
+function areaMerge(keys, rid, a, b) {
   let lo = a, hi = b, grew = true;
   const from = new Set();
   while (grew) {
     grew = false;
     for (const k of keys) {
       const r = areaRange(k);
-      if (!r || r.rid !== rid || k === own || from.has(k) || r.a > hi || r.b < lo) continue;
+      if (!r || r.rid !== rid || from.has(k) || r.a > hi || r.b < lo) continue;
       from.add(k); lo = Math.min(lo, r.a); hi = Math.max(hi, r.b); grew = true;
     }
   }
-  if (areaRange(own)) from.add(own);
   return {key: areaKey(rid, lo, hi), a: lo, b: hi, from: [...from].sort((x, y) => areaRange(x).a - areaRange(y).a)};
 }
 const span = (a, b) => Array.from({length: b - a + 1}, (_, i) => a + i);
@@ -901,7 +880,6 @@ function unframe(row) {  // an area's box goes, and its frame: the blocks stand 
   row.remove();
   if (box && box.classList.contains("agroup")) box.replaceWith(...box.childNodes);
   size();
-  if (area) areaPaint();
 }
 function tipFor(p) {  // the paragraph's tooltip says what a click does; none while its box is open
   if (ownRow(p)) delete p.dataset.tip;
@@ -1411,7 +1389,6 @@ document.addEventListener("keydown", e => {
 let down = null;
 document.getElementById("body").addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY}; }, true);
 document.addEventListener("click", e => {
-  if (aswallow) { aswallow = false; return; }  // the press that cleared the area (areaClear()) does nothing else
   const pb = e.target.closest(".rpin");
   if (pb) { pinDo(pb.classList.contains("on") ? "unpin" : "pin", pb.closest(".reply").dataset.id); return; }
   const sw = e.target.closest("#ask [data-swap]");
@@ -1541,14 +1518,15 @@ $("send").addEventListener("click", () => {
 });
 
 // ---------- the area: a drag on blank space draws a rectangle; the blocks it touches copy as markdown ----------
-// areaPress() decides what a press starts. Each drag of the rectangle that ends (drawn, resized or moved; not a press
-// left in place) puts its blocks on the clipboard at once (areaCopy()), with a quiet "Copied" at its corner for
-// AREA_NOTE_MS; no Copy button (asked 2026-11-25). The copy never touches the keyboard: the area's box keeps it.
-// The rectangle lives in #body's own coordinates, so it scrolls with the replies; dragged within AREA_ZONE px of the
-// top or bottom edge (or past it) the replies scroll, faster the further out, so it can span more than one screen. Esc, a press outside it, or a redraw clears it.
+// areaPress() decides what a press starts. The rectangle is there only while the drag lasts: let go, it and the
+// tint go at once (asked 2026-11-25: no frame inside a frame), what stays is the frame round the touched blocks and
+// its answer box (areaSync()). Each release puts the blocks on the clipboard at once (areaCopy()), with a quiet
+// "Copied" at the frame's corner for AREA_NOTE_MS; no Copy button. The copy never touches the keyboard: the area's
+// box keeps it. To change an area, drag again (a drag over an answered area extends it). The rectangle lives in
+// #body's own coordinates, so it scrolls with the replies; dragged within AREA_ZONE px of the top or bottom edge (or
+// past it) the replies scroll, faster the further out, so it can span more than one screen. Esc drops a drag.
 const AREA_SLACK = 3, AREA_ZONE = 28, AREA_STEP = 24, AREA_MOVE = 4, AREA_NOTE_MS = 1000;
-let area = null, adrag = null, apend = null, aswallow = false, ascroll = null, acopied = null;  // acopied: the note's timer
-let alink = null;           // the key whose box the rectangle opened: an area's, or a lone paragraph's own
+let area = null, adrag = null, apend = null, ascroll = null, acopied = null;  // acopied: the note's timer
 const aopened = new Set();  // paragraph boxes the rectangle opened: they close when left empty, as an area's box does
 function areaBounds() {  // the replies' own size in #body's coordinates (the window is as tall as they are)
   const b = $("body"), rp = $("replies");
@@ -1585,39 +1563,23 @@ function areaPicks(bs) {  // areaBlocks() as areaMarkdown() takes them
   for (const b of bs) { const last = picks[picks.length - 1]; if (last && last[0] === b.r) last[1].push(b.n); else picks.push([b.r, [b.n]]); }
   return picks;
 }
-function areaPaint() {
-  const el = $("area"), nt = $("areaNote"), bs = areaBlocks(), on = new Set(bs.map(b => b.el));
+function areaPaint() {  // the rectangle and the tint, while a drag lasts
+  const el = $("area"), on = new Set(areaBlocks().map(b => b.el));
   $("replies").querySelectorAll(".inarea").forEach(b => { if (!on.has(b)) b.classList.remove("inarea"); });
   on.forEach(b => b.classList.add("inarea"));
   el.hidden = !area;
-  nt.hidden = !area || !!adrag || !bs.length || !acopied;
-  if (!area) return;
-  Object.assign(el.style, {left: area.x + "px", top: area.y + "px", width: area.w + "px", height: area.h + "px"});
-  if (nt.hidden) return;
-  // "Copied" under the rectangle's bottom right corner; above its top right one when the replies end first or the
-  // area's answer box is open (under the frame, where it would cover what is typed); else inside
-  const bd = areaBounds(), w = nt.offsetWidth, h = nt.offsetHeight;
-  const boxed = !!alink && !!$("replies").querySelector(`.ansrow[data-for="${CSS.escape(alink)}"]`);
-  let y = area.y + area.h + 6;
-  if (boxed) y = area.y - h - 6 >= 0 ? area.y - h - 6 : area.y + 6;
-  else if (y + h > bd.h) y = area.y - h - 6 >= 0 ? area.y - h - 6 : area.y + area.h - h - 6;
-  nt.style.left = Math.max(0, Math.min(area.x + area.w - w, bd.w - w)) + "px";
-  nt.style.top = Math.max(0, y) + "px";
+  if (area) Object.assign(el.style, {left: area.x + "px", top: area.y + "px", width: area.w + "px", height: area.h + "px"});
 }
-function areaClear() {
-  if (!area && !adrag && !apend) return;
+function areaClear() {  // a drag dropped (Esc, a redraw) or ended: no rectangle, no tint, no note
   area = adrag = apend = null;
-  const old = alink;
-  alink = null;
-  leaveLink(old);
   cancelAnimationFrame(ascroll);
   ascroll = null;
   document.body.classList.remove("areaing", "drawing");
-  areaCopied(false);
+  areaPaint();
+  areaCopied(null);
 }
 function areaFollow() {  // the rectangle where the pointer has taken it (the replies may have scrolled meanwhile)
-  const p = bodyPt(adrag.cx, adrag.cy);
-  area = areaResize(adrag.r0, adrag.how, p.x - adrag.px, p.y - adrag.py, areaBounds());
+  area = areaRect(adrag.at, bodyPt(adrag.cx, adrag.cy), areaBounds());
   areaPaint();
 }
 function areaScroll() {  // while a drag is near or past the top or bottom edge: scroll, and the rectangle follows
@@ -1632,50 +1594,56 @@ function areaScroll() {  // while a drag is near or past the top or bottom edge:
   if (b.scrollTop !== before) areaFollow();
   ascroll = requestAnimationFrame(areaScroll);
 }
-function areaGo(e, how, r0, at) {  // a drag of the rectangle starts: drawn, resized or moved
-  adrag = {id: e.pointerId, how, r0, px: at.x, py: at.y, cx: e.clientX, cy: e.clientY};
-  document.body.classList.add("areaing");
-  document.body.classList.toggle("drawing", !area);
-  getSelection().removeAllRanges();
-  tipHide();
-}
+// Let go: the rectangle and the tint go; the blocks it touched get their frame and box (areaSync()) and are copied,
+// once per release; "Copied" shows at the frame's corner (the blocks' own when no frame is made).
 function areaEnd() {
   if (!adrag) return;
-  const r0 = adrag.r0;
-  adrag = null;
-  cancelAnimationFrame(ascroll);
-  ascroll = null;
-  document.body.classList.remove("areaing", "drawing");
-  if (!areaBlocks().length) { areaClear(); return; }  // it touches nothing: no rectangle is left behind
-  areaSync();
-  areaPaint();
-  if (area && ["x", "y", "w", "h"].some(k => area[k] !== r0[k])) areaCopy();  // drawn, resized or moved: not a press in place
+  const bs = areaBlocks();
+  areaClear();
+  if (!bs.length) return;  // it touched nothing
+  const text = areaMarkdown(shownReplies().map(r => r.text), areaPicks(bs));
+  const row = areaSync(bs), frame = row && row.closest(".agroup");
+  areaCopy(text, frame ? [frame] : bs.map(b => b.el));
 }
-function areaCopy() {  // the touched blocks as Claude wrote them, on the clipboard; the keyboard stays where it is
-  const text = areaMarkdown(shownReplies().map(r => r.text), areaPicks(areaBlocks()));
+function areaCopy(text, els) {  // the touched blocks as Claude wrote them, on the clipboard; the keyboard stays where it is
   if (!text) return;
   Promise.resolve(api().copy_area(text)).then(ok => {
-    if (ok && area) areaCopied(true);
-    else if (!ok) say("Could not copy: another program holds the clipboard. Try again.", true);
+    if (ok) areaCopied(els);
+    else say("Could not copy: another program holds the clipboard. Try again.", true);
   });
 }
-// The rectangle drawn, moved or resized (or pressed in place): the blocks it touches get one frame and one answer
-// box under them, caret in it. One paragraph alone opens that paragraph's own box. An answered area it
-// touches is taken in (areaMerge()), its answer kept; the rectangle's own area follows it. Across two replies only
-// the copy: an area's answer goes inside one quoted reply.
-function areaSync() {
-  const bs = areaBlocks(), old = alink;
-  if (!bs.length || !S) return;
-  if (new Set(bs.map(b => b.r)).size > 1) { alink = null; leaveLink(old); return; }
+// "Copied" for AREA_NOTE_MS, on the top border of the frame round els at its right corner (as the frame is drawn:
+// 4 px above the blocks, 10 px right of them), its white ground breaking the line; so it covers no answer box
+function areaCopied(els) {
+  const nt = $("areaNote");
+  clearTimeout(acopied);
+  acopied = null;
+  nt.hidden = true;
+  els = (els || []).filter(el => el.isConnected);
+  if (!els.length) return;
+  const qs = els.map(el => el.getBoundingClientRect());
+  const tl = bodyPt(Math.min(...qs.map(q => q.left)), Math.min(...qs.map(q => q.top)));
+  const right = bodyPt(Math.max(...qs.map(q => q.right)), 0).x + 10, top = tl.y - 4;
+  nt.hidden = false;
+  const w = nt.offsetWidth, h = nt.offsetHeight;
+  nt.style.left = Math.max(0, Math.min(right - 12 - w, $("body").clientWidth - w)) + "px";
+  nt.style.top = Math.max(0, top - h / 2) + "px";
+  acopied = setTimeout(() => areaCopied(null), AREA_NOTE_MS);
+}
+// The rectangle let go over bs: the blocks it touches get one frame and one answer box under them, caret in it.
+// One paragraph alone opens that paragraph's own box. An answered area it touches is taken in (areaMerge()), its
+// answer kept. An empty area box still open (the window lost the keyboard while it waited) goes first, so frames
+// never nest. Across two replies only the copy: an area's answer goes inside one quoted reply. Answers the box's row.
+function areaSync(bs) {
+  if (!bs.length || !S || new Set(bs.map(b => b.r)).size > 1) return null;
+  $("replies").querySelectorAll(".ansrow.area").forEach(closeBox);  // only an empty one closes
   const rid = bs[0].el.closest(".reply").dataset.id, ns = bs.map(b => b.n);
   const done = Object.keys(answers).filter(k => areaRange(k) && String(answers[k].text || "").trim());
-  const m = areaMerge(done, areaRange(old) ? old : null, rid, Math.min(...ns), Math.max(...ns));
+  const m = areaMerge(done, rid, Math.min(...ns), Math.max(...ns));
   const text = m.from.map(k => answers[k] ? answers[k].text.trim() : "").filter(Boolean).join("\n\n");
   const lone = m.a === m.b && !text && bs[0].el.classList.contains("para") ? bs[0].el : null;
   const key = lone ? lone.dataset.key : m.key;
-  for (const k of m.from) if (k !== key) dropArea(k);  // taken in, or this rectangle's own before it moved
-  if (old !== key) leaveLink(old);
-  alink = key;
+  for (const k of m.from) if (k !== key) dropArea(k);  // taken in
   let t;
   if (lone) {
     if (!ownRow(lone)) aopened.add(key);
@@ -1687,11 +1655,12 @@ function areaSync() {
       api().draft(S.sid, key, sources[key], t.value);
     }
   }
-  if (!t) return;
+  if (!t) return null;
   count();
   t.focus();
   t.setSelectionRange(t.value.length, t.value.length);
   t.parentElement.scrollIntoView({block: "nearest"});
+  return t.parentElement;
 }
 function dropArea(k) {  // an area taken into another: its answer, draft and box go (its text lives on in the other)
   clearTimeout(saveJob[k]);
@@ -1700,27 +1669,7 @@ function dropArea(k) {  // an area taken into another: its answer, draft and box
   const row = $("replies").querySelector(`.ansrow.area[data-for="${CSS.escape(k)}"]`);
   if (row) unframe(row);
 }
-function leaveLink(k) {  // the box the rectangle opened, no longer its: it closes if empty and not being typed in
-  if (!k) return;
-  const row = $("replies").querySelector(`.ansrow[data-for="${CSS.escape(k)}"]`);
-  if (row && row.firstChild !== document.activeElement && (row.classList.contains("area") || aopened.has(k))) closeBox(row);
-}
-function areaCopied(on) {  // the quiet "Copied" at the rectangle's corner, for AREA_NOTE_MS
-  clearTimeout(acopied);
-  acopied = on ? setTimeout(() => areaCopied(false), AREA_NOTE_MS) : null;
-  areaPaint();
-}
-// a press anywhere outside the rectangle clears it; in the replies, that press's click does nothing else
-document.addEventListener("pointerdown", e => {
-  aswallow = false;
-  if (!area || e.target.closest("#area")) return;
-  const own = e.target.closest(".ansrow");
-  if (own && own.dataset.for === alink) return;  // in the box the rectangle opened: the rectangle stays
-  areaClear();
-  aswallow = !!e.target.closest("#body");
-}, true);
 $("body").addEventListener("pointerdown", e => {
-  if (e.target.closest("#area")) return;
   const b = $("body"), r = b.getBoundingClientRect();
   const c = {button: e.button, ctl: !!e.target.closest("button, a, textarea, .ansrow, .qb, .lnote"), scrollbar: e.clientX - r.left >= b.clientWidth};
   if (!c.ctl && !c.scrollbar) c.text = onGlyph(e.clientX, e.clientY);
@@ -1730,15 +1679,6 @@ $("body").addEventListener("pointerdown", e => {
 });
 // no text selection starts from blank space (the click still comes, so a paragraph's box opens as before)
 $("body").addEventListener("mousedown", e => { if (apend) e.preventDefault(); });
-// a press on the rectangle leaves the keyboard in the area's box, so the box and its frame stay
-$("area").addEventListener("mousedown", e => e.preventDefault());
-$("area").addEventListener("pointerdown", e => {
-  if (e.button !== 0) return;
-  e.preventDefault();
-  try { $("area").setPointerCapture(e.pointerId); } catch (_) {}
-  areaGo(e, e.target.dataset.e || "move", Object.assign({}, area), bodyPt(e.clientX, e.clientY));
-  areaPaint();
-});
 addEventListener("pointermove", e => {
   if (apend && e.pointerId === apend.id) {
     if (!(e.buttons & 1)) { apend = null; return; }
@@ -1746,7 +1686,11 @@ addEventListener("pointermove", e => {
     const at = {x: apend.x, y: apend.y};
     apend = null;
     try { $("body").setPointerCapture(e.pointerId); } catch (_) {}
-    areaGo(e, "se", {x: at.x, y: at.y, w: 0, h: 0}, at);
+    adrag = {id: e.pointerId, at, cx: e.clientX, cy: e.clientY};
+    document.body.classList.add("areaing", "drawing");
+    getSelection().removeAllRanges();
+    tipHide();
+    areaCopied(null);
   }
   if (adrag && e.pointerId === adrag.id) {
     adrag.cx = e.clientX;
@@ -1759,11 +1703,10 @@ addEventListener("pointerup", e => {
   if (apend && e.pointerId === apend.id) apend = null;  // a click: the paragraph's own (clickAction())
   if (adrag && e.pointerId === adrag.id) areaEnd();
 });
-addEventListener("pointercancel", () => { apend = null; areaEnd(); });
+addEventListener("pointercancel", () => { if (adrag) areaClear(); apend = null; });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && area && !(e.target.classList && e.target.classList.contains("ans"))) { e.preventDefault(); areaClear(); }
+  if (e.key === "Escape" && adrag) { e.preventDefault(); areaClear(); }
 }, true);
-addEventListener("resize", () => { if (area) { area = areaResize(area, "move", 0, 0, areaBounds()); areaPaint(); } });
 
 // ---------- tooltip: as the panel's (mindmap tooltip.md) ----------
 let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
