@@ -21,7 +21,7 @@
      it can be answered). A drag that selects text, a double click, and clicks on a link, a code block, Pin or a
      ":N" badge never open or close a box. Several boxes can be open. What the user types there is theirs, in blue on
      a light blue ground with a blue rule on the left, kept per session (agent-panel.pyw stores it through api.draft)
-     until it is sent; a box with a kept answer is open when the reply is shown.
+     until a newer prompt is typed (sending it keeps it); a box with a kept answer is open when the reply is shown.
      Code blocks show shut, as one line (language, lines, first line), and open on a click. The passages selected
      in the terminal for the ":N" reply show marked where they stand, led by their ":N"; one that is not in the
      reply text is listed at the bottom. The bar at the bottom counts the answers and selections; Send to Session pastes
@@ -238,7 +238,7 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 <div id="body"><div id="empty" hidden></div><div id="replies"></div></div>
 <div id="miss" hidden></div>
 <div id="foot"><span id="count"></span><span id="say" role="status"></span>
-  <button type="button" class="b" id="copy" data-tip="Copies the replies you answered, each with your answers inside it, to paste anywhere."><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
+  <button type="button" class="b" id="copy"><svg viewBox="0 0 14 14" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5"/><path d="M9.5 2.5h-6a1 1 0 0 0-1 1v6"/></svg>Copy</button>
   <button type="button" class="b primary" id="send"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7h9M7.5 3.5L11 7l-3.5 3.5"/></svg>Send to Session</button>
 </div>
 <script>
@@ -697,16 +697,19 @@ function mark() {
 }
 
 function count() {
-  // the answers under what is shown now are the ones Copy and Send to Session take; those under another chip wait
+  // the answers under what is shown now are the ones Copy and Send to Session take; those under another chip wait.
+  // Copy and Send to Session are never off (asked 2026-11-25): with no answer they take the replies shown as they are;
+  // "sent" while what they would paste is what the last Send to Session of this session pasted
   const all = Object.entries(answers).filter(([, a]) => a.text.trim()), s = (S && S.selections || []).length;
   const n = sendList(answers, sources, []).length, other = all.length - n;
   const parts = [n ? `<b>${n} answer${n === 1 ? "" : "s"}</b>` : "No answer yet"];
+  if (S && sentAs[S.sid] && sentAs[S.sid] === sig(toSend())) parts.push("sent");
   if (other) parts.push(`${other} more under another chip`);
   if (s) parts.push(`${s} selection${s === 1 ? "" : "s"}`);
-  if (all.length) parts.push("draft kept");
   $("count").innerHTML = parts.join(" · ");
-  $("copy").disabled = $("send").disabled = !n;
-  $("send").dataset.tip = S ? `Pastes the replies you answered, with your answers inside them, into the prompt of ${S.name}. Nothing is sent until you press Enter there.` : "";
+  const what = n ? "the replies you answered, with your answers inside them," : "the reply as it is";
+  $("copy").dataset.tip = `Copies ${what} to paste anywhere.`;
+  $("send").dataset.tip = S ? `Pastes ${what} into the prompt of ${S.name}, after what is there. Nothing is sent until you press Enter there.` : "";
   size();
 }
 
@@ -1221,6 +1224,15 @@ function askHide() {
 function ordered() {
   return sendList(answers, sources, [...document.querySelectorAll("#replies .para")].map(p => p.dataset.key), ends);
 }
+// What Copy and Send to Session hand the panel: the answers (ordered()); with none, each reply shown, as it is (a key
+// "<message id>#" with no text: agent-panel.pyw reply_text() quotes that reply whole, no answer inside)
+function toSend() {
+  const list = ordered();
+  return list.length || !S ? list : shownReplies().map(r => ({key: r.id + "#", passage: "", text: "", line: -1}));
+}
+const sig = list => list.length ? JSON.stringify(list.map(a => [a.key, a.text])) : "";
+const sentAs = {};  // sid -> sig() of what its last Send to Session pasted (this run only)
+let sending = false;
 let sayJob = null;
 function say(t, err) {
   clearTimeout(sayJob);
@@ -1230,27 +1242,24 @@ function say(t, err) {
 }
 function sayClear() { if ($("say").classList.contains("err")) say(""); }
 document.addEventListener("pointerdown", sayClear, true);
+const NO_REPLY = "There is no reply here yet.";
 $("copy").addEventListener("click", () => {
-  api().copy(S.sid, ordered()).then(ok => say(ok ? "Copied" : "Could not copy: another program holds the clipboard. Try again.", !ok));
+  const list = toSend();
+  if (!list.length) { say(NO_REPLY, true); return; }
+  api().copy(S.sid, list).then(ok => say(ok ? "Copied" : "Could not copy: another program holds the clipboard. Try again.", !ok));
 });
+// Send to Session keeps every answer in its box and draft (asked 2026-11-25: a pasted block deleted by mistake in the
+// terminal took the answers with it); each press pastes the whole text again after what the prompt holds. A press
+// while one is still on its way does nothing (two pastes at once would race for the terminal).
 $("send").addEventListener("click", () => {
-  const sid = S.sid, list = ordered();
-  if (!list.length) return;
-  for (const k of Object.keys(saveJob)) clearTimeout(saveJob[k]);
-  const b = $("send");
-  b.disabled = true;
+  const sid = S.sid, list = toSend();
+  if (!list.length) { say(NO_REPLY, true); return; }
+  if (sending) return;
+  sending = true;
   say("Typing into " + S.name + "…");
   api().send(sid, list).then(r => {
-    if (r && !r.err && S.sid === sid) {  // the answers sent go; those under another chip stay
-      for (const a of list) { delete answers[a.key]; if (S.answers) delete S.answers[a.key]; }
-      document.querySelectorAll("#replies .ansrow").forEach(row => {
-        if (!list.some(a => a.key === row.dataset.for)) return;
-        const p = row.previousElementSibling;
-        opened.delete(row.dataset.for);
-        row.remove();
-        if (p) tipFor(p);
-      });
-    }
+    sending = false;
+    if (r && !r.err) sentAs[sid] = sig(list);
     say(r ? r.t : "", !r || r.err);
     count();
   });
