@@ -254,8 +254,11 @@ body.drawing #body, body.drawing #body * { cursor: crosshair !important; }
 #area[hidden], #areaNote[hidden] { display: none; }
 #areaNote { position: absolute; z-index: 6; pointer-events: none; padding: 0 6px; border-radius: 4px; background: var(--panel);
   color: var(--blue); font: 500 12px/18px "Segoe UI", system-ui, sans-serif; white-space: nowrap; animation: fade .16s ease-out; }
-#replies .inarea, #replies .inarea:hover { background-color: rgba(27, 77, 245, .09); }
-#replies .code.inarea { border-color: rgba(27, 77, 245, .45); }
+#replies .inarea, #replies .inarea:hover, #replies .copied, #replies .copied:hover { background-color: rgba(27, 77, 245, .09); }
+#replies .code.inarea, #replies .code.copied { border-color: rgba(27, 77, 245, .45); }
+/* what a release copied keeps the drag's tint for AREA_TINT_MS, then .fading carries it back over AREA_FADE_MS
+   (reduced motion: the rule below drops the transition, so it just goes) */
+#replies .fading { transition: background-color .3s ease-out, border-color .3s ease-out; }
 /* an area answered as a whole: its blocks in one frame (drawn round them, so nothing moves), its box under the last;
    --r-ctl round the blocks' own 6 px tint 4 px inside it, so the corners nest */
 .agroup { position: relative; z-index: 0; }
@@ -1741,8 +1744,9 @@ $("send").addEventListener("click", () => {
 // box keeps it. To change an area, drag again (a drag over an answered area extends it). The rectangle lives in
 // #body's own coordinates, so it scrolls with the replies; dragged within AREA_ZONE px of the top or bottom edge (or
 // past it) the replies scroll, faster the further out, so it can span more than one screen. Esc drops a drag.
-const AREA_ZONE = 28, AREA_STEP = 24, AREA_MOVE = 4, AREA_NOTE_MS = 1000;
+const AREA_ZONE = 28, AREA_STEP = 24, AREA_MOVE = 4, AREA_NOTE_MS = 1000, AREA_TINT_MS = 1500, AREA_FADE_MS = 300;
 let area = null, adrag = null, apend = null, ascroll = null, acopied = null;  // acopied: the note's timer
+let atinted = [], atint = null;  // the blocks a release copied, still tinted, and their timer
 const aopened = new Set();  // paragraph boxes the rectangle opened: they close when left empty, as an area's box does
 function areaBounds() {  // the replies' own size in #body's coordinates (the window is as tall as they are)
   const b = $("body"), rp = $("replies");
@@ -1790,6 +1794,22 @@ function areaClear() {  // a drag dropped (Esc, a redraw) or ended: no rectangle
   document.body.classList.remove("areaing", "drawing");
   areaPaint();
   areaCopied(null);
+  areaTint(null);
+}
+// What a release copied, shown (asked 2026-11-25: "nereyi copy ettiğini anlayabilsin"): the blocks keep the drag's
+// tint (.copied) for AREA_TINT_MS, then it fades over AREA_FADE_MS (.fading). Only the release's copy; a new drag,
+// Esc and a redraw drop it at once
+function areaTint(els) {
+  clearTimeout(atint);
+  atint = null;
+  atinted.forEach(el => el.classList.remove("copied", "fading"));
+  atinted = (els || []).filter(el => el.isConnected);
+  if (!atinted.length) return;
+  atinted.forEach(el => el.classList.add("copied"));
+  atint = setTimeout(() => {
+    atinted.forEach(el => { el.classList.add("fading"); el.classList.remove("copied"); });
+    atint = setTimeout(() => areaTint(null), AREA_FADE_MS);
+  }, AREA_TINT_MS);
 }
 function areaFollow() {  // the rectangle where the pointer has taken it (the replies may have scrolled meanwhile)
   area = areaRect(adrag.at, bodyPt(adrag.cx, adrag.cy), areaBounds());
@@ -1808,7 +1828,8 @@ function areaScroll() {  // while a drag is near or past the top or bottom edge:
   ascroll = requestAnimationFrame(areaScroll);
 }
 // Let go: the rectangle and the tint go; the blocks it touched get their frame and box (areaSync()) and are copied,
-// once per release; "Copied" shows at the frame's corner (the blocks' own when no frame is made).
+// once per release; "Copied" shows at the frame's corner (the blocks' own when no frame is made), and the blocks
+// copied stay tinted for a moment (areaTint()).
 function areaEnd() {
   if (!adrag) return;
   const bs = areaBlocks();
@@ -1817,16 +1838,19 @@ function areaEnd() {
   const row = areaSync(bs), frame = row && row.closest(".agroup"), key = row ? row.dataset.for : null;
   const c = key && clipOf(key);  // one reply: what its box answers comes along (an area taken in has one already)
   const text = c ? c.text : areaMarkdown(shownReplies().map(r => r.text), areaPicks(bs));
-  areaCopy(text, c ? c.answers : [], frame ? [frame] : bs.map(b => b.el), key);
+  areaCopy(text, c ? c.answers : [], frame ? [frame] : bs.map(b => b.el), key, bs.map(b => b.el));
 }
-function areaCopy(text, list, els, key) {  // the touched blocks as Claude wrote them, on the clipboard; the keyboard stays where it is
+// the touched blocks as Claude wrote them, on the clipboard; the keyboard stays where it is. The blocks stay tinted
+// from the release on (areaTint(), no gap after the drag's tint), the tint dropped if the copy fails
+function areaCopy(text, list, els, key, blocks) {
   clearTimeout(clipJob);
   clip = null;
   if (!text) return;
+  areaTint(blocks);
   const c = key && S ? {sid: S.sid, key, seq: null} : null;
   const r = Promise.resolve(api().copy_area(text, list, null)).then(seq => {
     if (seq) areaCopied(els);
-    else say("Could not copy: another program holds the clipboard. Try again.", true);
+    else { areaTint(null); say("Could not copy: another program holds the clipboard. Try again.", true); }
     if (c && typeof seq === "number") c.seq = seq;
   });
   if (c) { c.ready = r; clip = c; }
@@ -1950,6 +1974,7 @@ addEventListener("pointermove", e => {
     getSelection().removeAllRanges();
     tipHide();
     areaCopied(null);
+    areaTint(null);
   }
   if (adrag && e.pointerId === adrag.id) {
     adrag.cx = e.clientX;

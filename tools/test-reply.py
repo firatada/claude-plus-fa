@@ -1435,7 +1435,7 @@ const later = ms => new Promise(r => setTimeout(r, ms));
 """
 
 
-def page_run(test=PAGE_TEST, size="800,600", budget=3000):
+def page_run(test=PAGE_TEST, size="800,600", budget=3000, flags=()):
     with open(os.path.join(ROOT, "agent-reply.html"), encoding="utf-8") as f:
         page = f.read()
     at = page.index("<script>")
@@ -1450,7 +1450,7 @@ def page_run(test=PAGE_TEST, size="800,600", budget=3000):
         import subprocess
         r = subprocess.run([EDGE, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
                             "--user-data-dir=" + os.path.join(d, "profile"), "--virtual-time-budget=%d" % budget, "--dump-dom",
-                            "--window-size=" + size, "--force-device-scale-factor=1",
+                            "--window-size=" + size, "--force-device-scale-factor=1", *flags,
                             "file:///" + path.replace("\\", "/")], capture_output=True, text=True, encoding="utf-8",
                            timeout=90)
         m = re.search(r'<pre id="tout">(.*?)</pre>', r.stdout, re.S)
@@ -1606,6 +1606,107 @@ class AreaPage(unittest.TestCase):
         self.assertEqual(self.o["click"], ["m1#0"])  # the empty box the drag opened closed; the clicked one opened
         # the rectangle gone on release, the paragraph's own box opened with the caret, its text copied
         self.assertEqual(self.o["textDrag"], [True, 1, ["Second reply."], "m2#0"])
+
+
+# What a release copied stays tinted (headless Edge, events dispatched to the page): the blocks keep the drag's tint
+# for AREA_TINT_MS 1.5 s, then fade over AREA_FADE_MS 300 ms; for one block (no frame), for several (the frame stays,
+# the tint inside it fades) and across two replies (copied only). A new drag drops it at once. With reduced motion
+# the tint goes after the same time, with no fade.
+TINT_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  reply.show({sid: "s1", name: "x", replies: [{id: "m1", when: "10:00", text: "Intro.\n\n- one\n- two\n- three\n\n```js\nx\n```"},
+    {id: "m2", when: "10:01", text: "Second reply."}], answers: {}, selections: [], note: "", pins: []});
+  await later(50);
+  const ev = (el, type, x, y) => el.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type,
+    {bubbles: true, cancelable: true, composed: true, button: 0, buttons: type === "pointerup" ? 0 : 1, pointerId: 1,
+     pointerType: "mouse", isPrimary: true, clientX: x, clientY: y, detail: 1}));
+  const body = document.getElementById("body"), left = body.getBoundingClientRect().left + 4;
+  const B = (r, n) => document.querySelector(`.reply[data-id="${r}"] [data-n="${n}"]`).getBoundingClientRect();
+  const drag = (y0, y1) => {
+    ev(body, "pointerdown", left, y0); ev(body, "mousedown", left, y0);
+    for (let k = 1; k <= 5; k++) ev(body, "pointermove", left + (400 - left) * k / 5, y0 + (y1 - y0) * k / 5);
+    ev(body, "pointerup", 400, y1); ev(body, "mouseup", 400, y1); ev(body, "click", 400, y1);
+    return performance.now();
+  };
+  const ids = s => [...document.querySelectorAll(s)].map(e => e.closest(".reply").dataset.id + "#" + e.dataset.n);
+  const st = () => ({copied: ids(".copied"), fading: ids(".fading"), inarea: document.querySelectorAll(".inarea").length,
+    frames: document.querySelectorAll(".agroup").length});
+  const el = (r, n) => document.querySelector(`.reply[data-id="${r}"] [data-n="${n}"]`);
+  const bg = (r, n) => getComputedStyle(el(r, n)).backgroundColor;
+  const o = {rest: bg("m1", 2)};
+  const at = (t0, ms) => later(Math.max(0, ms - (performance.now() - t0)));
+  // one block: its own box, no frame, tinted
+  let t0 = drag(B("m1", 2).top + 4, B("m1", 2).top + 8);
+  o.one = st(); o.oneBg = bg("m1", 2);
+  await at(t0, 1000); o.one1 = st();
+  await at(t0, 1600); o.one16 = st(); o.oneFade = getComputedStyle(el("m1", 2)).transitionDuration; o.one16Bg = bg("m1", 2);
+  await at(t0, 2000); o.one20 = st(); o.oneAfter = bg("m1", 2);
+  document.activeElement.blur();
+  await later(30);
+  // several blocks: one frame, every block in it tinted, the frame stays when the tint has gone
+  t0 = drag(B("m1", 1).top + 4, B("m1", 4).top + 6);
+  o.many = st();
+  await at(t0, 1600); o.many16 = st();
+  await at(t0, 2000); o.many20 = st();
+  document.activeElement.blur();
+  await later(30);
+  // two replies: copied only, tinted all the same; a new drag drops the tint at once
+  drag(B("m1", 4).top + 4, B("m2", 0).top + 6);
+  o.two = st();
+  ev(body, "pointerdown", left, B("m1", 0).top + 4); ev(body, "mousedown", left, B("m1", 0).top + 4);
+  ev(body, "pointermove", 400, B("m1", 0).top + 12);
+  o.redrag = st();
+  ev(body, "pointerup", 400, B("m1", 0).top + 12);
+  o.copies = (T.area || []).length;
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class TintPage(unittest.TestCase):
+    """What a release copied keeps the drag's tint for a moment, so the user sees what went on the clipboard."""
+    o = r = None
+    TINT = "rgba(27, 77, 245, 0.09)"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(TINT_TEST, budget=9000)
+        cls.r = page_run(TINT_TEST, budget=9000, flags=("--force-prefers-reduced-motion",))
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+        self.assertNotIn("error", self.r)
+
+    def test_one_block_stays_tinted_then_fades(self):
+        o = self.o
+        self.assertEqual(o["one"], {"copied": ["m1#2"], "fading": [], "inarea": 0, "frames": 0})
+        self.assertEqual(o["oneBg"], self.TINT)  # the drag's own tint
+        self.assertEqual(o["one1"]["copied"], ["m1#2"])  # still there after a second
+        self.assertEqual((o["one16"]["copied"], o["one16"]["fading"], o["oneFade"]), ([], ["m1#2"], "0.3s, 0.3s"))  # background and border
+        # gone after 1.8 s (the colour itself is checked under reduced motion: headless --dump-dom never runs a
+        # transition, so here it would read the tint still; the fade itself was seen in a rendered browser)
+        self.assertEqual((o["one20"]["copied"], o["one20"]["fading"]), ([], []))
+
+    def test_several_blocks_in_a_frame_the_tint_fades_the_frame_stays(self):
+        o = self.o
+        self.assertEqual(o["many"], {"copied": ["m1#1", "m1#2", "m1#3", "m1#4"], "fading": [], "inarea": 0, "frames": 1})
+        self.assertEqual((o["many16"]["copied"], o["many16"]["fading"]), ([], ["m1#1", "m1#2", "m1#3", "m1#4"]))
+        self.assertEqual((o["many20"]["copied"], o["many20"]["fading"], o["many20"]["frames"]), ([], [], 1))
+
+    def test_two_replies_are_tinted_and_a_new_drag_drops_it(self):
+        self.assertEqual(self.o["two"]["copied"], ["m1#4", "m2#0"])
+        self.assertEqual(self.o["redrag"]["copied"], [])
+        self.assertEqual(self.o["copies"], 4)  # one per release, the last drag too
+
+    def test_reduced_motion_the_tint_goes_after_the_same_time_without_a_fade(self):
+        r = self.r
+        self.assertEqual(r["one1"]["copied"], ["m1#2"])
+        self.assertEqual((r["oneBg"], r["oneFade"]), (self.TINT, "0s"))
+        self.assertEqual(r["one16Bg"], r["rest"])  # gone at 1.5 s, at once
+        self.assertEqual(r["one20"]["copied"] + r["one20"]["fading"], [])
 
 
 # An area answered as a whole, in the real page (headless Edge, events dispatched to the page): a drag across a
@@ -2663,6 +2764,8 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   o.release = T.calls.slice();
   const box = document.activeElement;
   await later(1100);  // the release's "Copied" is gone
+  await later(800);  // and its tint
+  o.tintGone = document.querySelectorAll(".copied, .fading").length;
   type("Onay");
   await later(100);
   o.early = T.calls.length;  // typing still going on: nothing yet
@@ -2670,6 +2773,7 @@ const later = ms => new Promise(r => setTimeout(r, ms));
   await later(400);
   o.typed = T.calls.slice(1);
   o.note = nt.hidden;
+  o.retint = document.querySelectorAll(".copied, .fading").length;
   T.seq = 50;  // the user copied something else
   type("!");
   await later(400);
@@ -2712,7 +2816,7 @@ class ClipPage(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.o = page_run(CLIP_TEST, budget=8000)
+        cls.o = page_run(CLIP_TEST, budget=9000)
 
     def test_no_error(self):
         self.assertNotIn("error", self.o)
@@ -2724,6 +2828,7 @@ class ClipPage(unittest.TestCase):
         self.assertEqual(self.o["early"], 1)
         self.assertEqual(self.o["typed"], [{"text": self.MD, "answers": [["m1#1-2", "Onaylıyorum", 1]], "expect": 11}])
         self.assertTrue(self.o["note"])  # no "Copied" for it
+        self.assertEqual((self.o["tintGone"], self.o["retint"]), (0, 0))  # and no tint again
 
     def test_once_something_else_was_copied_the_area_stops_following(self):
         self.assertEqual(self.o["moved"], [{"text": self.MD, "answers": [["m1#1-2", "Onaylıyorum!", 1]], "expect": 12}])
