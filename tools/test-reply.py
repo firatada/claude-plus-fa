@@ -329,6 +329,29 @@ class Sent(unittest.TestCase):
         self.assertTrue(text.endswith("> An old pinned reply.\n>\n> Its question?\n\nMy answer: Yes."))
         self.assertNotIn("another session", text)
 
+    def test_with_no_answer_the_reply_goes_as_it_is(self):
+        # Copy and Send to Session are never off: with no answer the page hands "<message id>#" per reply shown
+        self.assertEqual(ar.answer_block("\nFirst.\n\nSecond?\n", "09:05", []),
+                         'Your reply of 09:05, quoted with "> ":\n\n> First.\n>\n> Second?')
+        self.assertEqual(ar.answer_block("", "09:05", []), "")
+        P = panel_methods("seen", "reply_text")
+        p = P()
+        p.reply_mod, p.reply_seen = ar, {}
+        p.seen("s1", "m1", "One.", None)
+        p.seen("s1", "m2", "Two.", None)
+        self.assertEqual(p.reply_text("s1", [{"key": "m1#", "passage": "", "text": "", "line": -1},
+                                             {"key": "m2#", "passage": "", "text": "", "line": -1}]),
+                         'Your reply, quoted with "> ":\n\n> One.\n\nYour reply, quoted with "> ":\n\n> Two.')
+        self.assertEqual(p.reply_text("s1", [{"key": "m1#0", "passage": "One.", "text": "  ", "line": 0}]), "")
+
+    def test_a_send_keeps_the_drafts(self):
+        # asked 2026-11-25: a paste deleted by mistake in the terminal must not take the answers with it
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        panel = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Panel")
+        send = next(n for n in panel.body if isinstance(n, ast.FunctionDef) and n.name == "reply_send")
+        self.assertNotIn("self.drafts", ast.unparse(send))
+
     def test_the_store_keeps_the_newest(self):
         P = panel_methods("seen")
         p = P()
@@ -442,6 +465,7 @@ out.inline = inline("**bold** `code` ~~gone~~ *it* [docs](https://ex.com/a?b=1&c
 out.lists = blocks("1. one\n2. two\n   more\n- dot\n  - nested").map(b => [b.kind, b.marker, b.indent, b.text]);
 out.quote = blocks("> a\n> b")[0];
 out.heads = blocks("# H1\n## H2\n### H3").map(b => blockHtml(b, "k"));
+out.codes = blocks("```js\nconst a = 1;\n```\n\n~~~\n" + Array.from({length: 60}, (_, i) => "line " + i).join("\n") + "\n~~~").map(b => blockHtml(b, "k"));
 const C = (o) => clickAction(Object.assign({own: false, moved: false, selected: false, detail: 1, box: false, text: false}, o));
 out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}), drag: C({moved: true}),
   dragShut: C({moved: true, box: true}), selected: C({selected: true}), dbl: C({detail: 2}), own: C({own: true}),
@@ -449,6 +473,9 @@ out.click = {open: C({}), close: C({box: true}), keep: C({box: true, text: true}
 out.tips = [paraTip("p"), paraTip("li"), paraTip("table")];
 out.tab = [tabTarget(5, 0, false), tabTarget(5, 3, false), tabTarget(5, 4, false), tabTarget(5, 4, true), tabTarget(5, 0, true),
   tabTarget(1, 0, false), tabTarget(5, -1, false)];
+// what the panel sends is held only while a box has the keyboard of the window in front, or words are being dictated
+out.hold = [[true, true, false], [true, false, false], [false, true, false], [false, false, true], [true, false, true],
+  [false, false, false]].map(([box, focused, dictating]) => holdsUpdates({box, focused, dictating}));
 const run = (evs) => { let s = null; const acts = []; for (const e of evs) { const r = spaceRule(s, e); s = r.s; acts.push(r.act); } return [s && s.st, acts]; };
 const D = {type: "down", repeat: false}, R = {type: "down", repeat: true}, U = {type: "up"}, T = {type: "timer"},
   K = {type: "key"}, B = {type: "blur"}, F = {type: "fail"};
@@ -548,6 +575,14 @@ class Markdown(unittest.TestCase):
         self.assertIn("<td>Trend <code>cut</code></td>", h)
         self.assertNotIn("|", h)
 
+    def test_a_code_block_is_drawn_open_short_or_long(self):
+        short, long = self.md["codes"]
+        for h in (short, long):
+            self.assertTrue(h.startswith('<div class="code open"><button type="button" data-tip="Hides the code">'), h[:80])
+        self.assertIn("<span>1 line</span>", short)
+        self.assertIn("<span>60 lines</span>", long)
+        self.assertIn("line 59</pre>", long)
+
     def test_pipes_without_a_dash_row_stay_as_written(self):
         self.assertEqual(self.md["noSep"], ["pre"])
 
@@ -609,6 +644,11 @@ class Markdown(unittest.TestCase):
 
     def test_each_block_names_its_last_line_where_its_answer_goes(self):
         self.assertEqual(self.md["planEnds"], PLAN_ENDS)
+
+    def test_updates_wait_for_a_box_only_while_its_window_has_the_keyboard(self):
+        # a box in a window behind the terminal (it keeps the focus) holds nothing: the tab follows the terminal in
+        # front; words still being transcribed hold the page in any case, so they land in their own session's box
+        self.assertEqual(self.md["hold"], [True, False, False, True, True, False])
 
     def test_tab_goes_to_the_next_block_and_shift_tab_back_ending_at_either_end(self):
         self.assertEqual(self.md["tab"], [1, 4, -1, 3, -1, -1, -1])
@@ -1111,6 +1151,8 @@ const T_API = {
   link(u) { T.links.push(u); return Promise.resolve(/gone/.test(u) ? {note: "File not found"} : {ok: true}); },
   tab(sid) { T.tabs.push(sid); return Promise.resolve(null); },
   fold() { T.folds++; return Promise.resolve(null); },
+  send(sid, list) { (T.sends = T.sends || []).push([sid, list]); return Promise.resolve({t: "Pasted", err: false}); },
+  copy(sid, list) { (T.copies = T.copies || []).push([sid, list]); return Promise.resolve(true); },
 };
 window.pywebview = {api: new Proxy(T_API, {get: (t, k) => k in t ? t[k] : () => Promise.resolve(null)})};
 </script>
@@ -1256,6 +1298,80 @@ const later = ms => new Promise(r => setTimeout(r, ms));
 })().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
 </script>
 """
+
+
+# Copy and Send to Session: never off; a send keeps the answers in their boxes, a second press pastes the same again;
+# the bar says "sent" while the answers are what was pasted; with no answer the replies shown go as they are.
+SEND_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  reply.show({sid: "s1", name: "gameclub", replies: [{id: "m1", when: "10:01", text: "First.\n\nSecond?"}], answers: {},
+    selections: [], note: "", pins: []});
+  await later(50);
+  const st = () => ({count: document.getElementById("count").textContent, copy: document.getElementById("copy").disabled,
+    send: document.getElementById("send").disabled, boxes: [...document.querySelectorAll("#replies .ans")].map(b => b.value)});
+  const o = {empty: st()};
+  document.getElementById("copy").click();
+  document.getElementById("send").click();
+  await later(50);
+  o.emptySent = st();
+  o.plain = [T.copies[0][1], T.sends[0][1]];
+  const type = (n, text) => {
+    document.querySelectorAll("#replies .para")[n].click();
+    const b = document.querySelectorAll("#replies .ans")[n] || document.querySelector(`#replies .ansrow[data-for="m1#${n}"] .ans`);
+    b.value = text;
+    b.dispatchEvent(new Event("input", {bubbles: true}));
+    b.blur();
+  };
+  type(0, "yes");
+  type(1, "no");
+  await later(50);
+  o.typed = st();
+  document.getElementById("send").click();
+  await later(50);
+  o.sent1 = st();
+  document.getElementById("send").click();
+  await later(50);
+  o.sent2 = st();
+  o.sends = T.sends.slice(1).map(s => s[1].map(a => [a.key, a.text]));
+  const b = document.querySelector("#replies .ans");
+  b.value = "yes, and more";
+  b.dispatchEvent(new Event("input", {bubbles: true}));
+  b.blur();
+  await later(50);
+  o.edited = st();
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class SendKeeps(unittest.TestCase):
+    """Send to Session keeps the answers and can be pressed again, in the real page (the panel's send is a stub)."""
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(SEND_TEST)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_never_off_and_with_no_answer_the_reply_goes_as_it_is(self):
+        self.assertEqual(self.o["empty"], {"count": "No answer yet", "copy": False, "send": False, "boxes": []})
+        self.assertEqual(self.o["emptySent"]["count"], "No answer yet · sent")
+        plain = [{"key": "m1#", "passage": "", "text": "", "line": -1}]
+        self.assertEqual(self.o["plain"], [plain, plain])
+
+    def test_a_send_keeps_the_answers_and_a_second_press_pastes_them_again(self):
+        self.assertEqual(self.o["typed"], {"count": "2 answers", "copy": False, "send": False, "boxes": ["yes", "no"]})
+        self.assertEqual(self.o["sent1"], {"count": "2 answers · sent", "copy": False, "send": False, "boxes": ["yes", "no"]})
+        self.assertEqual(self.o["sent2"], self.o["sent1"])
+        self.assertEqual(self.o["sends"], [[["m1#0", "yes"], ["m1#1", "no"]]] * 2)
+
+    def test_an_answer_changed_after_a_send_is_no_longer_sent(self):
+        self.assertEqual(self.o["edited"]["count"], "2 answers")
 
 
 @unittest.skipUnless(EDGE, "Microsoft Edge is not installed")

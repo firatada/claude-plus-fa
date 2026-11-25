@@ -4327,13 +4327,16 @@ class Panel:
     def reply_text(self, sid, answers):
         """What Send to Session pastes and Copy copies: each reply answered, in the order its answers come
         ([{key "<message id>#<block>", passage, text, line}], as the page's sendList() gives them), its text as the
-        window was handed it (reply_seen, by message id) with the answers inside it (agent-reply.py format_answered_replies())."""
+        window was handed it (reply_seen, by message id) with the answers inside it (agent-reply.py format_answered_replies()).
+        A key "<message id>#" (no block: the page's toSend() with no answer typed) names a reply sent as it is."""
         mod, order, by = self.reply_mod, [], {}
         for a in answers:
-            rid = str(a.get("key") or "").rpartition("#")[0]
+            rid, _, block = str(a.get("key") or "").rpartition("#")
             if rid not in by:
                 order.append(rid)
                 by[rid] = []
+            if not block:
+                continue
             try:
                 line = int(a.get("line"))
             except (TypeError, ValueError):
@@ -4349,7 +4352,7 @@ class Panel:
         """Send to Session: each reply answered, whole, with the answers inside it (reply_text()), pasted into the
         session's prompt through the paste key's process, at the cursor, without Enter, with its terminal in front.
         Claude Code shows a paste of several lines folded ("[Pasted text #1 +N lines]") and sends it whole. The
-        sent answers' drafts go once the terminal has read the paste."""
+        answers stay in their boxes and drafts (2026-11-25), so a press again pastes the same text once more."""
         s = next((o for o in self.sessions if o["id"] == sid and o.get("status") and o.get("pid")), None)
         if not s:
             return err("That session is closed. Use Copy and paste it where you need it.")
@@ -4357,7 +4360,7 @@ class Panel:
             return err("The reply rules did not load. Use Copy.")
         text = self.reply_text(sid, answers)
         if not text:
-            return err("Type an answer under a paragraph first.")
+            return err("There is no reply here yet.")
         h = paste_window()
         if not h:
             return err('The paste key is not running ("paste_keys" is off), so nothing can be pasted. Use Copy.')
@@ -4412,13 +4415,10 @@ class Panel:
         if after:
             bring_front(hwnd)
             send_log("after", after, "raised again:", where() or "ok")
-        if self.drafts:  # only the answers sent: those under another chip stay
-            try:
-                self.drafts.clear(sid, [str(a.get("key")) for a in sent if a.get("key")])
-            except OSError:
-                pass
         self.reply_key = None
         n = len(sent)
+        if not n:
+            return ok("Pasted the reply into %s. Press Enter there to send it." % name)
         return ok("Pasted into %s: %d answer%s inside the reply. Press Enter there to send it."
                   % (name, n, "" if n == 1 else "s"))
 

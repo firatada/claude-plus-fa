@@ -21,6 +21,7 @@ PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
 HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers are marked "My answer:"):'
 ANSWER = "My answer:"  # leads each answer inside the quoted reply
+PLAIN = '%s, quoted with "> ":'  # leads a reply sent with no answer in it
 
 
 def stamp(ts):
@@ -177,7 +178,7 @@ class Drafts:
 
     @locked
     def clear(self, sid, keys=None):
-        """Sent: the session's answers go (only those keys, when given)."""
+        """The session's answers go (only those keys, when given): expire()'s. Sending keeps them (2026-11-25)."""
         d = self.data.get(sid)
         if not d:
             return False
@@ -328,8 +329,16 @@ def answer_block(text, when, answers):
     lines exactly as stored, each quoted with "> ", and each answer unquoted right after the line that ends the block
     it answers, led by "My answer:" and parted from the quoted lines by a blank line (the quoted blank lines that
     stood there are left out). answers: [(line, passage, answer)]. An answer whose block is not found in text (a
-    reply no longer stored) goes at the end after its own passage, quoted. "" when no answer has text."""
+    reply no longer stored) goes at the end after its own passage, quoted. "" when no answer has text. No answers at
+    all (answers []): the reply alone, quoted under PLAIN ("" when it holds no text)."""
     lines = (text or "").replace("\r\n", "\n").split("\n")
+    if not answers:
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        name = "Your reply of " + when if when else "Your reply"
+        return "\n".join([PLAIN % name, ""] + quote(lines)) if lines else ""
     at, loose = {}, []
     for line, passage, a in answers:
         a = mine(a)
