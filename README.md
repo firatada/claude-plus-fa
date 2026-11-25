@@ -54,7 +54,7 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 - Each card shows how full that session's context is. The bottom shows your 5-hour and weekly usage.
 
 Using it:
-- Click an open session to bring its window to the front.
+- Click an open session to bring its window to the front, even from the notification area (Windows Terminal's **Hide Terminal in the notification area when it is minimized**). Click it again to put it away.
 - A link you Ctrl+click in a session's terminal opens in front, even when Windows would leave the browser or editor behind the terminal.
 - Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
 - Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
