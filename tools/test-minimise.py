@@ -1,11 +1,12 @@
-# Tests for a minimised session terminal leaving the Field Agents panel on screen: follow_front() hooks
-# EVENT_SYSTEM_MINIMIZESTART; on_min() acts only for a session window the panel rides under while it shows;
-# stay_on_screen() waits for the window Windows makes the foreground next and puts the panel over it (surface(),
-# not activated), unless the panel itself, another session window or any terminal came forward or the user moved on.
+# Tests for a minimised or closed session terminal leaving the Field Agents panel on screen: follow_front() hooks
+# EVENT_SYSTEM_MINIMIZESTART and EVENT_OBJECT_DESTROY; on_min() acts only for a session window the panel rides under
+# while it shows, on_gone() only for the session window in front; stay_on_screen() waits for the window Windows makes
+# the foreground next (none is in front for a moment after a close) and puts the panel over it (surface(), not
+# activated), unless the panel itself, another session window or any terminal came forward or the user moved on.
 # Run: python -I tools/test-minimise.py            (fake user32: no window is touched)
 #      python -I tools/test-minimise.py --windows  (also real throwaway windows in processes of their own: a "back"
 #                                                   window, a "terminal" over it and a tool-window "panel"; only
-#                                                   these are activated and minimised, no key is sent)
+#                                                   these are activated, minimised and closed, no key is sent)
 # The .pyw is never imported (that would trip its one-instance mutex and raise the running panel): the functions are
 # taken from it by ast.
 import ast, os, subprocess, sys, time, types, unittest
@@ -144,6 +145,13 @@ class StayOnScreen(unittest.TestCase):
         panel(u, visible=False).stay_on_screen(TERM)
         self.assertEqual(self.raised(u), [])
 
+    def test_no_window_in_front_for_a_moment_after_a_close(self):
+        u = User32([BACK, PANEL, OTHER], fg=None, later=[(3, BACK)])  # the terminal is gone; then back takes over
+        fake(u)
+        panel(u).stay_on_screen(TERM)
+        self.assertEqual(self.raised(u), [("SetWindowPos", PANEL, -1), ("SetWindowPos", PANEL, -2)])
+        self.assertEqual(u.z[0], PANEL)
+
 
 class Hook(unittest.TestCase):
     def setUp(self):
@@ -197,6 +205,52 @@ class Hook(unittest.TestCase):
     def test_child_object_ignored(self):
         self.run_hook()
         self.hooks[0x16](None, 0x16, TERM, -4, 0, 0, 0)
+        self.assertEqual(self.started, [])
+
+    def test_close_hook_registered(self):
+        self.run_hook()
+        self.assertIn(0x8001, self.hooks)
+
+    def test_session_window_in_front_closed(self):
+        p = self.run_hook()
+        p.front = TERM
+        self.hooks[0x8001](None, 0x8001, TERM, 0, 0, 0, 0)
+        self.assertEqual(self.started, [("stay_on_screen", (TERM,))])
+
+    def test_closed_after_the_next_window_took_the_foreground(self):
+        p = self.run_hook()
+        p.front, p.before = BACK, (TERM, time.time())  # the foreground event came first, as Windows sends them
+        self.hooks[0x8001](None, 0x8001, TERM, 0, 0, 0, 0)
+        self.assertEqual(self.started, [("stay_on_screen", (TERM,))])
+
+    def test_closed_long_after_it_left_the_front_ignored(self):
+        p = self.run_hook()
+        p.front, p.before = BACK, (TERM, time.time() - 5)  # the user moved on to back, then closed it elsewhere
+        self.hooks[0x8001](None, 0x8001, TERM, 0, 0, 0, 0)
+        self.assertEqual(self.started, [])
+
+    def test_closed_session_window_not_in_front_ignored(self):
+        p = self.run_hook()
+        p.front = BACK  # closed from its taskbar thumbnail while another window was in front: nothing was under it
+        self.hooks[0x8001](None, 0x8001, TERM, 0, 0, 0, 0)
+        self.assertEqual(self.started, [])
+
+    def test_closed_window_not_a_session_ignored(self):
+        p = self.run_hook()
+        p.front = OTHER
+        self.hooks[0x8001](None, 0x8001, OTHER, 0, 0, 0, 0)
+        self.assertEqual(self.started, [])
+
+    def test_close_with_the_panel_hidden_ignored(self):
+        p = self.run_hook(visible=False)
+        p.front = TERM
+        self.hooks[0x8001](None, 0x8001, TERM, 0, 0, 0, 0)
+        self.assertEqual(self.started, [])
+
+    def test_child_object_destroyed_ignored(self):
+        p = self.run_hook()
+        p.front = TERM
+        self.hooks[0x8001](None, 0x8001, TERM, -4, 0, 0, 0)  # a menu or a child control, not the window
         self.assertEqual(self.started, [])
 
 
@@ -270,8 +324,12 @@ class RealWindows(unittest.TestCase):
             h = self.u.GetWindow(h, 2)
         return False
 
+    def in_front(self):
+        if self.u.GetForegroundWindow() != self.term:  # the foreground lock: someone is working in another window
+            self.skipTest("Windows did not give the test terminal the foreground")
+
     def minimise(self):
-        self.assertEqual(self.u.GetForegroundWindow(), self.term)
+        self.in_front()
         self.assertTrue(self.above(self.term, self.panel) and self.above(self.panel, self.back))
         self.u.PostMessageW(self.term, 0x0112, 0xF020, 0)  # WM_SYSCOMMAND SC_MINIMIZE, as the caption button
 
@@ -281,15 +339,71 @@ class RealWindows(unittest.TestCase):
         self.assertEqual(self.u.GetForegroundWindow(), self.back)
         self.assertTrue(self.above(self.back, self.panel))
 
-    def test_panel_stays_over_the_window_that_comes_forward(self):
+    def stand_in(self):
         p = types.SimpleNamespace(hwnd=self.panel, visible=True, dragging=False, wins={1: self.term})
         for m in METHODS:
             setattr(p, m, types.MethodType(ns[m], p))
+        return p
+
+    def test_panel_stays_over_the_window_that_comes_forward(self):
+        p = self.stand_in()
         self.minimise()
         p.stay_on_screen(self.term)
         self.assertTrue(self.u.IsIconic(self.term))
         self.assertEqual(self.u.GetForegroundWindow(), self.back)  # the keyboard went where Windows put it
         self.assertTrue(self.above(self.panel, self.back))
+
+    def close(self):
+        """The terminal closed as by its X (WM_CLOSE: DefWindowProc destroys it); its process lives on."""
+        self.in_front()
+        self.assertTrue(self.above(self.term, self.panel) and self.above(self.panel, self.back))
+        self.u.PostMessageW(self.term, 0x0010, 0, 0)
+
+    def test_close_without_the_fix_the_back_window_covers_the_panel(self):
+        self.close()
+        time.sleep(0.6)
+        self.assertFalse(self.u.IsWindow(self.term))
+        self.assertEqual(self.u.GetForegroundWindow(), self.back)
+        self.assertTrue(self.above(self.back, self.panel))
+
+    def test_close_event_names_the_window(self):
+        """Needs no foreground: the destroy event on_gone() hooks arrives, out of context, for the closed window."""
+        got = self.watch_close(lambda: self.u.PostMessageW(self.term, 0x0010, 0, 0))
+        self.assertEqual(got[:1], [(self.term, 0)])  # OBJID_WINDOW
+
+    def test_close_panel_stays_over_the_window_that_comes_forward(self):
+        p = self.stand_in()
+        got = self.watch_close(self.close)
+        self.assertEqual(got[:1], [(self.term, 0)])
+        p.stay_on_screen(self.term)
+        self.assertEqual(self.u.GetForegroundWindow(), self.back)  # the keyboard went where Windows put it
+        self.assertTrue(self.above(self.panel, self.back))
+
+    def watch_close(self, do):
+        """EVENT_OBJECT_DESTROY for the test terminal, hooked as follow_front() hooks it, while do() runs."""
+        import ctypes, ctypes.wintypes as wt, threading
+        got, ready, tid = [], threading.Event(), []
+        proc = ctypes.WINFUNCTYPE(None, wt.HANDLE, wt.DWORD, wt.HWND, wt.LONG, wt.LONG, wt.DWORD, wt.DWORD)(
+            lambda hook, ev, h, obj, child, th, ms: got.append((h, obj)) if h == self.term else None)
+
+        def watch():  # out of context, on a thread with a message loop, as follow_front() hooks it
+            self.u.SetWinEventHook.restype = wt.HANDLE
+            self.u.SetWinEventHook(0x8001, 0x8001, None, proc, 0, 0, 0)  # EVENT_OBJECT_DESTROY
+            tid.append(ctypes.windll.kernel32.GetCurrentThreadId())
+            ready.set()
+            m = wt.MSG()
+            while self.u.GetMessageW(ctypes.byref(m), None, 0, 0) > 0:
+                self.u.DispatchMessageW(ctypes.byref(m))
+        threading.Thread(target=watch, daemon=True).start()
+        ready.wait(5)
+        try:
+            do()
+            end = time.time() + 3
+            while not got and time.time() < end:
+                time.sleep(0.01)
+        finally:
+            self.u.PostThreadMessageW(tid[0], 0x0012, 0, 0)  # WM_QUIT
+        return got
 
 
 if __name__ == "__main__":

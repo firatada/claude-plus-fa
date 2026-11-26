@@ -3717,6 +3717,7 @@ class Panel:
             if own(hwnd):
                 self.used = time.time()  # one of the panel's windows came forward: a tray click made before is stale
                 return
+            self.before = (self.front, time.time())  # on_gone(): a closed window hands the foreground on first
             self.front = hwnd
             if self.raised and self.raised[1] != hwnd:
                 self.raised = None  # another window came forward: a click on the card is a first click again
@@ -3747,13 +3748,24 @@ class Panel:
             # a session window the panel rides under is being minimised: the panel stays on screen
             if obj == 0 and self.visible and hwnd in set(self.wins.values()) and self.beneath(hwnd):
                 threading.Thread(target=self.stay_on_screen, args=(hwnd,), daemon=True).start()
+
+        def on_gone(hook, event, hwnd, obj, child, thread, ms):
+            # the session window in front is closed (its X, the last tab, exit): as for a minimise, the panel stays
+            # on screen. The window is gone by now, so beneath() cannot be asked; a session window in front has the
+            # panel right under it (lift(), keep_under()). DestroyWindow hides the window and activates the next one
+            # before it reports the destroy, so the window in front until a moment ago counts too
+            was, when = getattr(self, "before", (None, 0))
+            front = hwnd == self.front or (hwnd == was and time.time() - when < MIN_FRONT_WAIT)
+            if obj == 0 and self.visible and front and hwnd in set(self.wins.values()):
+                threading.Thread(target=self.stay_on_screen, args=(hwnd,), daemon=True).start()
         self.front_proc, self.move_proc = WINEVENTPROC(on_front), WINEVENTPROC(on_move)  # kept alive with the hooks
-        self.min_proc = WINEVENTPROC(on_min)
+        self.min_proc, self.gone_proc = WINEVENTPROC(on_min), WINEVENTPROC(on_gone)
         fg = user32.GetForegroundWindow()
         self.front = None if not fg or own(fg) else fg
         if not SetWinEventHook(3, 3, None, self.front_proc, 0, 0, 0):  # EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT
             return
         SetWinEventHook(0x16, 0x16, None, self.min_proc, 0, 0, 0)  # EVENT_SYSTEM_MINIMIZESTART
+        SetWinEventHook(0x8001, 0x8001, None, self.gone_proc, 0, 0, 0)  # EVENT_OBJECT_DESTROY
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
@@ -3810,14 +3822,15 @@ class Panel:
 
     def stay_on_screen(self, hwnd):
         """A session window the panel rode under is being minimised (the caption button, its taskbar button,
-        Win+Down): only that window goes to the taskbar. Windows makes the next window the foreground and raises it
-        over the panel, which is not topmost, so the panel would vanish with the terminal. Wait for that window,
-        then put the panel (and the strip, the reply window and the shadow it owns) over it, not activated, and
-        look again as stay_over() does. Nothing is done when the panel itself or another session window comes
-        forward (lift() puts the panel under that one), when any terminal does (a terminal in front is never covered
-        by the band, a session's or not), or once the user has moved on to yet another window."""
+        Win+Down) or closed (its X, the last tab): only that window goes. Windows makes the next window the foreground
+        and raises it over the panel, which is not topmost, so the panel would vanish with the terminal. Wait for that
+        window (none is in front for a moment after a close), then put the panel (and the strip, the reply window and
+        the shadow it owns) over it, not activated, and look again as stay_over() does. Nothing is done when the
+        panel itself or another session window comes forward (lift() puts the panel under that one), when any
+        terminal does (a terminal in front is never covered by the band, a session's or not), or once the user has
+        moved on to yet another window."""
         end = time.time() + MIN_FRONT_WAIT
-        while user32.GetForegroundWindow() == hwnd and time.time() < end:
+        while user32.GetForegroundWindow() in (hwnd, None, 0) and time.time() < end:
             time.sleep(0.01)
         fg = user32.GetForegroundWindow()
         if not fg or fg == hwnd or own(fg) or fg in set(self.wins.values()) or terminal_window(fg):
