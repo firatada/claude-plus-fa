@@ -1,5 +1,5 @@
 # Unit tests for Field Agents' settings view (the gear right of Status), its Python half in agent-panel.pyw:
-#   - the rows: the Google Drive pause's switch and its idle delay, with the values in force, the default when unset or
+#   - the rows: the cache warning's switch (on unless set to false, saved like the others, no task run); the Google Drive pause's switch and its idle delay, with the values in force, the default when unset or
 #     not a positive number, and the switch blocked with its reason when Google Drive for desktop is not installed
 #     (still able to turn off a pause that was turned on by hand);
 #   - persistence: a change is written to claude-plus.local.json at once, beside the user's other keys, and read back
@@ -15,7 +15,7 @@ import ast, importlib.util, json, os, subprocess, sys, tempfile, threading, unit
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 NAMES = ("local", "save_local", "DRIVE_MINUTES", "MINUTES_MAX", "NO_DRIVE", "drive_pause_py", "drive_found",
-         "idle_minutes", "settings_rows", "drive_task", "set_setting", "ok", "err")
+         "idle_minutes", "settings_rows", "drive_task", "set_setting", "ok", "err", "cache_warning_on")
 
 FAKE_DRIVE = """IDLE_MINUTES = 30
 import os
@@ -101,7 +101,7 @@ class Settings(unittest.TestCase):
     def test_default_is_off_with_30_minutes(self):
         self.installed()
         r = self.rows()
-        self.assertEqual(list(r), ["drive_pause", "drive_idle_minutes"])
+        self.assertEqual(list(r), ["cache_warning", "drive_pause", "drive_idle_minutes"])
         self.assertIs(r["drive_pause"]["value"], False)
         self.assertEqual(r["drive_pause"]["kind"], "switch")
         self.assertIsNone(r["drive_pause"]["blocked"])
@@ -144,6 +144,40 @@ class Settings(unittest.TestCase):
         self.assertFalse(out["err"])
         self.assertIs(self.read_local()["drive_pause"], False)
 
+    # ----- the cache warning's switch -----
+    def test_cache_warning_is_on_by_default(self):
+        r = self.rows()["cache_warning"]
+        self.assertEqual(r["kind"], "switch")
+        self.assertIs(r["value"], True)
+        self.assertIsNone(r["blocked"], "it needs nothing installed")
+        self.assertIn("Turns it off", r["tip"])
+        self.assertFalse(os.path.exists(self.local), "showing the rows writes nothing")
+        for v in (None, 0, "no", True):  # only false turns it off
+            self.write_local({"cache_warning": v})
+            self.assertIs(self.rows()["cache_warning"]["value"], True, v)
+
+    def test_cache_warning_off_is_saved_and_survives_a_restart(self):
+        self.write_local({"rule": "keep"})
+        out = self.p["set_setting"]("cache_warning", False)
+        self.assertFalse(out["err"], out)
+        self.assertEqual(self.read_local(), {"rule": "keep", "cache_warning": False})
+        self.assertIs(self.p["cache_warning_on"](), False)
+        again = panel(self.tmp, Proc())
+        self.assertIs({r["key"]: r for r in again["settings_rows"]()}["cache_warning"]["value"], False)
+        self.assertIn("Turns it on", self.rows()["cache_warning"]["tip"])
+        out = self.p["set_setting"]("cache_warning", True)
+        self.assertFalse(out["err"], out)
+        self.assertIs(self.p["cache_warning_on"](), True)
+        self.assertEqual(self.proc.runs, [], "no task: the panel reads the switch on every pass")
+
+    def test_cache_warning_wrong_type_or_bad_file_is_refused(self):
+        for bad in (1, "off", None):
+            self.assertTrue(self.p["set_setting"]("cache_warning", bad)["err"], bad)
+        self.assertFalse(os.path.exists(self.local))
+        self.write_local("{not json")
+        self.assertTrue(self.p["set_setting"]("cache_warning", False)["err"])
+        self.assertIs(self.p["cache_warning_on"](), True, "an unreadable file leaves the default")
+
     # ----- persistence -----
     def test_switch_on_is_saved_beside_other_keys_and_survives_a_restart(self):
         self.installed()
@@ -152,10 +186,10 @@ class Settings(unittest.TestCase):
         self.assertFalse(out["err"], out)
         self.assertIn("30 min", out["t"])
         self.assertEqual(self.read_local(), {"rule": "C:/somewhere/CLAUDE.md", "paste_keys": False, "drive_pause": True})
-        self.assertIs(out["rows"][0]["value"], True)
+        self.assertIs({r["key"]: r for r in out["rows"]}["drive_pause"]["value"], True)
         # a fresh panel (a restart) reads the same choice
         again = panel(self.tmp, Proc())
-        self.assertIs(again["settings_rows"]()[0]["value"], True)
+        self.assertIs({r["key"]: r for r in again["settings_rows"]()}["drive_pause"]["value"], True)
 
     def test_minutes_saved_and_read_back(self):
         self.installed()

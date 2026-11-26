@@ -331,7 +331,8 @@ class HeadlessShown(unittest.TestCase):
     NOW = 2_000_000_000
 
     def setUp(self):
-        ns = pyw_functions("shown", "headless_hours", cls_methods=("state",))
+        ns = pyw_functions("shown", "headless_hours", "cache_view", "cache_stage", "cache_warning_on", "CACHE_LEAD",
+                           cls_methods=("state",))
         ns.update(HEADLESS_HOURS=24, local=lambda k: None, read_limits=lambda: {}, where_of=lambda s: s["cwd"],
                   folder_exists=lambda s: s["cwd"] != "C:/gone", ago=lambda t: "", lasted=lambda t: "",
                   user32=type("U", (), {"GetDoubleClickTime": staticmethod(lambda: 500)}))
@@ -405,7 +406,8 @@ class LastActivity(unittest.TestCase):
 
     def setUp(self):
         self.ns = pyw_functions("scan", "parse", "text_of", "last_at", "TURN_LINE", "AT_LOOK", "SESSION_FILE",
-                                "slug", "home_of", "find_home", "CWD", "HOME_LOOK", cls_methods=("update_live",))
+                                "slug", "home_of", "find_home", "CWD", "HOME_LOOK", "cache_of", "USAGE_LINE",
+                                "CACHE_LOOK", cls_methods=("update_live",))
         self.tmp = tempfile.mkdtemp(prefix="cpfa-at-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.ns.update(CLAUDE=self.tmp, wsl_roots=lambda: [], running=lambda: {}, read_ctx=lambda sid: None)
@@ -498,7 +500,7 @@ class LastActivity(unittest.TestCase):
 
         class P:
             update_live = self.ns["update_live"]
-            find_windows = background = feed_shots = push = check_alerts = watch_return = keep_voice = noop
+            find_windows = background = feed_shots = push = check_alerts = check_cache = watch_return = keep_voice = noop
         p = P()
         p.sessions, p.launched, p.last_scan = sessions, {}, 1
         p.update_live()

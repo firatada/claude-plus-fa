@@ -146,6 +146,22 @@ h1 { font-size: 15px; font-weight: 600; }
 .card.busy { background: var(--green-tint); box-shadow: var(--card-shadow), 0 0 0 1.5px var(--green); }
 .card.ask { animation: alarm 1.2s ease-in-out infinite; }
 @keyframes alarm { 50% { background: var(--red-tint); box-shadow: var(--card-shadow), 0 0 0 2px var(--red); } }
+/* the cache mark (agent-panel.pyw cache_view()): an open session left idle is warned before its prompt cache
+   expires, by a red ! astride the card's right edge, beside the title, so nothing on the card moves for it.
+   Stage 1 (15 min left) blinks slowly, stage 2 (5 min left) fast with a red halo; never more than three
+   flashes a second (design.md). Expired: a still grey ring, the next prompt will read the whole context again.
+   Under reduced motion it stands still; stage 2 keeps its halo, so the two still differ by shape */
+.card { position: relative; }
+.cw {
+  position: absolute; top: 29px; right: -8px; width: 16px; height: 16px; border-radius: 50%; display: grid;
+  place-items: center; background: var(--red); color: var(--on-accent); font-size: 11px; font-weight: 700;
+  line-height: 1; box-shadow: 0 0 0 2px var(--bg);
+}
+.cw[hidden] { display: none; }
+.cw.s1 { animation: cwblink 1.6s ease-in-out infinite; }
+.cw.s2 { animation: cwblink .6s ease-in-out infinite; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--red-tint); }
+.cw.s3 { background: var(--panel); color: var(--muted); box-shadow: inset 0 0 0 1.5px var(--muted), 0 0 0 2px var(--bg); }
+@keyframes cwblink { 50% { opacity: .2; } }
 .name { min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arrow { flex: none; visibility: hidden; color: var(--blue); font-size: 12px; }
 .card.here:hover .arrow { visibility: visible; }
@@ -430,6 +446,7 @@ body.top #list .body { flex-direction: row; align-items: center; gap: 8px; }
 body.top #list .t { flex: 1; min-width: 0; }
 body.top #list .name { font-size: 12px; }
 body.top #list .age, body.top #list .arrow, body.top #list .cx, body.top #list .flags { display: none; }
+body.top #list .cw { top: -5px; right: -5px; width: 14px; height: 14px; font-size: 10px; }
 /* the tab's tint and the hero (running, asleep, grey when closed) show the state; the dot stands in only without a hero */
 body.top #list .av:not([hidden]) + .body .dot { display: none; }
 body.top #list .meta { flex: none; padding-left: 0; gap: 4px; }
@@ -764,13 +781,31 @@ function fill(el, s, q) {
     pc.dataset.k = "ctx:" + s.id;
   }
   if (fl.textContent !== flags) fl.textContent = flags;
+  const cw = el.querySelector(".cw"), c = s.cache;
+  cw.hidden = !c;
+  if (c) {
+    cw.className = "cw s" + c.stage;
+    cw.dataset.full = cacheSaid(c);
+  }
+}
+// the cache mark's words: how long until the session's prompt cache expires, or that it has, and what the next
+// prompt then pays (the context of its last reply, agent-panel.pyw cache_of()). Short: on the card's label
+const kTokens = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M" : Math.max(1, Math.round(n / 1000)) + "k";
+function cacheSaid(c, short) {
+  const ms = c.ends - Date.now(), gone = c.stage === 3 || ms <= 0;
+  const when = gone ? "Cache expired" + (ms <= -60000 ? " " + lasted(-ms) + " ago" : "")
+                    : "Cache expires in " + lasted(Math.max(60000, Math.ceil(ms / 60000) * 60000));
+  if (short) return when.toLowerCase();
+  const what = c.tokens ? "up to " + kTokens(c.tokens) + " tokens of context" : "its whole context";
+  return when + ". " + (gone ? "The next prompt here pays again for " : "After that, the next prompt here pays again for ") +
+         what + ".";
 }
 // what a screen reader hears for a card: "my-app, working, 0:42, <its folder>, context 41%"
 function cardLabel(s, st) {
   const bg = s.bg || [];
   return [s.title, said(s, st).toLowerCase(), s.path, runSince(s) ? "" : s.age,
     s.ctx == null ? "" : "context " + pct(s.ctx), flagsOf(s),
-    bg.length ? bgSaid(s) : ""].filter(Boolean).join(", ");
+    bg.length ? bgSaid(s) : "", s.cache ? cacheSaid(s.cache, true) : ""].filter(Boolean).join(", ");
 }
 // Each second the timers move on, between the 2 s refreshes, by patching their text only, so hover and
 // tooltips survive: the time's place, the dot's words and the badge's. A card's label is left alone while it
@@ -779,11 +814,13 @@ function cardLabel(s, st) {
 function ticking() {
   for (const el of document.querySelectorAll(".card[data-id]")) {
     const a = el.querySelector(".age[data-turn]"), w = el.querySelector(".bgw:not([hidden])");
-    const s = (a || w || el === peekCard) && find(el.dataset.id);
+    const cw = el.querySelector(".cw:not([hidden])");
+    const s = (a || w || cw || el === peekCard) && find(el.dataset.id);
     if (!s) continue;
     const st = stateOf(s), t = runSince(s), d = el.querySelector(".dot");
     if (a && t) a.textContent = clock(Date.now() - t);
     if (el === peekCard) peekTick();
+    if (cw && s.cache) cw.dataset.full = cacheSaid(s.cache);
     d.dataset.full = said(s, st);
     d.setAttribute("aria-label", d.dataset.full);
     if (el !== document.activeElement) el.setAttribute("aria-label", cardLabel(s, st));
@@ -803,7 +840,7 @@ function cardEl(s, old, q) {
                    '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 1a4 4 0 1 1-4 4" fill="none" ' +
                    'stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><b></b></span>' +
                    '<span class="age"></span></div>' +
-                   '<div class="meta"></div></div>';
+                   '<div class="meta"></div></div><span class="cw" aria-hidden="true" data-tip hidden>!</span>';
   }
   fill(el, s, q);
   return el;
@@ -1286,6 +1323,8 @@ let peekDone = null, px = -1, py = -1;
 addEventListener("pointermove", e => {
   if (e.pointerType !== "mouse" || (e.clientX === px && e.clientY === py)) return;
   px = e.clientX; py = e.clientY;
+  // the mark has its own tooltip: one thing at a time opens over a card
+  if (e.target.closest && e.target.closest(".cw")) { if (peekCard) peekHide(); return; }
   if (peekCard && inZone(e.target)) { clearTimeout(leaveJob); leaveJob = null; return; }
   const c = !menu && !document.body.classList.contains("dragging") && e.target.closest(".card[data-id]");
   if (c !== peekDone) peekDone = null;

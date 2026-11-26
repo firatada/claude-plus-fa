@@ -4,7 +4,8 @@
 # window is in front the panel stays over it, as if that window were part of the panel. Tray icon: the 5-hour usage
 # figure in its level colour (the hero's head until there is one); click it to show or hide; Ctrl+Alt+C does the same. The look is agent-panel.html, shown in a WebView2 window by pywebview.
 # When a session starts waiting for an answer, agent-alert.html shows over every window and a knock
-# sounds (tray menu: Alerts, Alert Sound). A card counts what its session runs in the background (child
+# sounds (tray menu: Alerts, Alert Sound). An open session left idle gets a red ! on its card 15 and 5 minutes
+# before its prompt cache expires, with a sound each time (check_cache()). A card counts what its session runs in the background (child
 # `claude` runs and subagents) while any run. The Status button under the list opens status.claude.com; its dot
 # follows that page's public API. Screenshots the user takes are kept in Desktop\screenshots and move into a
 # session's folder when pasted there (agent-panel-shots.py); the last three, and any the user pinned, stay on
@@ -29,6 +30,7 @@ HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel.htm
 MASCOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-mascot")
 ALERT_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-alert.html")
 KNOCK = os.path.join(MASCOT, "knock.wav")
+CACHE_SOUNDS = {1: os.path.join(MASCOT, "cache-soon.wav"), 2: os.path.join(MASCOT, "cache-last.wav")}
 SHOTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-panel-shots.py")
 SHOTS_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-shots.html")
 COL_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent-column.html")
@@ -197,7 +199,14 @@ def settings_rows():
     found, on = drive_found(mod), local("drive_pause") is True
     default = getattr(mod, "IDLE_MINUTES", DRIVE_MINUTES)
     minutes = idle_minutes(default)
+    warn = cache_warning_on()
     return [
+        {"key": "cache_warning", "kind": "switch", "label": "Warn Before a Session's Cache Expires",
+         "hint": "A red ! on an open session's card 15 and 5 minutes before its prompt cache expires, each with a "
+                 "sound. After that, its next prompt pays again for its whole context.",
+         "value": warn, "blocked": None, "why": None,
+         "tip": "Turns it off. No mark and no sound." if warn else
+                "Turns it on. A card warns 15 and 5 minutes before its cache expires."},
         # turned on by hand while Drive is missing: it can still be turned off
         {"key": "drive_pause", "kind": "switch", "label": "Open Google Drive While Claude Is Idle",
          "hint": "Starts Google Drive for desktop after Claude Code has been idle for the time below, and quits it "
@@ -228,7 +237,15 @@ def set_setting(key, value):
     as they now stand ("rows"), which the page draws again."""
     unsaved = ("Not saved: claude-plus.local.json in your .claude folder is not valid JSON. Fix it or delete it, "
                "then try again.")
-    if key == "drive_pause":
+    if key == "cache_warning":
+        if not isinstance(value, bool):
+            out = err("Not saved: that is not on or off.")
+        elif not save_local(key, value):
+            out = err(unsaved)
+        else:
+            out = ok("On. A card warns 15 and 5 minutes before its cache expires." if value else
+                     "Off. No cache mark and no sound.")
+    elif key == "drive_pause":
         mod, script = drive_pause_py()
         if not isinstance(value, bool):
             out = err("Not saved: that is not on or off.")
@@ -444,6 +461,9 @@ SCAN_EVERY = 15        # seconds
 LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
 AT_LOOK = 8388608      # bytes from a transcript's end searched for its last prompt or reply (last_at()); past it, the
                        # file's time stands in
+CACHE_LEAD = (15 * 60, 5 * 60)  # seconds before an open session's prompt cache expires that its card warns, then
+                       # warns harder (45 and 55 min on the 1 h cache); a cache no longer than the first is never warned
+CACHE_LOOK = 2097152   # bytes from a transcript's end searched for its last reply's usage (cache_of())
 HOME_LOOK = 67108864   # bytes from a transcript's end searched, once per file, for the folder it is filed under when
                        # neither its first 256 KB nor its last MB names it (find_home())
 STATUS_PAGE = "https://status.claude.com/"
@@ -565,6 +585,97 @@ def last_at(path, size, tail=None):
     return None
 
 
+USAGE_LINE = re.compile(rb'"type":"assistant"')
+
+
+def cache_of(path, size, tail=None):
+    """The session's prompt cache as its last replies left it: {"ttl": seconds or None, "tokens": int or None}.
+    "tokens" is the newest Claude reply's whole context (input + cache read + cache written), what a prompt after
+    the cache expired pays to write again; "ttl" is the cache's lifetime, read from the newest Claude reply that
+    wrote any (usage.cache_creation: ephemeral_1h_input_tokens 3600, ephemeral_5m_input_tokens 300). None when the
+    last CACHE_LOOK bytes hold no Claude reply (a GLM session, a new one), so its card never warns."""
+    out = {"ttl": None, "tokens": None}
+    end, carry = size, b""
+    with open(path, "rb") as f:
+        while end > 0 and size - end < CACHE_LOOK:
+            start = max(0, end - 262144)
+            if tail is not None and end == size and len(tail) >= size - start:
+                buf = tail[len(tail) - (end - start):]
+            else:
+                f.seek(start)
+                buf = f.read(end - start)
+            lines = (buf + carry).split(b"\n")
+            carry = lines.pop(0) if start else b""
+            for line in reversed(lines):
+                if not USAGE_LINE.search(line) or b'"usage"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                    m = o.get("message") or {}
+                    if o.get("type") != "assistant" or o.get("isSidechain") or not str(m.get("model", "")).startswith("claude"):
+                        continue
+                    u = m.get("usage") or {}
+                    if out["tokens"] is None:
+                        out["tokens"] = sum(int(u.get(k) or 0) for k in (
+                            "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+                    c = u.get("cache_creation") or {}
+                    if c.get("ephemeral_1h_input_tokens"):
+                        out["ttl"] = 3600
+                    elif c.get("ephemeral_5m_input_tokens"):
+                        out["ttl"] = 300
+                    if out["ttl"]:
+                        return out
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            end = start
+    return out
+
+
+def cache_stage(s, now):
+    """Where an open session stands against its prompt cache: 0 nothing to say, 1 the cache expires within
+    CACHE_LEAD[0], 2 within CACHE_LEAD[1], 3 it has expired (the next prompt writes the whole context again).
+    Counted from the session's last real activity (its `at`, last_at()), only while its terminal is open and it
+    is not working (a session waiting for an answer counts: its cache expires too)."""
+    if not s.get("status") or (s["status"] == "busy" and not s.get("waiting")):
+        return 0
+    ttl = (s.get("cache") or {}).get("ttl")
+    if not ttl or ttl <= CACHE_LEAD[0] or not s.get("at"):
+        return 0
+    idle = now - s["at"]
+    return 3 if idle >= ttl else 2 if idle >= ttl - CACHE_LEAD[1] else 1 if idle >= ttl - CACHE_LEAD[0] else 0
+
+
+def cache_view(s, now):
+    """What the card's cache mark shows: None, or {"stage" (cache_stage()), "ends" (epoch ms the cache expires),
+    "tokens"}. The page counts the minutes left itself, so the state pushed changes only when the stage does."""
+    stage = cache_stage(s, now)
+    if not stage:
+        return None
+    c = s.get("cache") or {}
+    return {"stage": stage, "ends": int((s["at"] + c["ttl"]) * 1000), "tokens": c.get("tokens")}
+
+
+def cache_rings(rung, sessions, now, on):
+    """check_cache()'s rule, kept apart for the tests: (the stage to sound now, 0 for none; the new record).
+    `rung` maps a session id to (its `at`, the highest stage already sounded or seen in that idle stretch)."""
+    out, loud = {}, 0
+    for s in sessions if on else ():
+        stage = cache_stage(s, now)
+        if not stage:
+            continue
+        at, before = rung.get(s["id"], (None, 0))
+        before = before if at == s["at"] else 0  # a newer `at`: a prompt or a reply started a new stretch
+        if stage < 3 and stage > before:
+            loud = max(loud, stage)
+        out[s["id"]] = (s["at"], max(stage, before))
+    return loud, out
+
+
+def cache_warning_on():
+    """The card's cache warning and its sounds: "cache_warning" in claude-plus.local.json, on unless set to false."""
+    return local("cache_warning") is not False
+
+
 def parse(path):
     size = os.path.getsize(path)
     with open(path, "rb") as f:
@@ -609,6 +720,7 @@ def parse(path):
             break
     info["title"] = custom or ai
     info["at"] = last_at(path, size, tail)
+    info["cache"] = cache_of(path, size, tail)
     return info
 
 
@@ -781,7 +893,7 @@ def scan(cache):
                     continue
                 key = "%s|%s" % (st.st_mtime, st.st_size)
                 hit = cache.get(path)
-                if not hit or hit.get("key") != key or "at" not in hit:
+                if not hit or hit.get("key") != key or "at" not in hit or "cache" not in hit:
                     old = hit or {}
                     try:
                         hit = dict(parse(path), key=key)
@@ -807,7 +919,8 @@ def scan(cache):
                                  "at": hit.get("at") or st.st_mtime, "key": key, "status": (run or {}).get("status"),
                                  "waiting": (run or {}).get("waiting"), "since": (run or {}).get("since"),
                                  "pid": (run or {}).get("pid"), "name": (run or {}).get("name"),
-                                 "ctx": read_ctx(sid), "headless": hit.get("entry") == "sdk-cli"})
+                                 "ctx": read_ctx(sid), "headless": hit.get("entry") == "sdk-cli",
+                                 "cache": hit.get("cache")})
     for gone in [p for p in cache if p not in seen]:
         del cache[gone]
     sessions.sort(key=lambda s: s["at"], reverse=True)  # last real activity, newest first (last_at())
@@ -3092,6 +3205,7 @@ class Panel:
         self.claude_status = False  # status.claude.com, read every STATUS_EVERY by watch_status(); False: not read yet, None: unreadable
         self.turns = {}  # session id -> its current turn, for the working card's timer; see turn_start()
         self.bg_seen = {}  # session id -> first read that saw its background work (ms); see bg_start()
+        self.cache_rung = None  # session id -> (its `at`, the highest cache stage sounded for it); see check_cache()
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         self.live = {}  # the session files of the last live pass, for peek()
         self.peeks = {}  # what peek() read so far, by transcript: last prompts, first prompts, background commands
@@ -3537,6 +3651,7 @@ class Panel:
                     key = "%s|%s" % (st.st_mtime, st.st_size)
                     if key != s.get("key"):
                         s["key"], s["at"] = key, last_at(s["path"], st.st_size) or s["at"]
+                        s["cache"] = cache_of(s["path"], st.st_size)
                 except OSError:
                     pass
         self.sessions.sort(key=lambda s: s["at"], reverse=True)
@@ -3545,6 +3660,7 @@ class Panel:
         self.feed_shots()
         self.push()
         self.check_alerts()
+        self.check_cache()
         self.watch_return()
         self.keep_voice()
 
@@ -4341,6 +4457,20 @@ class Panel:
             self.alert_ids += [s["id"] for s in fresh if s["id"] not in self.alert_ids]
         if self.alert_ids != before or fresh:
             self.show_alert(knock=bool(fresh) and self.opts["alerts"])
+
+    # ----- the cache warning: a card warns before its open session's prompt cache expires, with a sound -----
+    def check_cache(self):
+        """One sound per stage per idle stretch of each session: cache-soon.wav when a session reaches stage 1,
+        cache-last.wav at stage 2, never again for the same stretch (a prompt starts a new one); several sessions
+        crossing in the same pass make one sound, the more urgent. The first pass after start only notes where
+        each session stands, so a restart (a reinstall) sounds nothing. Off with the setting; silent with the tray's
+        Alert Sound off."""
+        sound = cache_rings(self.cache_rung if self.cache_rung is not None else {}, self.sessions, time.time(),
+                            cache_warning_on())
+        first, self.cache_rung = self.cache_rung is None, sound[1]
+        if sound[0] and not first and self.opts["sound"] and os.path.exists(CACHE_SOUNDS[sound[0]]):
+            import winsound
+            winsound.PlaySound(CACHE_SOUNDS[sound[0]], winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
 
     def in_front(self, s):
         hwnd = s.get("pid") and window_of(s["pid"])
@@ -5363,7 +5493,7 @@ class Panel:
 
     def state(self):
         lim, now, hours = read_limits(), time.time(), headless_hours()
-        turns, seen = {}, {}
+        turns, seen, warn = {}, {}, cache_warning_on()
 
         def usage(v, fmt):
             try:
@@ -5378,7 +5508,7 @@ class Panel:
                              "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden, "turn": self.turn_start(s, turns),
                              "bgSince": self.bg_start(s, seen),
                              "here": folder_exists(s), "distro": s["distro"], "age": ago(s["at"]),
-                             "headless": s.get("headless", False),
+                             "headless": s.get("headless", False), "cache": cache_view(s, now) if warn else None,
                              "via": (self.returns.get(s["id"]) or {}).get("via"),
                              "viaOpen": bool((self.returns.get(s["id"]) or {}).get("open")),
                              "bg": [{"kind": w["kind"], "what": w["what"], "for": lasted(w["since"])} for w in s.get("bg", [])]}
