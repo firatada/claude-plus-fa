@@ -5,6 +5,8 @@
 #   context-guard.py -> ~/.claude/hooks     (Stop at 90 % context, PreCompact, SessionStart compact + startup)
 #   prompt-recall.py -> ~/.claude/hooks     (UserPromptSubmit: keeps the last prompt for the status line)
 #   quote-reply.py   -> ~/.claude/hooks     (UserPromptSubmit: ": answer" or ":1 answer :3 answer" quotes the selections)
+#   drive-pause.py   -> ~/.claude/hooks     (UserPromptSubmit + Stop, and a scheduled task while drive_pause is on:
+#                                            Google Drive runs only while Claude Code is idle; off by default)
 #   statusline.py    -> ~/.claude           (bottom bar: context, 5-hour and weekly usage, last prompt)
 #   agent-panel.pyw  -> ~/.claude           (every session in a list on the right edge or a strip on the top edge; starts at sign-in)
 #   agent-panel.html -> ~/.claude           (the panel's look, shown by pywebview in a WebView2 window)
@@ -58,9 +60,10 @@ def copy_files():
     shutil.copy2(os.path.join(HERE, "context-guard.py"), HOOKS)
     shutil.copy2(os.path.join(HERE, "prompt-recall.py"), HOOKS)
     shutil.copy2(os.path.join(HERE, "quote-reply.py"), HOOKS)
+    shutil.copy2(os.path.join(HERE, "drive-pause.py"), HOOKS)
     shutil.copy2(os.path.join(HERE, "statusline.py"), CLAUDE_DIR)
     print("copied  glm.cmd -> %s" % BIN)
-    print("copied  glm-fallback.py, context-guard.py, prompt-recall.py, quote-reply.py -> %s" % HOOKS)
+    print("copied  glm-fallback.py, context-guard.py, prompt-recall.py, quote-reply.py, drive-pause.py -> %s" % HOOKS)
     print("copied  statusline.py -> %s" % CLAUDE_DIR)
 
 
@@ -114,6 +117,9 @@ def register_hook():
     # a Codex record carried into a session resumed or typed into by hand (glm-fallback.py carry_hook())
     put_hook(settings, "SessionStart", "resume", "glm-fallback.py", "--carry", timeout=30)
     put_hook(settings, "UserPromptSubmit", None, "glm-fallback.py", "--carry", timeout=30)
+    # the Google Drive pause (drive-pause.py): does nothing unless drive_pause is on
+    put_hook(settings, "UserPromptSubmit", None, "drive-pause.py", "prompt", timeout=10)
+    put_hook(settings, "Stop", None, "drive-pause.py", "stop", timeout=10)
 
     # The status line is yours to change: set it only when there is none, or it is ours.
     current = (settings.get("statusLine") or {}).get("command", "")
@@ -305,6 +311,12 @@ def remove_old_name():
         pass
 
 
+def drive_pause():
+    """The Google Drive pause's watcher task: registered when drive_pause is on, removed when off."""
+    r = subprocess.run([sys.executable, os.path.join(HOOKS, "drive-pause.py"), "task"], capture_output=True, text=True)
+    print((r.stdout or r.stderr).strip() or "WARNING Google Drive pause: no answer from drive-pause.py")
+
+
 def main():
     if shutil.which("claude") is None:
         print("WARNING Claude Code (claude) is not on PATH; install it first")
@@ -313,6 +325,7 @@ def main():
     register_hook()
     terminal_copy()
     install_panel()
+    drive_pause()
     has_key = ensure_key()
     print()
     print("Done. New Claude Code sessions pick up the hook; already open ones need a restart.")

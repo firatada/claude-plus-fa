@@ -125,6 +125,30 @@ Answer any part of Claude's answer straight from the terminal, without retyping 
 
 The panel never deletes a screenshot by itself and sends nothing anywhere.
 
+### Google Drive pause (off unless you turn it on)
+
+Google Drive for desktop can take a large share of the CPU while it syncs. With this on, Drive runs only while you are not using Claude Code:
+
+- After 30 minutes with no prompt, no finished reply and no session working, in any Claude Code session on the PC (`claude -p` runs too), Drive is started, without a window, and syncs.
+- Your next prompt in any session quits it at once. Drive is asked to quit first, and stopped only if it does not within 20 seconds; it resumes any upload left unfinished the next time it starts.
+- Only a Drive this feature started is ever quit. A Drive you started yourself is left alone.
+- If you quit the Drive it started, it is not started again until you have used Claude and left it idle again.
+- It works without Field Agents: two hooks and a Windows scheduled task (*claude-plus-fa Google Drive pause*, every 5 minutes) do the work.
+- Every decision is written to `~/.claude/state/drive-pause/drive-pause.log`.
+
+Turn it on in `~/.claude/claude-plus.local.json`:
+
+```json
+{ "drive_pause": true, "drive_idle_minutes": 30 }
+```
+
+| Setting | Default | Does |
+|---|---|---|
+| `"drive_pause"` | `false` | `true` turns the Google Drive pause on; `false` turns it off and removes its scheduled task |
+| `"drive_idle_minutes"` | `30` | How long Claude Code must be idle before Drive starts |
+
+Both are read every time, so a change needs no reinstall. Without Google Drive for desktop installed it does nothing.
+
 ## Requirements
 
 - Windows 10 or 11
@@ -214,6 +238,7 @@ In the claude-plus-fa folder, double-click `uninstall.cmd`.
 
 - It removes its hooks, and the status line if it is this one, after a backup (`settings.json.before-claude-plus-uninstall`).
 - It closes Field Agents, removes it from sign-in and the desktop, and deletes the installed scripts.
+- It removes the Google Drive pause's scheduled task. A Drive it started keeps running.
 - It turns copy on select back to how it was, unless you changed it since.
 - Your own hooks and status line stay. So do your z.ai key file, `claude-plus.local.json` and your screenshots.
 - Restart any open Claude Code session.

@@ -29,3 +29,4 @@ What is true now; history in [`trials.md`](../trials.md).
 - Tidy: throwaway Windows Terminal windows only (`trials.md`, 2026-11-25), not yet seen on the maintainer's own terminals.
 - Minimise keeping the panel: throwaway windows and a throwaway Windows Terminal window (`trials.md`, 2026-11-24), not a real session's terminal. `keep_under()`: throwaway windows only; what raised the band over an active terminal is unknown (`trials.md`).
 - Not tested: a real mouse double click on the desktop icon; a terminal with several session tabs for `shared()`; a light taskbar on the real tray.
+- The Google Drive pause: [`drive-pause.md`](./drive-pause.md) § Limits.

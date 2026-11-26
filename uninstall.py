@@ -1,7 +1,8 @@
 # Removes claude-plus-fa from the current Windows user profile. Safe to rerun.
 #   settings.json    -> the claude-plus-fa hook entries, and the statusLine if it is ours
 #                       (backed up first as settings.json.before-claude-plus-uninstall)
-#   ~/.claude        -> statusline.py, the four hook scripts, the state folder
+#   ~/.claude        -> statusline.py, the five hook scripts, the state folders
+#   Task Scheduler   -> the Google Drive pause's watcher task (a Drive it started is left running)
 #   ~/.local/bin     -> glm.cmd
 #   Windows Terminal -> copyOnSelect as it was before the install, where the install changed it and it is still
 #                       on (copy_on_select.py); where you changed it since, it stays as you set it
@@ -14,7 +15,7 @@ HOME = os.path.expanduser("~")
 CLAUDE_DIR = os.path.join(HOME, ".claude")
 HOOKS = os.path.join(CLAUDE_DIR, "hooks")
 SETTINGS = os.path.join(CLAUDE_DIR, "settings.json")
-SCRIPTS = ("glm-fallback.py", "context-guard.py", "prompt-recall.py", "quote-reply.py")
+SCRIPTS = ("glm-fallback.py", "context-guard.py", "prompt-recall.py", "quote-reply.py", "drive-pause.py")
 FILES = [os.path.join(HOOKS, s) for s in SCRIPTS] + [
     os.path.join(CLAUDE_DIR, "statusline.py"),
     os.path.join(CLAUDE_DIR, "agent-panel.pyw"),
@@ -195,10 +196,24 @@ def terminal_copy():
         print(line)
 
 
+def remove_drive_pause():
+    """The Google Drive pause's watcher task and state folder; Drive itself is left as it is."""
+    script = os.path.join(HOOKS, "drive-pause.py")
+    if os.path.exists(script):
+        subprocess.run([sys.executable, script, "untask"], capture_output=True)
+    else:
+        subprocess.run(["schtasks", "/Delete", "/TN", "claude-plus-fa Google Drive pause", "/F"], capture_output=True)
+    state = os.path.join(CLAUDE_DIR, "state", "drive-pause")
+    if os.path.isdir(state):
+        shutil.rmtree(state, ignore_errors=True)
+        print("deleted %s" % state)
+
+
 def main():
     clean_settings()
     terminal_copy()
     remove_panel()
+    remove_drive_pause()
     remove_files()
     for path in KEPT:
         if os.path.exists(path):
