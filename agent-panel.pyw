@@ -335,6 +335,8 @@ SCAN_EVERY = 15        # seconds
 LIVE_EVERY = 2         # seconds; only ~/.claude/sessions is read, so a closed session loses its dot quickly
 AT_LOOK = 8388608      # bytes from a transcript's end searched for its last prompt or reply (last_at()); past it, the
                        # file's time stands in
+HOME_LOOK = 67108864   # bytes from a transcript's end searched, once per file, for the folder it is filed under when
+                       # neither its first 256 KB nor its last MB names it (find_home())
 STATUS_PAGE = "https://status.claude.com/"
 STATUS_API = "https://status.claude.com/api/v2/summary.json"  # Statuspage's public API: status and unresolved incidents
 STATUS_EVERY = 180     # seconds between reads of STATUS_API
@@ -505,13 +507,41 @@ def slug(path):
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
-def home_of(folder, cwds):
+CWD = re.compile(rb'"cwd":"((?:[^"\\]|\\.)*)"')
+
+
+def find_home(path, folder, size):
+    """The newest `cwd` whose slug is `folder`, searched back from the transcript's end up to HOME_LOOK bytes in
+    4 MB blocks (overlapping by 4 KB, so a value cut at a block's edge is whole in the next), or None.
+    parse() reads only the first 256 KB and the last MB: a long session that moved, or one resumed from another
+    folder, can name its own folder only in between, and then lost its card to the "folder deleted" section."""
+    end = size
+    with open(path, "rb") as f:
+        while end > 0 and size - end < HOME_LOOK:
+            start = max(0, end - 4194304)
+            f.seek(start)
+            found = None
+            for m in CWD.finditer(f.read(end - start)):
+                try:
+                    c = json.loads(b'"' + m.group(1) + b'"')
+                except ValueError:
+                    continue
+                if slug(c) == folder:
+                    found = c
+            if found:
+                return found
+            end = start + 4096 if start else 0
+    return None
+
+
+def home_of(folder, cwds, home=None):
     """The folder a session must be resumed from: the one its transcript is filed under.
-    A session that moved lists several folders; Claude Code files it under where it started."""
+    A session that moved lists several folders; Claude Code files it under where it started. `home`: the one
+    find_home() found further in, when none of `cwds` is it."""
     for c in cwds:
         if slug(c) == folder:
             return c
-    return cwds[0] if cwds else None
+    return home or (cwds[0] if cwds else None)
 
 
 def load_cache():
@@ -643,15 +673,25 @@ def scan(cache):
                 key = "%s|%s" % (st.st_mtime, st.st_size)
                 hit = cache.get(path)
                 if not hit or hit.get("key") != key or "at" not in hit:
+                    old = hit or {}
                     try:
                         hit = dict(parse(path), key=key)
                     except Exception:
                         continue
+                    for k in ("home", "looked"):  # a transcript only grows: the folder found in it stays its folder
+                        if k in old:
+                            hit[k] = old[k]
                     cache[path] = hit
+                if not hit.get("looked") and not any(slug(c) == folder for c in hit.get("cwds") or []):
+                    try:  # once per file, so a huge transcript is never read deeper again
+                        hit["home"] = find_home(path, folder, st.st_size)
+                    except OSError:
+                        hit["home"] = None
+                    hit["looked"] = True
                 seen.add(path)
                 sid = f[:-6]
                 run = live.get(sid)
-                cwd = home_of(folder, hit.get("cwds") or [])
+                cwd = home_of(folder, hit.get("cwds") or [], hit.get("home"))
                 title = (run or {}).get("name") or hit.get("title") or hit.get("first") or os.path.basename(cwd or folder)
                 sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title, "path": path,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,
@@ -711,12 +751,14 @@ def open_session(s, cmd=None):
     if s["distro"]:  # a session started inside WSL: resume it there
         return subprocess.Popen(["wsl.exe", "-d", s["distro"], "--cd", s["cwd"], "--", "bash", "-lic", cmd],
                                 creationflags=CREATE_NEW_CONSOLE, env=clean_env())
-    if s["cwd"].startswith("\\\\"):  # cmd cannot stand in a UNC folder; PowerShell can
+    # "//host/share/..." is a UNC folder too (a transcript may write it so); cmd started there stands in C:\Windows
+    cwd = s["cwd"].replace("/", "\\") if s["cwd"].startswith("//") else s["cwd"]
+    if cwd.startswith("\\\\"):  # cmd cannot stand in a UNC folder; PowerShell can
         return subprocess.Popen(["powershell.exe", "-NoLogo", "-NoExit", "-Command",
                                  "$Host.UI.RawUI.WindowTitle = '%s'; %s" % (title.replace("'", ""), cmd)],
-                                cwd=s["cwd"], creationflags=CREATE_NEW_CONSOLE, env=clean_env())
+                                cwd=cwd, creationflags=CREATE_NEW_CONSOLE, env=clean_env())
     return subprocess.Popen(["cmd.exe", "/k", "title %s& %s" % (title, cmd)],
-                            cwd=s["cwd"], creationflags=CREATE_NEW_CONSOLE, env=clean_env())
+                            cwd=cwd, creationflags=CREATE_NEW_CONSOLE, env=clean_env())
 
 
 # ---------- bringing an open session's window forward ----------
