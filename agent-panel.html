@@ -221,8 +221,10 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 }
 #footer:hover { color: var(--blue); text-decoration: underline; }
 #footer:empty { visibility: hidden; }
+#footer { white-space: nowrap; }
+#footer .fw { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #status {
-  flex: none; margin-left: auto; min-height: 24px; padding: 0 8px; display: flex; align-items: center; gap: 6px;
+  flex: none; margin-left: auto; min-height: 24px; padding: 0 6px; display: flex; align-items: center; gap: 6px;
   border: 0; border-radius: var(--r-small); background: none; color: var(--muted); font-size: 11px;
   transition: transform .16s ease-out;
 }
@@ -233,6 +235,78 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 .sdot.none { background: var(--green); box-shadow: none; }
 .sdot.minor, .sdot.maintenance { background: var(--gold); box-shadow: 0 0 0 2px var(--amber-tint); }
 .sdot.major, .sdot.critical { background: var(--red); box-shadow: 0 0 0 2px var(--red-tint); }
+/* the gear right of Status: opens and closes the settings view; as high as Status, square */
+#gear {
+  flex: none; min-width: 22px; min-height: 24px; margin-left: -8px; padding: 0; border: 0; border-radius: var(--r-small);
+  background: none; color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out;
+}
+#gear:hover, #gear[aria-expanded="true"] { color: var(--blue); background: var(--surface2); }
+#gear:active { transform: scale(.97); }
+/* the settings view: on the right it takes the place of the search and the list (the header and the foot stay);
+   on top it drops under the gear, as the set-aside list drops under its link. One row per setting: its name, a line
+   saying what it does, the reason it cannot be used now (amber, a standing fact), and its control on the right */
+#prefs { display: none; }
+body.prefs:not(.top) .search, body.prefs:not(.top) #list { display: none; }
+body.prefs #prefs {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 0 var(--edge) 8px;
+  animation: drop .16s var(--ease);
+}
+#prefs:focus { outline: 0; }
+.phead { flex: none; display: flex; align-items: center; gap: 6px; height: 32px; margin: 2px 0 8px -4px; }
+.phead h2 { font-size: 13px; font-weight: 600; }
+#pback {
+  flex: none; min-width: 24px; min-height: 24px; padding: 0; border: 0; border-radius: var(--r-small); background: none;
+  color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out;
+}
+#pback:hover { color: var(--blue); background: var(--surface2); }
+#pback:active { transform: scale(.97); }
+.prow {
+  display: flex; align-items: flex-start; gap: 12px; padding: 12px; margin-bottom: 8px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--r-card);
+}
+.ptext { flex: 1; min-width: 0; }
+.pl { display: block; font-size: 12px; font-weight: 600; color: var(--text); }
+.ph { margin-top: 2px; font-size: 11px; color: var(--muted); }
+.pwhy {
+  margin-top: 6px; padding: 4px 8px; border-radius: var(--r-small); font-size: 11px; color: var(--text);
+  background: var(--amber-tint); border: 1px solid var(--amber-line);
+}
+.prow.off .pl, .prow.off .ph { color: var(--faint); }
+/* the switch: Spark's toggle (44 x 24, the knob 18), as a button with role="switch" */
+.sw {
+  flex: none; position: relative; width: 44px; height: 24px; padding: 0; border: 0; border-radius: var(--r-pill);
+  background: var(--thumb); transition: background .2s;
+}
+.sw::before {
+  content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--on-accent); box-shadow: 0 1px 2px rgba(10, 26, 64, .2); transition: transform .2s var(--ease);
+}
+.sw[aria-checked="true"] { background: var(--blue); }
+.sw[aria-checked="true"]::before { transform: translateX(20px); }
+.sw:hover:not([aria-disabled="true"]) { filter: brightness(1.06); }
+.sw[aria-disabled="true"] { cursor: default; opacity: .5; }
+/* a count of minutes: digits only, its clear button inside the box, the unit after it; as high as the switch */
+.pnum { flex: none; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.pbox {
+  display: flex; align-items: center; width: 62px; height: 24px; padding: 0 2px 0 8px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--r-small); cursor: text;
+}
+.pbox:focus-within { border-color: var(--blue); box-shadow: var(--ring); }
+.pbox input {
+  flex: 1; min-width: 0; border: 0; outline: 0; padding: 0; background: none; font: inherit; font-size: 12px;
+  color: var(--text);
+}
+.pbox input::placeholder { color: var(--faint); }
+.pbox input:disabled { color: var(--faint); }
+.pbox:has(input:disabled) { background: var(--surface2); cursor: default; }
+.pclr {
+  flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: var(--r-small); background: none;
+  color: var(--muted); display: grid; place-items: center;
+}
+.pclr[hidden] { display: none; }
+.pclr:hover { color: var(--blue); background: var(--surface2); }
+#pmsg { font-size: 11px; color: var(--text); min-height: 16px; animation: rise .16s var(--ease); }
+#pmsg.err { color: var(--red); }
 #usage { margin: 0 var(--edge); padding: 8px 0 10px; border-top: 1px solid var(--line); }
 .u { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; height: 22px;
      font-size: 11px; color: var(--muted); }
@@ -315,7 +389,8 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
-  .card.here:active, .btn:active, .item:active, #hide:active, #qx:active, #footer:active, #status:active { transform: none; }
+  .card.here:active, .btn:active, .item:active, #hide:active, #qx:active, #footer:active, #status:active,
+  #gear:active, #pback:active { transform: none; }
   /* without the motion each state still differs by shape (arc, ring, dot, haloed dot), not by colour alone;
      the working arc stands still and its timer still counts */
   .dot.ask { box-shadow: 0 0 0 2px var(--red-tint); }
@@ -369,6 +444,13 @@ body.top #footer {
 }
 body.top #footer:empty { display: none; }
 body.top #status { margin-left: 0; min-height: var(--tab); padding: 0 10px; border-radius: var(--r-ctl); }
+body.top #gear { margin-left: -4px; min-width: var(--tab); min-height: var(--tab); border-radius: var(--r-ctl); }
+/* on top the settings drop under the gear, inside the window's room under the strip */
+body.top.prefs #prefs {
+  position: fixed; z-index: 4; top: calc(var(--strip) + 6px); width: 320px; max-height: 420px; flex: none;
+  padding: 0 12px 4px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-card);
+  transform-origin: top right;
+}
 body.top #footer:hover { text-decoration: none; background: var(--surface2); }
 body.top #footer[aria-expanded="true"] { color: var(--blue); background: var(--surface2); }
 body.top #usage { flex: none; margin: 0; padding: 0; border: 0; display: flex; gap: 14px; }
@@ -431,11 +513,33 @@ body.top #drop.open {
   </button>
 </label>
 <div id="list"></div>
+<section id="prefs" tabindex="-1" aria-labelledby="prefs-h">
+  <div class="phead">
+    <button id="pback" type="button" aria-label="Back to the sessions" data-tip data-full="Back to the sessions (Esc)">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3L4.5 7l4 4"/></svg>
+    </button>
+    <h2 id="prefs-h">Settings</h2>
+  </div>
+  <div id="prows"></div>
+  <div id="pmsg" role="status"></div>
+</section>
 <div id="bottom">
   <div id="note"></div>
   <div id="foot">
     <button id="footer" type="button" data-tip data-full="Lists the sessions kept out of the main list"></button>
     <button id="status" type="button" data-tip><span class="sdot" id="sdot"></span>Status</button>
+    <button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="prefs" data-tip
+      data-full="Settings">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33
+          1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1
+          1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6
+          9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0
+          1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06
+          a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
   </div>
   <div id="usage"></div>
 </div>
@@ -529,7 +633,7 @@ function tick(now) {
 // reported, at its laid-out place and corner radius, whenever it changes
 let regionKey = "", bridged = false;
 function syncRegion() {
-  const rs = [...document.querySelectorAll(".pop, .tip, .xbox, .say, #note:not(:empty), #drop.open")].map(e => {
+  const rs = [...document.querySelectorAll(".pop, .tip, .xbox, .say, #note:not(:empty), #drop.open, body.prefs #prefs")].map(e => {
     const r = parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0;
     return [e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight, r].map(Math.round);
   });
@@ -775,10 +879,12 @@ function render() {
   const nShown = q ? hits.length : nAside;
   // while a search finds nothing set aside, the link would only open an empty section
   // on top the link opens a list under the strip and keeps its words, so the strip does not shift
-  $("footer").textContent = !nAside || (q && !hits.length && !showHidden) ? ""
-    : onTop() ? `Hidden, Deleted and Headless (${nShown}) ${showHidden ? "▴" : "▾"}`
-    // on the right the Status button shares the row, so the link keeps the top dock's words, without "Show"
-    : showHidden ? "Fold Hidden, Deleted and Headless" : `Hidden, Deleted and Headless (${nShown})`;
+  // on the right the Status button and the gear share the row: words that do not fit end in "…", the count stays
+  const foot = !nAside || (q && !hits.length && !showHidden) ? ""
+    : onTop() ? `<span class="fw">Hidden, Deleted and Headless</span> (${nShown}) ${showHidden ? "▴" : "▾"}`
+    // on the right the link keeps the top dock's words, without "Show"
+    : showHidden ? `<span class="fw">Fold Hidden, Deleted and Headless</span>` : `<span class="fw">Hidden, Deleted and Headless</span>&nbsp;(${nShown})`;
+  if ($("footer").dataset.html !== foot) { $("footer").innerHTML = foot; $("footer").dataset.html = foot; }
   const top = onTop(), key = JSON.stringify([q, rows, rest, state.ready, menuFor, top, showHidden]);
   const list = $("list"), drop = $("drop");
   if (key !== lastKey) {
@@ -905,7 +1011,7 @@ function fit() {
     if (off && c === document.activeElement) c.blur();
   });
 }
-addEventListener("resize", () => { fit(); peekHide(); closeMenu(); sayGone(); });
+addEventListener("resize", () => { fit(); peekHide(); closeMenu(); sayGone(); placePrefs(); });
 
 // ----- messages: one about a card sits under that card; one about the whole panel floats above the link -----
 // The bottom line shows a passing message when there is one, else the standing one (a failed
@@ -1336,6 +1442,7 @@ addEventListener("mousedown", e => {
   if (menu && !menu.contains(e.target)) { closeMenu(); swallow = e.button === 0; e.stopPropagation(); }
   // the list under the strip closes on a click anywhere but in it or on its link, as a dropdown does
   else if (onTop() && showHidden && !e.target.closest("#drop, #footer, .pop")) { showHidden = false; render(); }
+  else if (onTop() && prefsOpen() && !e.target.closest("#prefs, #gear, .pop")) closePrefs(false);
   const onBar = e.target === list && (onTop() ? e.offsetY >= list.clientHeight : e.offsetX >= list.clientWidth);
   if (!e.target.closest(".say") && !onBar) sayGone();
   tipHide();
@@ -1396,7 +1503,11 @@ list.addEventListener("scroll", () => { tipHide(); peekHide(); if (quiet) quiet 
 $("drop").addEventListener("scroll", () => { tipHide(); peekHide(); sayGone(); closeMenu(); });
 // a window raised over the panel sends no pointerleave, so losing focus ends the hold as well;
 // on top it also closes the list under the strip, as a dropdown does
-addEventListener("blur", () => { tipHide(); closeMenu(); hovering = false; if (onTop()) showHidden = false; lastKey = null; render(); });
+addEventListener("blur", () => {
+  tipHide(); closeMenu(); hovering = false;
+  if (onTop()) { showHidden = false; closePrefs(false); }
+  lastKey = null; render();
+});
 // Tab closes the menu and gives the keyboard back to its card; inside the confirm it stays on the two buttons
 addEventListener("keydown", e => {
   if (!menu || e.key !== "Tab") return;
@@ -1419,6 +1530,7 @@ addEventListener("keydown", e => {
 addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if (menu || tip || document.querySelector(".say")) { e.preventDefault(); tipHide(); closeMenu(); sayGone(); return; }
+  if (prefsOpen()) { e.preventDefault(); closePrefs(true); return; }
   if (passing) { e.preventDefault(); sayGone(); return; }
   if (onTop() && showHidden) { e.preventDefault(); showHidden = false; render(); $("footer").focus(); return; }
   if (document.activeElement === $("q") && $("q").value) { e.preventDefault(); setQ(""); }
@@ -1429,11 +1541,168 @@ $("q").addEventListener("input", () => { $("qx").hidden = !$("q").value; render(
 $("qx").addEventListener("mousedown", e => e.preventDefault());
 $("qx").onclick = () => setQ("");
 // a click with the mouse lets the section fade in; Enter or Space shows it at once
-function toggleAside(e) { showHidden = !showHidden; scrollToAside = showHidden; revealing = showHidden && e.detail > 0; render(); }
+function toggleAside(e) { closePrefs(false); showHidden = !showHidden; scrollToAside = showHidden; revealing = showHidden && e.detail > 0; render(); }
 $("footer").onclick = toggleAside;
 $("status").onclick = () => api().status_page().then(r => r && say(null, r.t, r.err));
 list.addEventListener("click", e => { if (e.target.closest('[data-a="aside"]')) toggleAside(e); });
 $("hide").onclick = () => window.pywebview && api().hide();
+$("gear").onclick = () => prefsOpen() ? closePrefs(true) : openPrefs();
+$("pback").onclick = () => closePrefs(true);
+
+// ----- the settings view: the gear right of Status opens it in the panel; its back arrow, the gear again or Esc
+// closes it (on top a click outside too, as for the set-aside list). The rows come from agent-panel.pyw
+// (settings_rows(): {key, kind, label, hint, value, blocked, why, tip, default, max}; a blocked row is dimmed, its
+// control unusable; "why" is the amber line under it), each drawn by its kind; a change
+// is saved at once (set_setting()), which answers with the rows as they now stand and a line for #pmsg -----
+const prefsOpen = () => document.body.classList.contains("prefs");
+let pmsgJob = null;
+function openPrefs() {
+  tipHide(); peekHide(); closeMenu(); sayGone();
+  showHidden = false;
+  document.body.classList.add("prefs");
+  $("gear").setAttribute("aria-expanded", "true");
+  $("gear").dataset.full = "Back to the sessions (Esc)";
+  pmsg("");
+  render();
+  placePrefs();
+  $("prefs").focus({preventScroll: true});  // Esc is heard from here on
+  if (bridged) api().settings().then(drawRows);
+}
+function closePrefs(back) {
+  if (!prefsOpen()) return;
+  document.querySelectorAll(".prow").forEach(r => r._flush && r._flush());  // a minute count still being typed
+  const had = $("prefs").contains(document.activeElement);
+  document.body.classList.remove("prefs");
+  $("gear").setAttribute("aria-expanded", "false");
+  $("gear").dataset.full = "Settings";
+  tipHide();
+  if (back || had) $("gear").focus({preventScroll: true});  // the keyboard goes back to what opened it
+  render();
+}
+// on top: under the gear, its right edge on the gear's, inside the window
+function placePrefs() {
+  const p = $("prefs");
+  if (!onTop() || !prefsOpen()) { p.style.left = ""; return; }
+  const g = $("gear").getBoundingClientRect(), w = p.offsetWidth;
+  p.style.left = Math.max(8, Math.min(g.right - w, innerWidth - w - 8)) + "px";
+}
+function pmsg(t, bad) {
+  clearTimeout(pmsgJob);
+  const m = $("pmsg");
+  m.textContent = t || "";
+  m.className = bad ? "err" : "";
+  m.style.animation = "none"; void m.offsetWidth; m.style.animation = "";
+  if (t && !bad) pmsgJob = setTimeout(() => { m.textContent = ""; }, 5000);  // an error stays
+}
+function saveSetting(key, v) {
+  if (!bridged) return;
+  api().set_setting(key, v).then(r => {
+    if (!r) return;
+    drawRows(r.rows);
+    pmsg(r.t, r.err);
+  });
+}
+// rows are kept and patched by key, so a box being typed in keeps its caret
+function drawRows(rs) {
+  if (!Array.isArray(rs)) return;
+  const box = $("prows");
+  for (const r of rs) {
+    let el = box.querySelector(`.prow[data-key="${r.key}"]`);
+    if (!el) { el = rowEl(r); if (!el) continue; box.append(el); }
+    el._row = r;
+    patchRow(el, r);
+  }
+  placePrefs();
+}
+const digits = s => s.replace(/\D/g, "").replace(/^0+/, "");
+function rowEl(r) {
+  const el = document.createElement("div"), id = "p-" + r.key;
+  el.className = "prow";
+  el.dataset.key = r.key;
+  el.innerHTML = `<div class="ptext"><label class="pl" id="${id}-l" for="${id}"></label><div class="ph" id="${id}-h"></div>
+    <div class="pwhy" id="${id}-w" hidden></div></div>`;
+  const desc = `${id}-h ${id}-w`;
+  if (r.kind === "switch") {
+    const b = document.createElement("button");
+    Object.assign(b, {type: "button", className: "sw", id});
+    b.setAttribute("role", "switch");
+    b.setAttribute("aria-labelledby", id + "-l");
+    b.setAttribute("aria-describedby", desc);
+    b.dataset.tip = "";
+    b.onclick = () => {
+      const now = el._row;
+      if (!now || now.blocked) return;  // the reason stands under the row
+      const v = b.getAttribute("aria-checked") !== "true";
+      b.setAttribute("aria-checked", String(v));  // moves at once; the answer puts it back if the change failed
+      tipHide();
+      saveSetting(now.key, v);
+    };
+    el.append(b);
+  } else if (r.kind === "minutes") {
+    el.insertAdjacentHTML("beforeend", `<div class="pnum"><label class="pbox"><input id="${id}" type="text"
+      inputmode="numeric" maxlength="${String(r.max).length}" spellcheck="false" autocomplete="off" autocorrect="off"
+      autocapitalize="off" data-1p-ignore data-lpignore="true" data-form-type="other" aria-labelledby="${id}-l"
+      aria-describedby="${desc}"><button type="button" class="pclr" tabindex="-1" aria-label="Clear" data-tip hidden>
+      <svg width="8" height="8" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor"
+      stroke-width="1.6" stroke-linecap="round"/></svg></button></label><span aria-hidden="true">min</span></div>`);
+    const inp = el.querySelector("input"), clr = el.querySelector(".pclr");
+    let atFocus = "", job = null;
+    // digits only, no leading zero (mindmap design-forms.md: a count takes only digits); saved once typing pauses
+    inp.addEventListener("focus", () => { atFocus = inp.value; });
+    inp.addEventListener("input", () => {
+      const fromEnd = inp.value.length - inp.selectionEnd, v = digits(inp.value).slice(0, inp.maxLength);
+      if (v !== inp.value) { inp.value = v; const at = Math.max(0, v.length - fromEnd); inp.setSelectionRange(at, at); }
+      clr.hidden = !v;
+      clearTimeout(job);
+      if (v) job = setTimeout(commit, 800);
+    });
+    // left empty it is the default again, which the placeholder shows
+    function commit() {
+      clearTimeout(job); job = null;
+      const now = el._row;
+      if (!now || now.blocked) return;
+      let v = digits(inp.value);
+      if (!v) { v = String(now.default); inp.value = v; clr.hidden = false; }
+      if (+v === now.value) return;
+      now.value = +v;
+      saveSetting(now.key, +v);
+    }
+    el._flush = commit;
+    inp.addEventListener("blur", commit);
+    inp.addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      // Esc puts back what the box held when the reader came into it; unchanged, it closes the view
+      else if (e.key === "Escape" && inp.value !== atFocus) {
+        e.preventDefault(); e.stopPropagation();
+        inp.value = atFocus; clr.hidden = !atFocus; commit();
+      }
+    });
+    clr.addEventListener("mousedown", e => e.preventDefault());
+    clr.onclick = () => { clearTimeout(job); inp.value = ""; clr.hidden = true; inp.focus(); };
+  } else return null;  // a kind this page cannot draw yet
+  return el;
+}
+function patchRow(el, r) {
+  el.classList.toggle("off", !!r.blocked);
+  el.querySelector(".pl").textContent = r.label;
+  el.querySelector(".ph").textContent = r.hint || "";
+  const w = el.querySelector(".pwhy"), why = r.why || "";  // said once, under the row it concerns most
+  w.textContent = why;
+  w.hidden = !why;
+  if (r.kind === "switch") {
+    const b = el.querySelector(".sw");
+    b.setAttribute("aria-checked", String(!!r.value));
+    b.setAttribute("aria-disabled", String(!!r.blocked));
+    b.dataset.full = r.blocked || r.tip || "";
+  } else if (r.kind === "minutes") {
+    const inp = el.querySelector("input"), clr = el.querySelector(".pclr");
+    inp.disabled = !!r.blocked;
+    inp.placeholder = String(r.default);
+    if (document.activeElement !== inp) inp.value = String(r.value);
+    clr.hidden = !inp.value || inp.disabled;
+    clr.dataset.full = `Clear the box. Left empty, it goes back to ${r.default} min.`;
+  }
+}
 $("shots").onclick = () => window.pywebview && api().strip();
 
 // ----- docking: the header (the grip on top) drags the panel between the right edge and the top edge -----
@@ -1457,7 +1726,7 @@ addEventListener("pointerup", () => { grab = null; });
 function setDock(d) {
   const top = d === "top";
   if (top === onTop()) return;
-  tipHide(); peekHide(); closeMenu(); sayGone();
+  tipHide(); peekHide(); closeMenu(); sayGone(); closePrefs(false);
   document.body.classList.toggle("top", top);
   placeHide();
   showHidden = false;

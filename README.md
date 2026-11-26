@@ -63,6 +63,7 @@ Using it:
 - Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Field Agents** icon on your desktop. It starts when you sign in to Windows.
 - The tray icon shows your 5-hour usage as a number. Clicking it also brings back the Claude Code terminal you were last in.
 - **Status** opens [status.claude.com](https://status.claude.com/); its dot shows whether Claude has an outage.
+- The gear right of **Status** opens **Settings** in the panel. A change there is saved at once and kept, also through a reinstall. The back arrow, the gear again or `Esc` closes it.
 - If a Claude Code update breaks `claude`, the panel repairs it with `claude update`.
 - Drag the header to the top edge to make it a row of tabs (the tray menu does this too):
 
@@ -136,7 +137,9 @@ Google Drive for desktop can take a large share of the CPU while it syncs. With 
 - It works without Field Agents: two hooks and a Windows scheduled task (*claude-plus-fa Google Drive pause*, every 5 minutes) do the work.
 - Every decision is written to `~/.claude/state/drive-pause/drive-pause.log`.
 
-Turn it on in `~/.claude/claude-plus.local.json`:
+Turn it on in Field Agents: click the gear right of **Status**, then the switch **Open Google Drive While Claude Is Idle**; **Idle Time Before Drive Opens** sets the minutes. Without Google Drive for desktop installed the switch is greyed out and says why.
+
+Or, without the panel, in `~/.claude/claude-plus.local.json`:
 
 ```json
 { "drive_pause": true, "drive_idle_minutes": 30 }
@@ -147,7 +150,7 @@ Turn it on in `~/.claude/claude-plus.local.json`:
 | `"drive_pause"` | `false` | `true` turns the Google Drive pause on; `false` turns it off and removes its scheduled task |
 | `"drive_idle_minutes"` | `30` | How long Claude Code must be idle before Drive starts |
 
-Both are read every time, so a change needs no reinstall. Without Google Drive for desktop installed it does nothing.
+Both are read every time, so a change needs no reinstall. The panel writes the same two keys. Without Google Drive for desktop installed it does nothing.
 
 ## Requirements
 

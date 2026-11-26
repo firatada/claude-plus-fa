@@ -6,10 +6,10 @@ What is true now; history in [`trials.md`](../trials.md). Why it is built this w
 
 ## Scope
 Owns: `drive-pause.py`, its hooks, its scheduled task, its settings, state and log, and its limits.
-Does NOT own: how sessions are read for the panel ([`memory.md`](../memory.md) § Field Agents: sessions), the other hooks (memory.md § Files and where they install).
+Does NOT own: the settings view that turns it on (memory.md § Field Agents: settings view), how sessions are read for the panel ([`memory.md`](../memory.md) § Field Agents: sessions), the other hooks (memory.md § Files and where they install).
 
 ## What it does
-- Off unless `"drive_pause": true` in `~/.claude/claude-plus.local.json`; `drive_idle_minutes` is the idle delay (default `IDLE_MINUTES` 30; a value that is not a positive number gives 30). Both read on every run, so a change applies at the next prompt or tick.
+- Off unless `"drive_pause": true` in `~/.claude/claude-plus.local.json`; `drive_idle_minutes` is the idle delay (default `IDLE_MINUTES` 30; a value that is not a positive number gives 30). Both are set in Field Agents' settings view (the gear right of Status: [`memory.md`](../memory.md) § Field Agents: settings view) or by hand, and read on every run, so a change applies at the next prompt or tick.
 - Claude is **in use** while a live session is mid-turn (status `busy` or `waiting`, or `waitingFor` set; pid alive; busy for less than `BUSY_CAP` 4 h, after which it counts as hung) or the last activity is younger than the delay. Otherwise Claude is **idle**.
 - Last activity = the newest of `activity.json` (written by the hooks: a prompt, a finished reply) and the `statusUpdatedAt` of every live session file in `~/.claude/sessions` (this also covers a turn ended by Esc, which runs no Stop hook, and sessions opened before the install, which lack the hooks). Transcript times are never used (Claude Code writes to idle transcripts). Sessions whose pid is dead and the dictation host (cwd `VOICE_DIR`) are left out.
 - Idle and Drive not running: Drive is started as its own sign-in entry does (`GoogleDriveFS.exe --startup_mode`, no window), and its pid and creation time are kept in `state.json` (`pid`, `created`, `started_for` = the last activity it was started for, `at`).
@@ -22,7 +22,7 @@ Does NOT own: how sessions are read for the panel ([`memory.md`](../memory.md) �
 - The helper (`quit`): registers the watcher task when `task.json` does not name this script, then quits the Drive claude-plus started.
 - Watcher: Windows scheduled task `claude-plus-fa Google Drive pause` (`TASK`), every `TICK_MINUTES` 5 from its registration, `pythonw drive-pause.py tick`, interactive (runs only while the user is signed in), no admin, runs on battery, `IgnoreNew`, time limit 5 min. So Drive starts 30 to 35 min after the last activity, and the panel being closed changes nothing.
 - `tick` order: off → remove the task, log once; in use → quit ours (the fallback for a prompt whose hook did not run), else note a user's Drive; idle → Drive running (leave it), already started in this stretch (skip), not installed (log once), else start.
-- The task is registered by `install.py` (`drive-pause.py task`: registered when on, removed when off), by the prompt helper when the feature is turned on later, and removed by the next tick when it is turned off; `uninstall.py` removes it (`untask`) and the state folder. `task.json` notes the registration so prompts do not call `schtasks`.
+- The task is registered by `install.py` (`drive-pause.py task`: registered when on, removed when off), by the settings view's switch (the same `task` call, at once), by the prompt helper when the feature is turned on later, and removed by the next tick when it is turned off; `uninstall.py` removes it (`untask`) and the state folder. `task.json` notes the registration so prompts do not call `schtasks`.
 
 ## Drive
 - Found as Drive's own `launch.bat` finds it: `InstallLocation` of the uninstall key `{6BBAE539-2232-434A-A4E5-9A33560C6283}` (HKLM, both views), else the newest folder under `%ProgramFiles%\Google\Drive File Stream` holding `GoogleDriveFS.exe`. Not installed: nothing happens, logged once.

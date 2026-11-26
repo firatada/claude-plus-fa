@@ -127,23 +127,132 @@ def strip_pins():
 
 
 def save_local(key, value):
-    """The user's choice, kept in claude-plus.local.json beside the user's other keys. A file that cannot be read
-    as JSON is left alone (the choice then lasts until the panel restarts)."""
+    """The user's choice, kept in claude-plus.local.json beside the user's other keys; True once written. A file
+    that cannot be read as JSON is left alone (the choice then lasts until the panel restarts)."""
     try:
         with open(LOCAL, encoding="utf-8") as f:
             v = json.load(f)
     except OSError:
         v = {}
     except ValueError:
-        return
+        return False
     if not isinstance(v, dict):
-        return
+        return False
     v[key] = value
     tmp = LOCAL + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(v, f, indent=2, ensure_ascii=False)
         f.write("\n")
     os.replace(tmp, LOCAL)
+    return True
+
+
+# ----- the settings view (the gear right of Status): one row per setting, kept in claude-plus.local.json -----
+# Each row is {key, kind, label, hint, value, blocked}; the page draws it by its kind ("switch", "minutes"). A later
+# setting is one more row in settings_rows() and one more branch in set_setting(); a new kind also needs its drawing
+# in agent-panel.html (rowEl, patchRow). "blocked" is the reason the control cannot be used now (the row dims, its
+# tooltip says why); "why" is a standing fact shown in amber under the row, said once for rows that share it.
+DRIVE_PY = (os.path.join(CLAUDE, "hooks", "drive-pause.py"),                             # installed
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "drive-pause.py"))  # run from the repo
+DRIVE_MINUTES = 30     # drive-pause.py IDLE_MINUTES, when that file cannot be loaded
+MINUTES_MAX = 999      # the idle delay's field takes three digits
+NO_DRIVE = "Google Drive for desktop is not installed on this PC."
+task_lock = threading.Lock()
+
+
+def drive_pause_py():
+    """drive-pause.py loaded as a module (find_exe(), IDLE_MINUTES) and its path; (None, None) when it is missing or
+    does not load. The installed copy first: the watcher task it registers names the file that registered it."""
+    script = next((f for f in DRIVE_PY if os.path.exists(f)), None)
+    if not script:
+        return None, None
+    try:
+        spec = importlib.util.spec_from_file_location("drive_pause", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod, script
+    except Exception:
+        return None, None
+
+
+def drive_found(mod):
+    """Google Drive for desktop is installed, as drive-pause.py finds it (registry, then Program Files)."""
+    try:
+        return bool(mod and mod.find_exe())
+    except Exception:
+        return False
+
+
+def idle_minutes(default):
+    """The idle delay in whole minutes, as drive-pause.py reads it: a positive number, else the default."""
+    v = local("drive_idle_minutes")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+        return default
+    return min(MINUTES_MAX, max(1, int(round(v))))
+
+
+def settings_rows():
+    """The settings view's rows, in order, with the values in force now."""
+    mod, _ = drive_pause_py()
+    found, on = drive_found(mod), local("drive_pause") is True
+    default = getattr(mod, "IDLE_MINUTES", DRIVE_MINUTES)
+    minutes = idle_minutes(default)
+    return [
+        # turned on by hand while Drive is missing: it can still be turned off
+        {"key": "drive_pause", "kind": "switch", "label": "Open Google Drive While Claude Is Idle",
+         "hint": "Starts Google Drive for desktop after Claude Code has been idle for the time below, and quits it "
+                 "at your next prompt. A Drive you opened yourself is left alone.",
+         "value": on, "blocked": None if found or on else NO_DRIVE, "why": None if found else NO_DRIVE,
+         "tip": "Turns it off. A Drive it opened stays open until you quit it." if on else
+                "Turns it on. Drive opens after %d min with Claude idle." % minutes},
+        {"key": "drive_idle_minutes", "kind": "minutes", "label": "Idle Time Before Drive Opens",
+         "hint": "Counted from your last prompt or Claude's last reply, in any session.",
+         "value": minutes, "default": default, "max": MINUTES_MAX, "blocked": None if found else NO_DRIVE},
+    ]
+
+
+def drive_task(script):
+    """drive-pause.py task: registers the watcher task when the Google Drive pause is on, removes it when off, so a
+    switch in the settings view acts at once rather than at the next prompt. One at a time, each reading the setting
+    as it then stands, so the last one run matches the last choice."""
+    with task_lock:
+        try:
+            subprocess.run([sys.executable, script, "task"], creationflags=CREATE_NO_WINDOW, capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def set_setting(key, value):
+    """The user's choice from the settings view, checked, kept and put into force. Returns ok()/err() with the rows
+    as they now stand ("rows"), which the page draws again."""
+    unsaved = ("Not saved: claude-plus.local.json in your .claude folder is not valid JSON. Fix it or delete it, "
+               "then try again.")
+    if key == "drive_pause":
+        mod, script = drive_pause_py()
+        if not isinstance(value, bool):
+            out = err("Not saved: that is not on or off.")
+        elif value and not drive_found(mod):
+            out = err(NO_DRIVE)
+        elif not save_local(key, value):
+            out = err(unsaved)
+        else:
+            if script:
+                threading.Thread(target=drive_task, args=(script,), daemon=True).start()
+            out = ok("On. Google Drive opens after %d min with Claude idle." % idle_minutes(
+                getattr(mod, "IDLE_MINUTES", DRIVE_MINUTES)) if value else
+                "Off. A Drive it opened stays open until you quit it.")
+    elif key == "drive_idle_minutes":
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MINUTES_MAX:
+            out = err("Not saved: type a whole number of minutes from 1 to %d." % MINUTES_MAX)
+        elif not save_local(key, value):
+            out = err(unsaved)
+        else:
+            out = ok("Saved. Drive opens after %d min with Claude idle." % value)
+    else:
+        out = err("Not saved: there is no such setting.")
+    out["rows"] = settings_rows()
+    return out
 
 
 def full_src(path, cache={}):
@@ -2597,6 +2706,18 @@ class Api:
         except OSError:
             return err("Could not open the browser. The page is " + STATUS_PAGE)
         return None
+
+    def settings(self):
+        try:
+            return settings_rows()
+        except Exception:
+            return []
+
+    def set_setting(self, key, value):
+        try:
+            return set_setting(key, value)
+        except Exception as e:
+            return err("Not saved: %s" % e)
 
 
 class AlertApi:
