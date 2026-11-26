@@ -1366,11 +1366,11 @@ class AreaRules(unittest.TestCase):
         md = "## Plan\n\n1. one\n2. two\n   more"
         # the blocks' own answer first, the area's last, lines counted in the copied text; outside ones left out
         self.assertEqual(c["area"], {"text": md, "answers": [
-            {"key": "m1#3", "passage": "2. two\n   more", "text": "own", "line": 4},
-            {"key": "m1#1-3", "passage": md, "text": "Onaylıyorum", "line": 4}]})
+            {"key": "m1#3", "passage": "2. two\n   more", "text": "own", "files": [], "line": 4},
+            {"key": "m1#1-3", "passage": md, "text": "Onaylıyorum", "files": [], "line": 4}]})
         self.assertEqual(c["bare"], {"text": md, "answers": []})
-        self.assertEqual(c["para"], {"text": "After.", "answers": [{"key": "m1#4", "passage": "After.", "text": "ok", "line": 0}]})
-        self.assertEqual(c["one"], {"text": "1. one", "answers": [{"key": "m1#2-2", "passage": "1. one", "text": "yes", "line": 0}]})
+        self.assertEqual(c["para"], {"text": "After.", "answers": [{"key": "m1#4", "passage": "After.", "text": "ok", "files": [], "line": 0}]})
+        self.assertEqual(c["one"], {"text": "1. one", "answers": [{"key": "m1#2-2", "passage": "1. one", "text": "yes", "files": [], "line": 0}]})
         self.assertIsNone(c["gone"])
         self.assertIsNone(c["none"])
 
@@ -2079,7 +2079,8 @@ class AreaCopy(unittest.TestCase):
         exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
         got = []
         mod = type("M", (), {"set_clipboard_text": staticmethod(lambda t, e=None: got.append(t) or True),
-                             "area_copy": staticmethod(ar.area_copy), "area_size": staticmethod(ar.area_size)})
+                             "area_copy": staticmethod(ar.area_copy), "area_size": staticmethod(ar.area_size),
+                             "with_files": staticmethod(ar.with_files), "image_tail": staticmethod(ar.image_tail)})
         panel = type("P", (), {"reply_mod": mod})()
         return type("A", (), {"__init__": ns["__init__"], "copy_area": ns["copy_area"]})(panel), got, mod
 
@@ -2713,8 +2714,8 @@ class AreaClipboard(unittest.TestCase):
         ns = {}
         exec(compile(ast.Module(body=[fn], type_ignores=[]), "agent-panel.pyw", "exec"), ns)
         got = []
-        mod = types.SimpleNamespace(area_copy=ar.area_copy, area_size=ar.area_size,
-                                    set_clipboard_text=lambda t, e=None: got.append((t, e)) or 5)
+        mod = types.SimpleNamespace(area_copy=ar.area_copy, area_size=ar.area_size, with_files=ar.with_files,
+                                    image_tail=ar.image_tail, set_clipboard_text=lambda t, e=None: got.append((t, e)) or 5)
         me = types.SimpleNamespace(_p=types.SimpleNamespace(reply_mod=mod))
         self.assertEqual(ns["copy_area"](me, self.MD), 5)
         self.assertEqual(ns["copy_area"](me, self.MD, [{"key": "m1#1-2", "passage": self.MD, "text": "Onaylıyorum", "line": 1}], 5), 5)
@@ -3081,6 +3082,327 @@ class EscAndLiveWords(unittest.TestCase):
 
     def test_esc_in_an_empty_box_leaves_and_closes_it(self):
         self.assertEqual(self.o["leave"], {"open": False, "focus": True})
+
+
+# ---------- pictures and files in an answer box (asked 2026-11-26) ----------
+class FilesRules(unittest.TestCase):
+    """What an answer's pictures and files become in the text sent, the drafts that keep them, what a paste takes from
+    the clipboard, and the sweep of the pictures saved for it. Everything in a temporary folder."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def png(self, name, colour=(200, 30, 30)):
+        from PIL import Image
+        path = os.path.join(self.dir, name)
+        Image.new("RGB", (8, 6), colour).save(path)
+        return path
+
+    def test_files_of_keeps_strings_in_order_each_once(self):
+        self.assertEqual(ar.files_of([r"C:\a.png", {"path": r"C:\b.txt"}, r"C:\a.png", "", None, 3]),
+                         [r"C:\a.png", r"C:\b.txt", "3"])
+        self.assertEqual(ar.files_of("C:\\a.png"), [])
+        self.assertEqual(len(ar.files_of(["C:\\%d.png" % k for k in range(30)])), ar.FILES_MAX)
+
+    def test_kind_follows_what_claude_code_attaches(self):
+        self.assertEqual([ar.file_kind(p) for p in ("a.PNG", "b.jpeg", "c.jpg", "d.gif", "e.webp", "f.bmp", "g.txt", "C:\\dir")],
+                         ["image", "image", "image", "image", "image", "file", "file", "file"])
+
+    def test_each_answer_lists_its_files_after_its_text_pictures_numbered_across_the_paste(self):
+        images = []
+        a = ar.with_files("Looks like this", [r"C:\s\one.png", r"C:\s\notes.txt"], images)
+        b = ar.with_files("", [r"C:\s\two shot.jpg", r"C:\s\one.png"], images)
+        self.assertEqual(a, "Looks like this\n[Image 1: C:\\s\\one.png]\n[File: C:\\s\\notes.txt]")
+        self.assertEqual(b, "[Image 2: C:\\s\\two shot.jpg]\n[Image 1: C:\\s\\one.png]")  # the same picture keeps its number
+        self.assertEqual(ar.image_tail("TEXT", images), 'TEXT\n\nC:\\s\\one.png\n"C:\\s\\two shot.jpg"')
+        self.assertEqual(ar.image_tail("TEXT", []), "TEXT")
+        self.assertEqual(ar.image_tail("", images), "")
+        self.assertEqual(ar.with_files("only text", [], []), "only text")
+
+    def test_a_picture_alone_is_an_answer_and_goes_inside_the_reply(self):
+        images = []
+        rows = [(2, "Second paragraph.", ar.with_files("", [r"C:\s\one.png"], images))]
+        text = ar.image_tail(ar.format_answered_replies([("First.\n\nSecond paragraph.", "09:05", rows)]), images)
+        self.assertEqual(text.split("\n")[2:], ["> First.", ">", "> Second paragraph.", "",
+                                                'My answer to "Second paragraph.": [Image 1: C:\\s\\one.png]', "",
+                                                "C:\\s\\one.png"])
+
+    def test_drafts_keep_the_files_and_an_answer_of_files_alone(self):
+        f = os.path.join(self.dir, "d", "reply-drafts.json")
+        d = ar.Drafts(f)
+        self.assertTrue(d.put("A", "m1#0", "P", "", [r"C:\s\one.png"], now=5))
+        self.assertFalse(d.put("A", "m1#0", "P", "", [r"C:\s\one.png"], now=6))  # unchanged
+        self.assertTrue(d.put("A", "m1#0", "P", "", [r"C:\s\one.png", r"C:\s\b.txt"], now=7))
+        self.assertEqual(ar.Drafts(f).get("A"), {"m1#0": {"text": "", "passage": "P", "at": 7, "files": [r"C:\s\one.png", r"C:\s\b.txt"]}})
+        self.assertTrue(d.put("A", "m1#0", "P", "text", [], now=8))  # the files taken out: the key goes from the answer
+        self.assertNotIn("files", ar.Drafts(f).get("A")["m1#0"])
+        self.assertTrue(d.put("A", "m1#0", "P", "", None, now=9))  # nothing left: gone
+        self.assertEqual(ar.Drafts(f).data, {})
+
+    def test_a_paste_takes_copied_files_or_saves_the_picture(self):
+        shot, txt = self.png("shot.png"), os.path.join(self.dir, "notes.txt")
+        open(txt, "w").close()
+        gone = os.path.join(self.dir, "gone.png")
+        self.assertEqual(ar.clip_files("any", grab=lambda: [shot, txt, gone], folder=self.dir), {"files": [shot, txt]})
+        self.assertEqual(ar.clip_files("image", grab=lambda: [shot, txt], folder=self.dir), {"files": [shot]})
+        self.assertIn("note", ar.clip_files("image", grab=lambda: [txt], folder=self.dir))
+        from PIL import Image
+        out = ar.clip_files("image", grab=lambda: Image.new("RGB", (5, 4), (0, 0, 255)), folder=os.path.join(self.dir, "saved"))
+        self.assertEqual(len(out["files"]), 1)
+        saved = out["files"][0]
+        self.assertTrue(saved.endswith(".png") and os.path.dirname(saved) == os.path.join(self.dir, "saved"))
+        with Image.open(saved) as im:
+            self.assertEqual((im.size, im.getpixel((0, 0))[:3]), ((5, 4), (0, 0, 255)))
+        self.assertEqual(ar.clip_files("any", grab=lambda: None, folder=self.dir),
+                         {"note": "Nothing to paste: no text, picture or file on the clipboard."})
+        self.assertEqual(ar.clip_files("image", grab=lambda: 1 / 0, folder=self.dir), {"note": "No picture on the clipboard."})
+
+    def test_two_pictures_saved_in_one_millisecond_never_share_a_file(self):
+        from PIL import Image
+        a = ar.save_picture(Image.new("RGB", (2, 2)), self.dir, now=100.5)
+        b = ar.save_picture(Image.new("RGB", (2, 2)), self.dir, now=100.5)
+        self.assertNotEqual(a, b)
+        self.assertTrue(os.path.exists(a) and os.path.exists(b))
+
+    def test_a_dropped_picture_with_no_file_is_saved_from_its_data(self):
+        import base64
+        with open(self.png("x.png"), "rb") as f:
+            url = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+        out = ar.picture_from_data(url, os.path.join(self.dir, "saved"))
+        self.assertTrue(os.path.exists(out["files"][0]))
+        self.assertIn("note", ar.picture_from_data("data:text/plain;base64,aGk=", self.dir))
+        self.assertIn("note", ar.picture_from_data("data:image/png;base64,bm90IGEgcGljdHVyZQ==", self.dir))
+
+    def test_the_sweep_takes_only_old_pictures_no_answer_holds(self):
+        folder = os.path.join(self.dir, "files")
+        os.makedirs(folder)
+        held, old, new = (os.path.join(folder, n) for n in ("held.png", "old.png", "new.png"))
+        for q in (held, old, new):
+            open(q, "w").close()
+        now = time.time()
+        for q in (held, old):
+            os.utime(q, (now - 2 * ar.FILE_KEEP, now - 2 * ar.FILE_KEEP))
+        data = {"A": {"m1#0": {"text": "", "passage": "", "files": [held]}}, "B": {"x#1": "not a dict"}}
+        self.assertEqual(ar.sweep_files(data, folder, now), 1)
+        self.assertEqual(sorted(os.listdir(folder)), ["held.png", "new.png"])
+        self.assertEqual(ar.sweep_files({}, os.path.join(self.dir, "none"), now), 0)  # no folder yet
+
+    def test_the_panel_sends_the_files_and_attaches_the_pictures(self):
+        P = panel_methods("seen", "reply_text")
+        p = P()
+        p.reply_mod, p.reply_seen = ar, {}
+        p.seen("s1", "m1", "Intro.\n\nSecond?", None)
+        text = p.reply_text("s1", [{"key": "m1#0", "passage": "Intro.", "text": "like this", "files": [r"C:\s\a.png"], "line": 0},
+                                   {"key": "m1#2", "passage": "Second?", "text": "", "files": [r"C:\s\b.txt"], "line": 2}])
+        self.assertEqual(text.split("\n")[2:], ["> Intro.", "", 'My answer to "Intro.": like this', "[Image 1: C:\\s\\a.png]", "",
+                                                "> Second?", "", 'My answer to "Second?": [File: C:\\s\\b.txt]', "",
+                                                "C:\\s\\a.png"])
+
+    def test_the_areas_copy_carries_the_files_too(self):
+        import types
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        api = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ReplyApi")
+        fn = next(n for n in api.body if isinstance(n, ast.FunctionDef) and n.name == "copy_area")
+        ns = {}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+        got = []
+        mod = types.SimpleNamespace(area_copy=ar.area_copy, area_size=ar.area_size, with_files=ar.with_files,
+                                    image_tail=ar.image_tail, set_clipboard_text=lambda t, e=None: got.append(t) or 3)
+        me = types.SimpleNamespace(_p=types.SimpleNamespace(reply_mod=mod))
+        self.assertEqual(ns["copy_area"](me, "1. a\n2. b", [{"key": "m1#1-2", "passage": "1. a\n2. b", "text": "", "files": [r"C:\s\a.png"], "line": 1}]), 3)
+        self.assertEqual(got[0], '> 1. a\n> 2. b\n\nMy answer to all 2 blocks from "1. a" down to here, as a whole: '
+                                 '[Image 1: C:\\s\\a.png]\n\nC:\\s\\a.png')
+
+    def test_a_drop_hands_back_the_paths_webview2_gave_by_name(self):
+        import sys, types
+        with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "drop_state"]
+        api = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ReplyApi")
+        keep += [n for n in api.body if isinstance(n, ast.FunctionDef) and n.name == "dropped"]
+        ns = {"time": time, "DROP_WAIT": 0.2}
+        exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
+        state = {"num_listeners": 0, "paths": [("a.png", r"C:\d\a.png"), ("old.txt", r"C:\x\old.txt"), ("b.txt", r"C:\d\b.txt")]}
+        fake = types.ModuleType("webview.dom")
+        fake._dnd_state = state
+        was = {k: sys.modules.get(k) for k in ("webview", "webview.dom")}
+        sys.modules["webview"], sys.modules["webview.dom"] = types.ModuleType("webview"), fake
+        try:
+            self.assertIs(ns["drop_state"](), state)
+            self.assertEqual(state["num_listeners"], 1)  # counted, so pywebview records the paths of a drop
+            t0 = time.time()
+            self.assertEqual(ns["dropped"](None, ["b.txt", "a.png", "missing.png"]), {"files": [r"C:\d\b.txt", r"C:\d\a.png"]})
+            self.assertLess(time.time() - t0, 1.0)
+            self.assertEqual(state["paths"], [("old.txt", r"C:\x\old.txt")])  # taken once
+        finally:
+            for k, v in was.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+
+FILES_TEST = r"""<pre id="tout"></pre><script>
+const later = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const o = {};
+  T.clip = []; T.drop = []; T.saved = []; T.drafts = [];
+  T_API.draft = (sid, key, passage, text, files) => { T.drafts.push([sid, key, text, files || null]); return Promise.resolve(null); };
+  T_API.paste_clip = mode => { T.clip.push(mode); return Promise.resolve(T.next.shift()); };
+  T_API.dropped = names => { T.drop.push(names); return Promise.resolve({files: names.filter(n => n.endsWith(".txt")).map(n => "C:\\d\\" + n)}); };
+  T_API.save_image = url => { T.saved.push(url.slice(0, 22)); return Promise.resolve({files: ["C:\\saved\\answer-1.png"]}); };
+  const st = (answers, sid) => ({sid: sid || "s1", name: "x", replies: [{id: "m1", when: "10:00", text: "Intro paragraph.\n\nSecond paragraph."}],
+    answers: answers || {}, selections: [], note: "", pins: [], quick: ["Onaylıyorum"]});
+  reply.show(st());
+  await later(30);
+  // [name, a picture's chip, its thumbnail or glyph shown]; the made-up files do not exist, so a picture's thumbnail
+  // falls back to the file glyph (as for a file deleted since)
+  const chips = row => [...row.querySelectorAll(".fchip")].map(c => [c.querySelector(".fn").textContent, c.classList.contains("img"), !!c.querySelector("img, .fi")]);
+  const press = el => { el.dispatchEvent(new MouseEvent("mousedown", {bubbles: true, cancelable: true})); el.click(); };
+  const p0 = document.querySelector('#replies .para[data-key="m1#0"]');
+  press(p0);
+  await later(30);
+  const t = document.activeElement, row = t.closest(".ansrow");
+  const h0 = t.offsetHeight;
+  o.empty = {chips: chips(row).length, quick: getComputedStyle(row.querySelector(".quick")).display !== "none", has: t.classList.contains("has")};
+  // a paste with text goes in as typed: the panel is not asked
+  const paste = dt => t.dispatchEvent(new ClipboardEvent("paste", {clipboardData: dt, bubbles: true, cancelable: true}));
+  const withText = new DataTransfer(); withText.setData("text/plain", "hello");
+  o.textNotTaken = paste(withText) && T.clip.length === 0;
+  // no text on the clipboard: the panel reads it (a screenshot here)
+  T.next = [{files: ["C:\\shots\\one shot.png"]}, {files: ["C:\\shots\\two.webp"]}, {files: ["C:\\docs\\notes.txt"]}, {note: "No picture on the clipboard."}];
+  o.taken = !paste(new DataTransfer());
+  await later(30);
+  const tr = t.getBoundingClientRect(), cr = row.querySelector(".fchip").getBoundingClientRect();
+  o.one = {chips: chips(row), src: fileUrl(row.querySelector(".fchip").dataset.path), glyph: !!row.querySelector(".fchip.img .fi"), focus: document.activeElement === t,
+    inside: cr.top >= tr.top && cr.bottom <= tr.bottom && cr.left >= tr.left && cr.right <= tr.right, taller: t.offsetHeight > h0,
+    has: t.classList.contains("has"), count: document.getElementById("count").textContent, tip: row.querySelector(".fchip").dataset.tip};
+  // Alt+V: the picture alone
+  t.dispatchEvent(new KeyboardEvent("keydown", {key: "v", code: "KeyV", altKey: true, bubbles: true, cancelable: true}));
+  await later(30);
+  paste(new DataTransfer());  // files copied in File Explorer
+  await later(30);
+  o.three = {chips: chips(row), modes: T.clip.slice()};
+  paste(new DataTransfer());  // nothing there: a note under the box
+  await later(30);
+  o.note = (row.querySelector(".vline") || {}).textContent || "";
+  await later(350);
+  o.draft = T.drafts.slice(-1)[0];
+  // the x takes one out, the box keeps the keyboard
+  const x = [...row.querySelectorAll(".fchip")].find(c => c.dataset.path.endsWith("one shot.png")).querySelector(".fx");
+  press(x);
+  await later(350);
+  o.removed = {chips: chips(row).map(c => c[0]), focus: document.activeElement === t, draft: T.drafts.slice(-1)[0]};
+  // left with pictures and no text: not an empty box, so it stays open
+  t.blur();
+  await later(30);
+  o.stays = !!document.querySelector('.ansrow[data-for="m1#0"]');
+  // Send to Session takes the files with the answer
+  document.getElementById("send").click();
+  await later(30);
+  o.sent = T.sends.slice(-1)[0][1];
+  o.sentCount = document.getElementById("count").textContent;
+  // a picture dropped on the second paragraph (no file behind it): its box opens with it; a .txt file has its path
+  const p1 = document.querySelector('#replies .para[data-key="m1#1"]');
+  const dt = new DataTransfer();
+  dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], "drop.png", {type: "image/png"}));
+  dt.items.add(new File(["x"], "b.txt", {type: "text/plain"}));
+  const over = new DragEvent("dragover", {dataTransfer: dt, bubbles: true, cancelable: true});
+  p1.dispatchEvent(over);
+  o.over = {prevented: over.defaultPrevented, marked: p1.classList.contains("dropping")};
+  p1.dispatchEvent(new DragEvent("drop", {dataTransfer: dt, bubbles: true, cancelable: true}));
+  await later(80);
+  const row2 = document.querySelector('.ansrow[data-for="m1#1"]');
+  o.dropped = {asked: T.drop, saved: T.saved, chips: row2 ? chips(row2) : null, marked: p1.classList.contains("dropping")};
+  // a drop outside the replies does nothing, but never lets the window open the file
+  const out = new DragEvent("drop", {dataTransfer: dt, bubbles: true, cancelable: true});
+  document.getElementById("foot").dispatchEvent(out);
+  o.outside = {prevented: out.defaultPrevented, asked: T.drop.length};
+  // another session drawn, then back with the stored answer: its box opens with its chips
+  document.activeElement.blur();
+  reply.show(st({}, "s2"));
+  await later(30);
+  reply.show(st({"m1#0": {text: "", passage: "Intro paragraph.", files: ["C:\\shots\\two.webp", "C:\\docs\\notes.txt"]}}));
+  await later(30);
+  const r3 = document.querySelector('.ansrow[data-for="m1#0"]');
+  o.redrawn = {chips: r3 ? chips(r3) : null, count: document.getElementById("count").textContent};
+  o.pure = {filled: [filled({text: " "}), filled({text: "", files: ["a"]}), filled({text: "x"}), filled(null)],
+    add: addPaths(["a", "b"], ["b", "c", "", "a"]), url: [fileUrl("C:\\a b\\#1.png"), fileUrl("\\\\host\\share\\x.png")],
+    name: [baseName("C:\\a\\b.png"), baseName("C:/a/b/")]};
+  document.getElementById("tout").textContent = JSON.stringify(o);
+})().catch(e => { document.getElementById("tout").textContent = JSON.stringify({error: String(e && e.stack || e)}); });
+</script>
+"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge is not installed")
+class FilesPage(unittest.TestCase):
+    """Pictures and files in an answer box, in the real page: a paste with no text, Alt+V, a drop, the x."""
+    o = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.o = page_run(FILES_TEST, budget=8000)
+
+    def test_no_error(self):
+        self.assertNotIn("error", self.o)
+
+    def test_text_on_the_clipboard_goes_in_as_typed(self):
+        self.assertEqual(self.o["empty"], {"chips": 0, "quick": True, "has": False})
+        self.assertTrue(self.o["textNotTaken"])
+
+    def test_a_picture_shows_as_a_thumbnail_chip_inside_the_box(self):
+        self.assertTrue(self.o["taken"])
+        o = self.o["one"]
+        self.assertEqual(o["chips"], [["one shot.png", True, True]])
+        self.assertEqual(o["src"], "file:///C:/shots/one%20shot.png")
+        self.assertTrue(o["glyph"])  # no such file: the glyph in the thumbnail's place
+        self.assertEqual(o["tip"], "C:\\shots\\one shot.png")
+        self.assertTrue(o["focus"] and o["inside"] and o["taller"] and o["has"], o)
+        self.assertTrue(o["count"].startswith("1 answer"), o["count"])
+
+    def test_alt_v_and_copied_files_and_a_note_when_nothing(self):
+        o = self.o["three"]
+        self.assertEqual(o["chips"], [["one shot.png", True, True], ["two.webp", True, True], ["notes.txt", False, True]])
+        self.assertEqual(o["modes"], ["any", "image", "any"])
+        self.assertEqual(self.o["note"], "No picture on the clipboard.")
+        self.assertEqual(self.o["draft"], ["s1", "m1#0", "", ["C:\\shots\\one shot.png", "C:\\shots\\two.webp", "C:\\docs\\notes.txt"]])
+
+    def test_the_x_takes_one_out_and_the_box_stays(self):
+        r = self.o["removed"]
+        self.assertEqual(r["chips"], ["two.webp", "notes.txt"])
+        self.assertTrue(r["focus"])
+        self.assertEqual(r["draft"][3], ["C:\\shots\\two.webp", "C:\\docs\\notes.txt"])
+        self.assertTrue(self.o["stays"])
+
+    def test_send_takes_the_files_with_the_answer(self):
+        self.assertEqual(self.o["sent"], [{"key": "m1#0", "passage": "Intro paragraph.", "text": "",
+                                           "files": ["C:\\shots\\two.webp", "C:\\docs\\notes.txt"], "line": 0}])
+        self.assertIn("sent", self.o["sentCount"])
+
+    def test_a_drop_on_a_paragraph_opens_its_box_with_them(self):
+        self.assertEqual(self.o["over"], {"prevented": True, "marked": True})
+        d = self.o["dropped"]
+        self.assertEqual(d["asked"], [["drop.png", "b.txt"]])
+        self.assertEqual(d["saved"], ["data:image/png;base64,"])  # no path from WebView2: saved from its data
+        self.assertEqual(d["chips"], [["b.txt", False, True], ["answer-1.png", True, True]])
+        self.assertFalse(d["marked"])
+        self.assertEqual(self.o["outside"], {"prevented": True, "asked": 1})
+
+    def test_a_stored_answer_opens_with_its_chips(self):
+        self.assertEqual(self.o["redrawn"]["chips"], [["two.webp", True, True], ["notes.txt", False, True]])
+        self.assertTrue(self.o["redrawn"]["count"].startswith("1 answer"))
+
+    def test_the_pure_rules(self):
+        p = self.o["pure"]
+        self.assertEqual(p["filled"], [False, True, True, False])
+        self.assertEqual(p["add"], ["a", "b", "c"])
+        self.assertEqual(p["url"], ["file:///C:/a%20b/%231.png", "file://host/share/x.png"])
+        self.assertEqual(p["name"], ["b.png", "b"])
 
 
 if __name__ == "__main__":

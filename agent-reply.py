@@ -2,7 +2,8 @@
 # the prompt the user last typed there, read from its transcript a piece at a time; the answers drafted under them,
 # kept per session until they are sent; the replies pinned per session; the text Send to Session pastes into the
 # session's prompt (each reply answered, whole, with the answers inside it), which Copy puts on the clipboard;
-# Holding Space dictates through a local speech-to-text server (Dictation).
+# Holding Space dictates through a local speech-to-text server (Dictation). A picture or file pasted or dropped into an
+# answer box goes with its answer as a path (with_files(), image_tail(); pictures saved by clip_files() in FILES).
 #
 # A reply is the text of one main-thread assistant message that ended its turn (stop_reason "end_turn"): its text
 # blocks, joined. Not a reply: thinking, tool calls and their results, the text Claude writes between tool calls
@@ -17,6 +18,10 @@ TAIL = 4 * 1048576     # bytes read from a transcript's end at the first read; M
 MORE = 32 * 1048576
 DRAFTS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-drafts.json")
 PINS = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-pins.json")
+FILES = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel", "reply-files")  # pictures pasted into a box
+FILE_KEEP = 24 * 3600   # seconds a saved picture outlives the last answer holding it (sweep_files())
+FILES_MAX = 20          # pictures and files one answer holds
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")  # what Claude Code attaches when a pasted line is only its path
 PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
 HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers start with "My answer"):'
@@ -153,7 +158,7 @@ class Drafts:
         self.path = path
         # pywebview runs every page call on a thread of its own, beside the panel's loop (expire, get): one at a time
         self.lock = threading.RLock()
-        self.data = {sid: {k: a for k, a in (d or {}).items() if isinstance(a, dict) and a.get("text")}
+        self.data = {sid: {k: a for k, a in (d or {}).items() if isinstance(a, dict) and (a.get("text") or a.get("files"))}
                      for sid, d in load_json(path).items() if isinstance(d, dict)}
 
     @locked
@@ -161,19 +166,22 @@ class Drafts:
         return dict(self.data.get(sid) or {})
 
     @locked
-    def put(self, sid, key, passage, text, now=None):
-        """One answer typed, changed or emptied (empty: gone). True when the store changed."""
+    def put(self, sid, key, passage, text, files=None, now=None):
+        """One answer typed, changed or emptied (no text and no file: gone). files: the paths of the pictures and
+        files in its box (files_of()), kept as "files" only when there are any. True when the store changed."""
         d = self.data.setdefault(sid, {})
-        text = (text or "").strip()
+        text, files = (text or "").strip(), files_of(files)
         old = d.get(key)
-        if not text:
+        if not text and not files:
             if not old:
                 return False
             del d[key]
-        elif old and old["text"] == text and old["passage"] == passage:
+        elif old and old["text"] == text and old["passage"] == passage and old.get("files", []) == files:
             return False
         else:
             d[key] = {"text": text, "passage": passage, "at": now or time.time()}
+            if files:
+                d[key]["files"] = files
         if not d:
             del self.data[sid]
         self.save()
@@ -202,6 +210,130 @@ class Drafts:
 
     def save(self):
         save_json(self.path, self.data)
+
+
+def files_of(files):
+    """The paths an answer holds, as the page hands them: strings, in order, each once, at most FILES_MAX."""
+    out = []
+    for f in files if isinstance(files, (list, tuple)) else []:
+        p = str((f.get("path") if isinstance(f, dict) else f) or "").strip()
+        if p and p not in out:
+            out.append(p)
+    return out[:FILES_MAX]
+
+
+def file_kind(path):
+    """"image" for a picture Claude Code attaches when its path is pasted on a line of its own, else "file"."""
+    return "image" if str(path).lower().endswith(IMAGE_EXT) else "file"
+
+
+def with_files(text, files, images):
+    """An answer's text as it goes out, with one line per picture or file of its box after it, in the box's order:
+    "[Image N: <path>]" (N counts the pictures of the whole paste, images, which this extends) or "[File: <path>]".
+    Such a line holds text besides the path, so Claude Code keeps it as text, where it stands (2.1.332, measured)."""
+    lines = []
+    for p in files_of(files):
+        if file_kind(p) == "image":
+            if p not in images:
+                images.append(p)
+            lines.append("[Image %d: %s]" % (images.index(p) + 1, p))
+        else:
+            lines.append("[File: %s]" % p)
+    t = (text or "").rstrip()
+    return "\n".join(([t] if t.strip() else []) + lines)
+
+
+def image_tail(text, images):
+    """The end of a paste holding pictures: each picture's path alone on a line, in the order with_files() numbered
+    them (quoted when it holds a space, as Windows Terminal drops one). Claude Code takes such a line out of the
+    pasted text and attaches the picture as [Image #N] (shown before the text), so Claude sees it as a picture pasted
+    in the terminal; the "[Image N: <path>]" line says where it belongs."""
+    if not text or not images:
+        return text
+    return text + "\n\n" + "\n".join('"%s"' % p if " " in p else p for p in images)
+
+
+def save_picture(im, folder=None, now=None):
+    """A picture from the clipboard (a PIL image) saved as a PNG in FILES; its path."""
+    folder = folder or FILES
+    os.makedirs(folder, exist_ok=True)
+    t = now or time.time()
+    base = os.path.join(folder, "answer-%s-%03d" % (time.strftime("%Y%m%d-%H%M%S", time.localtime(t)), int(t * 1000) % 1000))
+    path, n = base + ".png", 2
+    while os.path.exists(path):
+        path, n = "%s-%d.png" % (base, n), n + 1
+    if im.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+        im = im.convert("RGBA")
+    im.save(path, "PNG", compress_level=1)
+    return path
+
+
+def clip_files(mode="any", grab=None, folder=None):
+    """What a paste into an answer box takes from the clipboard when it holds no text: {"files": [paths]} or
+    {"note": why not}. Files copied in File Explorer (CF_HDROP) go as their own paths, as Windows Terminal pastes
+    them; a picture (a screenshot, an image copied in a browser) is saved in FILES as a PNG and goes as that file's
+    path. mode "image" (Alt+V, Claude Code's own image paste key on Windows) takes only a picture. grab stands in for
+    PIL.ImageGrab.grabclipboard in tests."""
+    if grab is None:
+        from PIL import ImageGrab
+        grab = ImageGrab.grabclipboard
+    try:
+        got = grab()
+    except Exception:
+        got = None
+    if isinstance(got, list):
+        paths = [p for p in got if isinstance(p, str) and os.path.exists(p)]
+        if mode == "image":
+            paths = [p for p in paths if file_kind(p) == "image"]
+        if paths:
+            return {"files": files_of(paths)}
+        got = None
+    if got is not None and hasattr(got, "save"):
+        try:
+            return {"files": [save_picture(got, folder)]}
+        except (OSError, ValueError):
+            return {"note": "Could not save the picture."}
+    return {"note": "No picture on the clipboard." if mode == "image" else
+            "Nothing to paste: no text, picture or file on the clipboard."}
+
+
+def picture_from_data(url, folder=None):
+    """A picture dropped from somewhere with no file on this PC (a browser's image): its data: URL saved as a PNG in
+    FILES; {"files": [path]} or {"note"}."""
+    import base64, io
+    from PIL import Image
+    try:
+        head, _, data = str(url).partition(",")
+        if not head.startswith("data:image/") or ";base64" not in head:
+            return {"note": "Only pictures and files from this PC can go in an answer."}
+        with Image.open(io.BytesIO(base64.b64decode(data))) as im:
+            im.load()
+            return {"files": [save_picture(im, folder)]}
+    except Exception:
+        return {"note": "Could not read that picture."}
+
+
+def sweep_files(data, folder=None, now=None, keep=FILE_KEEP):
+    """The pictures saved in FILES that no answer holds any more go once they are keep seconds old (the session may
+    still read a path it was sent for a while). data: the drafts' store ({sid: {key: answer}}). Answers how many went."""
+    folder, now = folder or FILES, now or time.time()
+    held = {os.path.normcase(os.path.abspath(p)) for d in (data or {}).values() for a in (d or {}).values()
+            if isinstance(a, dict) for p in a.get("files") or []}
+    gone = 0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 0
+    for n in names:
+        p = os.path.join(folder, n)
+        try:
+            if os.path.normcase(os.path.abspath(p)) in held or not os.path.isfile(p) or now - os.path.getmtime(p) < keep:
+                continue
+            os.remove(p)
+            gone += 1
+        except OSError:
+            pass
+    return gone
 
 
 def reply_of(key):

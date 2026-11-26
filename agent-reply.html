@@ -24,7 +24,11 @@
      until a newer prompt is typed (sending it keeps it); a box with a kept answer is open when the reply is shown.
      An empty box shows the quick answers ("quick_answers" in claude-plus.local.json, else "I approve") as chips at
      its right end; a click puts the chip's text in the box, the caret stays there (2026-11-25).
-     Code blocks show shut, as one line (language, lines, first line), and open on a click. The passages selected
+     What the terminal takes on a paste the boxes take too (2026-11-26): text as typed; a picture (Ctrl+V with no text
+     on the clipboard, or Alt+V, Claude Code's own image paste key on Windows) or files copied in File Explorer, and
+     files or pictures dragged onto a box or a paragraph, show inside the box as chips (a thumbnail or a file glyph,
+     the name, an x) and go with the answer as paths (agent-reply.py with_files(), image_tail()).
+     Code blocks show open, whatever their length; a click on their head shuts them to one line and opens them again. The passages selected
      in the terminal for the ":N" reply show marked where they stand, led by their ":N"; one that is not in the
      reply text is listed at the bottom. The bar at the bottom counts the answers and selections; Send to Session pastes
      into the session's prompt, without Enter, each reply answered, whole, with the answers inside it (agent-reply.py
@@ -220,6 +224,27 @@ mark { background: var(--hit); color: inherit; border-radius: 3px; box-shadow: 0
 .quick button:active { transform: scale(.97); }
 .quick:empty, .ans:not(:placeholder-shown) ~ .quick, .ans.listening ~ .quick, .ans.ghosted ~ .quick { display: none; }
 .ans:placeholder-shown:not(.listening):not(.ghosted) { padding-right: var(--qw, 10px); }
+/* pictures and files in an answer (pasted, Alt+V, dropped): chips inside the box, under its text (grow() gives the box
+   the bottom padding they take and places them); a thumbnail or a file glyph, the name, an x. A click on a chip opens
+   it as a file link opens; the x takes it out of the answer */
+.files { position: absolute; left: 12px; right: 8px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
+.files:empty { display: none; }
+.fchip { pointer-events: auto; height: 32px; max-width: 220px; display: flex; align-items: center; gap: 6px;
+  padding: 0 2px 0 4px; border: 1px solid var(--line); border-radius: var(--r-small); background: var(--panel);
+  color: var(--text); font: 400 12px/16px "Segoe UI", system-ui, sans-serif; cursor: pointer; animation: fade .12s ease-out; }
+.fchip:hover { border-color: var(--blue); }
+.fchip img { width: 24px; height: 24px; flex: none; object-fit: cover; border-radius: 4px; background: var(--surface2); }
+.fchip .fi { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: 4px;
+  background: var(--surface2); color: var(--muted); }
+.fchip .fi svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
+.fchip .fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fchip .fx { flex: none; width: 22px; height: 22px; border: 0; border-radius: 4px; background: none; color: var(--faint);
+  display: grid; place-items: center; }
+.fchip .fx:hover { color: var(--red-deep); background: var(--surface2); }
+.fchip .fx svg { width: 9px; height: 9px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+/* a file dragged over a box or a paragraph: where it would go */
+.ansrow.dropping .ans { border: 1.5px dashed var(--blue); background: var(--ans-bg); }
+#replies .para.dropping { background: rgba(27, 77, 245, .09); }
 /* Space held in a box: dictation. The line under the box says what is happening: "Keep holding…", "Starting Voice
    to Text…", listening (a red pulsing dot, the words, a five-bar level meter), "Transcribing…" (pulsing grey, as
    Claude Code's), or a note in amber */
@@ -532,6 +557,15 @@ function keptAnswers(answers, stored, shown) {
   for (const [k, a] of Object.entries(answers)) if (k in stored || shown.has(k.slice(0, k.lastIndexOf("#")))) out[k] = a;
   return out;
 }
+// an answer holds something: text, or a picture or file (pure, node-tested)
+function filled(a) { return !!a && (!!String(a.text || "").trim() || !!(a.files && a.files.length)); }
+// paths added to the ones a box holds: each once, in order, at most FILES_MAX (pure, node-tested)
+const FILES_MAX = 20;
+function addPaths(have, more) {
+  const out = [...have];
+  for (const p of more || []) if (p && !out.includes(p)) out.push(p);
+  return out.slice(0, FILES_MAX);
+}
 function areaRange(key) { const m = /^(.*)#(\d+)-(\d+)$/.exec(String(key || "")); return m ? {rid: m[1], a: +m[2], b: +m[3]} : null; }
 // Two areas never overlap: a rectangle over blocks a..b of reply rid takes in every answered area it touches, and
 // those the grown range then touches, so one frame holds them all (extend, never replace). keys: the answered
@@ -562,12 +596,12 @@ function areaClip(key, reply, answers) {
   const bs = blocks(String(reply || ""));
   if (rid === null || !bs[a] || !bs[b]) return null;
   const text = areaMarkdown([reply], [[0, span(a, b)]]), from = bs[a].from, list = [];
-  const has = k => answers[k] && String(answers[k].text || "").trim();
+  const has = k => filled(answers[k]), files = k => answers[k].files || [];
   for (let n = a; n <= b; n++) {
     const k = rid + "#" + n;
-    if (has(k) && bs[n].src !== undefined) list.push({key: k, passage: bs[n].src, text: answers[k].text, line: bs[n].last - from});
+    if (has(k) && bs[n].src !== undefined) list.push({key: k, passage: bs[n].src, text: answers[k].text || "", files: files(k), line: bs[n].last - from});
   }
-  if (g && has(key)) list.push({key, passage: text, text: answers[key].text, line: bs[b].to - from});
+  if (g && has(key)) list.push({key, passage: text, text: answers[key].text || "", files: files(key), line: bs[b].to - from});
   return {text, answers: list};
 }
 
@@ -719,9 +753,10 @@ function finalPlan(f) {
 // tools/test-reply.py runs it in node.
 function sendList(answers, sources, order, ends) {
   const at = k => { const i = order.indexOf(k); return i < 0 ? order.length : i; };
-  return Object.keys(answers).filter(k => k in sources && String(answers[k].text || "").trim())
+  return Object.keys(answers).filter(k => k in sources && filled(answers[k]))
     .sort((a, b) => at(a) - at(b))
-    .map(key => ({key, passage: sources[key], text: answers[key].text, line: ends && key in ends ? ends[key] : -1}));
+    .map(key => ({key, passage: sources[key], text: answers[key].text || "", files: answers[key].files || [],
+      line: ends && key in ends ? ends[key] : -1}));
 }
 
 // ---------- drawing ----------
@@ -746,10 +781,10 @@ function draw() {
   $("empty").textContent = reps.length ? "" : (S.note || "");
   for (const key of new Set([...opened, ...Object.keys(answers)])) {
     const p = list.querySelector(`.para[data-key="${CSS.escape(key)}"]`);
-    if (p) openBox(p, answers[key] ? answers[key].text : undefined, false);
+    if (p) openBox(p, answers[key] ? answers[key].text : undefined, false, answers[key] ? answers[key].files || [] : undefined);
   }
   // the areas answered as a whole: framed, their box open with the answer (one in a reply not shown waits)
-  for (const key of Object.keys(answers)) if (areaRange(key)) openAreaBox(key, answers[key].text, false);
+  for (const key of Object.keys(answers)) if (areaRange(key)) openAreaBox(key, answers[key].text, false, answers[key].files || []);
   mark();
   count();
   linkPaths();
@@ -876,7 +911,7 @@ function count() {
   // the answers under what is shown now are the ones Copy and Send to Session take; those under another chip wait.
   // Copy and Send to Session are never off (asked 2026-11-25): with no answer they take the replies shown as they are;
   // "sent" while what they would paste is what the last Send to Session of this session pasted
-  const all = Object.entries(answers).filter(([, a]) => a.text.trim()), s = (S && S.selections || []).length;
+  const all = Object.entries(answers).filter(([, a]) => filled(a)), s = (S && S.selections || []).length;
   const n = sendList(answers, sources, []).length, other = all.length - n;
   const parts = [n ? `<b>${n} answer${n === 1 ? "" : "s"}</b>` : "No answer yet"];
   if (S && sentAs[S.sid] && sentAs[S.sid] === sig(toSend())) parts.push("sent");
@@ -890,7 +925,14 @@ function count() {
 }
 
 // ---------- the answer box ----------
-function grow(t) { t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; size(); }
+function grow(t) {
+  const f = t.parentElement && t.parentElement.querySelector(".files"), fh = f && f.childElementCount ? f.offsetHeight : 0;
+  t.style.paddingBottom = fh ? (fh + 10) + "px" : "";  // the chips sit inside the box, under its text
+  t.style.height = "auto";
+  t.style.height = t.scrollHeight + "px";
+  if (fh) f.style.top = (t.offsetTop + t.offsetHeight - fh - 6) + "px";
+  size();
+}
 function kindOf(p) { return p.classList.contains("table") ? "table" : p.classList.contains("li") ? "li" : "para"; }
 // a block's own box, right after it (an area's box after the area's last block is not that block's)
 function ownRow(p) { const r = p && p.nextElementSibling; return r && r.classList.contains("ansrow") && !r.classList.contains("area") ? r : null; }
@@ -900,7 +942,10 @@ let QUICK = [], quickKey = "[]";
 function boxHtml(label) {
   // no spell check (asked 2026-11-25: "Burada yazım denetimi yapmasın"): no red wavy lines under Turkish answers
   return `<textarea class="ans" rows="1" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" placeholder="Type your answer, or hold Space to speak…" aria-label="${esc(label)}"></textarea>` +
-    `<span class="quick">${QUICK.map(q => `<button type="button" tabindex="-1" data-quick="${esc(q)}" data-tip="Puts this text in the box">${esc(q)}</button>`).join("")}</span>`;
+    `<span class="files"></span>` + quickHtml();
+}
+function quickHtml() {
+  return `<span class="quick">${QUICK.map(q => `<button type="button" tabindex="-1" data-quick="${esc(q)}" data-tip="Puts this text in the box">${esc(q)}</button>`).join("")}</span>`;
 }
 function quickFit(row) {  // the box's right padding keeps its text clear of the chips while they show
   const q = row.querySelector(".quick");
@@ -923,14 +968,14 @@ function quickSync(list) {
   if (k === quickKey) return;
   quickKey = k;
   QUICK = list || [];
-  const html = boxHtml("").replace(/^<textarea[^>]*><\/textarea>/, "");
+  const html = quickHtml();
   for (const row of $("replies").querySelectorAll(".ansrow")) {
     const old = row.querySelector(".quick");
     if (old) old.outerHTML = html;
     quickFit(row);
   }
 }
-function openBox(p, text, animate) {
+function openBox(p, text, animate, files) {
   let row = ownRow(p);
   opened.add(p.dataset.key);
   if (!row) {
@@ -943,13 +988,14 @@ function openBox(p, text, animate) {
   }
   const t = row.firstChild;
   if (text !== undefined) t.value = text;
-  t.classList.toggle("has", !!t.value.trim());
+  if (files !== undefined) setFiles(row, files);
+  t.classList.toggle("has", boxFilled(row));
   tipFor(p);
   grow(t);
   return t;
 }
-function closeBox(row) {  // only an empty box closes
-  if (!row || row.firstChild.value.trim()) return;
+function closeBox(row) {  // only an empty box closes (no text, no picture or file)
+  if (!row || boxFilled(row)) return;
   aopened.delete(row.dataset.for);
   if (row.classList.contains("area")) { unframe(row); return; }
   const p = row.previousElementSibling;
@@ -960,7 +1006,7 @@ function closeBox(row) {  // only an empty box closes
 }
 // An area's box: its blocks (and the boxes open under them) go into one frame (.agroup), its box last in it. The
 // frame is drawn round them (::before), so no block moves. Answers its textarea, or null when the reply is not shown.
-function openAreaBox(key, text, animate) {
+function openAreaBox(key, text, animate, files) {
   const g = areaRange(key), rr = g && shownReplies().find(r => r.id === g.rid);
   const rep = rr && [...$("replies").querySelectorAll(".reply")].find(x => x.dataset.id === g.rid);
   if (!rep) return null;
@@ -987,7 +1033,8 @@ function openAreaBox(key, text, animate) {
   }
   const t = row.firstChild;
   if (text !== undefined) t.value = text;
-  t.classList.toggle("has", !!t.value.trim());
+  if (files !== undefined) setFiles(row, files);
+  t.classList.toggle("has", boxFilled(row));
   grow(t);
   return t;
 }
@@ -1004,6 +1051,118 @@ function tipFor(p) {  // the paragraph's tooltip says what a click does; none wh
   if (ownRow(p)) delete p.dataset.tip;
   else p.dataset.tip = paraTip(kindOf(p));
 }
+// ---------- pictures and files in a box: what the terminal takes on a paste, the box takes too (asked 2026-11-26).
+// Claude Code on Windows (2.1.332, measured in a session of its own): a pasted line that is only the path of a .png,
+// .jpg, .gif or .webp becomes [Image #N], the picture attached; Alt+V pastes the clipboard's picture the same way;
+// any other path stays text. So a box holds paths: files keep their own (copied in File Explorer, dropped), a picture
+// from the clipboard or with no file behind it is saved as a PNG by the panel (agent-reply.py clip_files(),
+// picture_from_data()). A box's paths are row.files, in the order they came; each shows as a chip (drawFiles()).
+const IMAGE_RE = /\.(png|jpe?g|gif|webp)$/i;
+const FILE_SVG = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3.5 1.5h4.5l3 3v8h-7.5z M8 1.5v3h3"/></svg>';
+const DROP_MAX = 25 * 1048576;  // bytes of a dropped picture with no file behind it that is read and saved
+function baseName(p) { return String(p).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(p); }
+function fileUrl(p) {  // a Windows path as a file: URL the page can show (each part escaped, the drive kept)
+  const s = String(p).replace(/\\/g, "/");
+  if (s.startsWith("//")) return "file:" + "//" + s.slice(2).split("/").map(encodeURIComponent).join("/");
+  return "file:///" + s.split("/").map((x, i) => i === 0 && /^[A-Za-z]:$/.test(x) ? x : encodeURIComponent(x)).join("/");
+}
+function boxFiles(row) { return (row && row.files) || []; }
+function boxFilled(row) { return !!row && (!!row.firstChild.value.trim() || boxFiles(row).length > 0); }
+function setFiles(row, files) { row.files = addPaths([], files || []); drawFiles(row); }
+function drawFiles(row) {
+  const f = row.querySelector(".files"), list = boxFiles(row);
+  if (!f) return;
+  f.innerHTML = list.map(p => {
+    const n = baseName(p), img = IMAGE_RE.test(p);
+    return `<span class="fchip${img ? " img" : ""}" data-path="${esc(p)}" data-tip="${esc(p)}">` +
+      (img ? `<img src="${esc(fileUrl(p))}" alt="" draggable="false">` : `<span class="fi">${FILE_SVG}</span>`) +
+      `<span class="fn">${esc(n)}</span><button type="button" class="fx" tabindex="-1" aria-label="Remove ${esc(n)}" data-tip="Takes this ${img ? "picture" : "file"} out of the answer">${X}</button></span>`;
+  }).join("");
+  if (!list.length) f.style.removeProperty("top");
+}
+function addFiles(t, paths) {  // paths into t's box, saved as typing is
+  const row = t.parentElement;
+  if (!row || !paths || !paths.length) return;
+  row.files = addPaths(boxFiles(row), paths);
+  drawFiles(row);
+  changed(t);
+}
+function dropFile(row, path) {  // a chip's x
+  row.files = boxFiles(row).filter(p => p !== path);
+  drawFiles(row);
+  changed(row.firstChild);
+}
+// a thumbnail whose file is gone: the file glyph in its place
+document.addEventListener("error", e => {
+  if (e.target.tagName === "IMG" && e.target.closest(".fchip")) { const g = document.createElement("span"); g.className = "fi"; g.innerHTML = FILE_SVG; e.target.replaceWith(g); }
+}, true);
+// Ctrl+V with no text on the clipboard (with text, the text goes in as typed, as in the terminal), and Alt+V (the
+// picture alone): the panel reads the clipboard
+function pasteFiles(t, mode) {
+  if (!window.pywebview) return;
+  Promise.resolve(api().paste_clip(mode)).then(r => {
+    if (!t.isConnected) return;
+    if (r && r.files && r.files.length) addFiles(t, r.files);
+    else vline(t, "note", (r && r.note) || "Nothing to paste.");
+  });
+}
+document.addEventListener("paste", e => {
+  const t = e.target;
+  if (!t.classList || !t.classList.contains("ans")) return;
+  if (e.clipboardData && e.clipboardData.getData("text/plain") !== "") return;
+  e.preventDefault();
+  pasteFiles(t, "any");
+});
+// Files dragged over the window: a box, or a paragraph (its box opens), takes them; anywhere else nothing happens (the
+// page never opens a dropped file itself). The paths come from WebView2 through pywebview ("FilesDropped", as its own
+// drop sends it; ReplyApi.dropped); a picture with no file behind it (a browser's) is saved from its data.
+const hasFiles = dt => !!dt && [...(dt.types || [])].includes("Files");
+let dropOn = null;
+function dropMark(el) {
+  if (dropOn === el) return;
+  if (dropOn) dropOn.classList.remove("dropping");
+  dropOn = el;
+  if (el) el.classList.add("dropping");
+}
+function dropTarget(el) {
+  const c = el && el.closest ? el : el && el.parentElement;
+  return c ? c.closest("#replies .ansrow") || c.closest("#replies .para") : null;
+}
+const dataUrl = f => new Promise(ok => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => ok(""); r.readAsDataURL(f); });
+async function dropFiles(tg, list) {
+  const fs = [...list];
+  if (!fs.length || !window.pywebview || !S) return;
+  try { window.chrome.webview.postMessageWithAdditionalObjects("FilesDropped", list); } catch (_) {}
+  const t = tg.classList.contains("para") ? openBox(tg, undefined, true) : tg.firstChild;
+  const r = await Promise.resolve(api().dropped(fs.map(f => f.name)));
+  let got = (r && r.files) || [], miss = 0;
+  const named = new Set(got.map(baseName));
+  for (const f of fs) {
+    if (named.has(f.name)) continue;
+    const s = /^image\//.test(f.type) && f.size <= DROP_MAX ? await Promise.resolve(api().save_image(await dataUrl(f))) : null;
+    if (s && s.files && s.files.length) got = got.concat(s.files); else miss++;
+  }
+  if (!t.isConnected) return;
+  addFiles(t, got);
+  t.focus();
+  t.setSelectionRange(t.value.length, t.value.length);
+  if (miss) vline(t, "note", "Only pictures and files from this PC can go in an answer.");
+}
+addEventListener("dragover", e => {
+  if (!hasFiles(e.dataTransfer)) return;
+  e.preventDefault();
+  const tg = dropTarget(e.target);
+  e.dataTransfer.dropEffect = tg ? "copy" : "none";
+  dropMark(tg);
+});
+addEventListener("dragleave", e => { if (!e.relatedTarget) dropMark(null); });
+addEventListener("drop", e => {
+  if (!hasFiles(e.dataTransfer)) return;
+  e.preventDefault();
+  dropMark(null);
+  const tg = dropTarget(e.target);
+  if (tg) dropFiles(tg, e.dataTransfer.files);
+});
 // ---------- dictation: Space held in a box (spaceRule() decides). Claude Code's own hold-to-talk in the panel's hidden
 // Claude Code (agent-voice-host.py) by default: the panel sends it the held Space and the page reads its prompt line;
 // Voice to Text (the page's recording, sent by the panel) when the hidden Claude Code is not ready, its screen cannot
@@ -1520,9 +1679,9 @@ function putDictation(t, text) {  // at the caret, keeping the box's keyboard if
 }
 let saveJob = {};
 function changed(t) {
-  const key = t.parentElement.dataset.for;
-  t.classList.toggle("has", !!t.value.trim());
-  if (t.value.trim()) answers[key] = {text: t.value, passage: sources[key] || ""};
+  const key = t.parentElement.dataset.for, files = boxFiles(t.parentElement).slice();
+  t.classList.toggle("has", boxFilled(t.parentElement));
+  if (boxFilled(t.parentElement)) answers[key] = {text: t.value, passage: sources[key] || "", files};
   else delete answers[key];
   const prev = t.parentElement.previousElementSibling;
   if (prev && prev.classList.contains("para") && !t.parentElement.classList.contains("area")) tipFor(prev);
@@ -1533,7 +1692,7 @@ function changed(t) {
   // the session, the passage and the text as typed now: a redraw before the save fires must not change where the
   // draft goes (S and sources belong to what is drawn when it fires)
   const sid = S.sid, passage = sources[key] || "", text = t.value;
-  saveJob[key] = setTimeout(() => api().draft(sid, key, passage, text), 300);
+  saveJob[key] = setTimeout(() => api().draft(sid, key, passage, text, files), 300);
   clipFollow(t, false);
 }
 document.addEventListener("input", e => {
@@ -1552,7 +1711,7 @@ document.addEventListener("focusout", e => {
   if (escArm && escArm.t === e.target) { escArm = null; clearTimeout(escTimer); }  // "Esc again" holds only in the box
   if (!busy.has(e.target)) vline(e.target, "");  // "Transcribing…" stays: its text still comes
   const row = e.target.parentElement;
-  if (row && document.hasFocus() && !busy.has(e.target) && !(rec && rec.t === e.target) && !e.target.value.trim() &&
+  if (row && document.hasFocus() && !busy.has(e.target) && !(rec && rec.t === e.target) && !boxFilled(row) &&
       (row.classList.contains("area") || aopened.has(row.dataset.for))) closeBox(row);  // an empty box the area opened
   release();  // Tab to the next box: still held
 });
@@ -1582,6 +1741,8 @@ document.addEventListener("keydown", e => {
   e.stopPropagation();
   if (e.key === "Escape" && !e.isComposing) { e.preventDefault(); escape(e.target); return; }
   if (escArm) { escArm = null; clearTimeout(escTimer); }  // another key: the next Esc only asks again
+  // Alt+V: the clipboard's picture, as Claude Code's own image paste key on Windows takes it (also with text there)
+  if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === "KeyV") { e.preventDefault(); vline(e.target, ""); pasteFiles(e.target, "image"); return; }
   const plain = !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey;
   if (e.code === "Space" && plain && !e.isComposing) { e.preventDefault(); spaceStep(e.target, {type: "down", repeat: e.repeat}); return; }
   if (spaceBox === e.target && e.code !== "Space") spaceStep(e.target, {type: "key"});
@@ -1596,7 +1757,7 @@ document.addEventListener("keydown", e => {
 let down = null;
 document.addEventListener("pointerdown", e => { down = {x: e.clientX, y: e.clientY, t: e.target}; }, true);
 // a press on a quick answer leaves the keyboard in its box: an empty box left would close before the click came
-document.addEventListener("mousedown", e => { if (e.target.closest(".quick")) e.preventDefault(); }, true);
+document.addEventListener("mousedown", e => { if (e.target.closest(".quick, .fchip")) e.preventDefault(); }, true);
 function dragged(e) { return !!down && Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 4; }
 // what a click is on: what was pressed, also when the press made the page move under a still pointer (an empty box
 // left above it closes) and the click lands on what holds both
@@ -1618,6 +1779,15 @@ document.addEventListener("click", e => {
   if (tg.closest("#replies .lnote")) return;
   const qb = tg.closest(".quick button");
   if (qb) { const t = qb.closest(".ansrow").firstChild; tipHide(); quickPut(t, qb.dataset.quick); clipFollow(t, true); return; }  // never the paragraph's click
+  const fx = tg.closest(".fchip .fx");
+  if (fx) { tipHide(); dropFile(fx.closest(".ansrow"), fx.closest(".fchip").dataset.path); return; }
+  const fc = tg.closest(".fchip");
+  if (fc) {  // opened as a file link in a reply opens (a picture in its viewer); a file gone since says so under the box
+    const t = fc.closest(".ansrow").firstChild;
+    tipHide();
+    Promise.resolve(api().link(fc.dataset.path)).then(r => { if (r && r.note && t.isConnected) vline(t, "note", r.note); });
+    return;
+  }
   const row = tg.closest(".ansrow");
   if (row) { row.firstChild.focus(); return; }
   const hit = tg.closest("#replies .para");
@@ -1625,7 +1795,7 @@ document.addEventListener("click", e => {
     // the paragraph as drawn now: an update held while a box had the keyboard is drawn when the press leaves it
     const p = $("replies").querySelector(`.para[data-key="${CSS.escape(hit.dataset.key)}"]`);
     const box = ownRow(p);
-    const act = !p ? "" : clickAction({own: false, detail: e.detail, box: !!box, text: !!(box && box.firstChild.value.trim()),
+    const act = !p ? "" : clickAction({own: false, detail: e.detail, box: !!box, text: !!(box && boxFilled(box)),
       moved: dragged(e)});
     tipHide();
     if (act === "open") openBox(p, undefined, true).focus();
@@ -1700,7 +1870,7 @@ function toSend() {
   const list = ordered();
   return list.length || !S ? list : shownReplies().map(r => ({key: r.id + "#", passage: "", text: "", line: -1}));
 }
-const sig = list => list.length ? JSON.stringify(list.map(a => [a.key, a.text])) : "";
+const sig = list => list.length ? JSON.stringify(list.map(a => [a.key, a.text, a.files || []])) : "";
 const sentAs = {};  // sid -> sig() of what its last Send to Session pasted (this run only)
 let sending = false;
 let sayJob = null;
@@ -1915,10 +2085,11 @@ function areaSync(bs) {
   if (!bs.length || !S || new Set(bs.map(b => b.r)).size > 1) return null;
   $("replies").querySelectorAll(".ansrow.area").forEach(closeBox);  // only an empty one closes
   const rid = bs[0].el.closest(".reply").dataset.id, ns = bs.map(b => b.n);
-  const done = Object.keys(answers).filter(k => areaRange(k) && String(answers[k].text || "").trim());
+  const done = Object.keys(answers).filter(k => areaRange(k) && filled(answers[k]));
   const m = areaMerge(done, rid, Math.min(...ns), Math.max(...ns));
-  const text = m.from.map(k => answers[k] ? answers[k].text.trim() : "").filter(Boolean).join("\n\n");
-  const lone = m.a === m.b && !text && bs[0].el.classList.contains("para") ? bs[0].el : null;
+  const text = m.from.map(k => answers[k] ? String(answers[k].text || "").trim() : "").filter(Boolean).join("\n\n");
+  const files = addPaths([], m.from.flatMap(k => answers[k] && answers[k].files || []));
+  const lone = m.a === m.b && !text && !files.length && bs[0].el.classList.contains("para") ? bs[0].el : null;
   const key = lone ? lone.dataset.key : m.key;
   for (const k of m.from) if (k !== key) dropArea(k);  // taken in
   let t;
@@ -1926,10 +2097,11 @@ function areaSync(bs) {
     if (!ownRow(lone)) aopened.add(key);
     t = openBox(lone, undefined, true);
   } else {
-    t = openAreaBox(key, text || undefined, true);
-    if (t && text && (!answers[key] || answers[key].text !== t.value)) {
-      answers[key] = {text: t.value, passage: sources[key]};
-      api().draft(S.sid, key, sources[key], t.value);
+    t = openAreaBox(key, text || undefined, true, files.length ? files : undefined);
+    const fs = t ? boxFiles(t.parentElement) : [];
+    if (t && (text || files.length) && (!answers[key] || JSON.stringify([answers[key].text, answers[key].files || []]) !== JSON.stringify([t.value, fs]))) {
+      answers[key] = {text: t.value, passage: sources[key], files: fs};
+      api().draft(S.sid, key, sources[key], t.value, fs);
     }
   }
   if (!t) return null;
@@ -2079,7 +2251,7 @@ function apply() {
     shownKey = key;
     shownSid = S.sid;
     if (!same) { answers = {}; opened.clear(); tipHide(); say(""); $("body").scrollTop = 0; }
-    for (const [k, a] of Object.entries(S.answers || {})) if (!answers[k]) answers[k] = {text: a.text, passage: a.passage};
+    for (const [k, a] of Object.entries(S.answers || {})) if (!answers[k]) answers[k] = {text: a.text || "", passage: a.passage, files: a.files || []};
     answers = keptAnswers(answers, S.answers || {}, new Set((S.replies || []).concat(S.pins || []).map(r => r.id)));
     draw();
   } else {
@@ -2118,7 +2290,7 @@ function drawHead(h) {
   // the folder is a link: a click opens it in File Explorer (as a folder link in a reply opens); the name stays text
   $("meta").innerHTML = h.meta ? `<b>${esc(h.meta.name)}</b> · <a class="lnk" data-url="${esc(h.meta.where)}" data-tip="Opens this folder in File Explorer">${esc(h.meta.where)}</a>${h.meta.line ? " · " + esc(h.meta.line) : ""}` : "";
   document.body.classList.toggle("folded", !h.open);
-  if (h.open) $("replies").querySelectorAll(".ansrow").forEach(quickFit);  // boxes drawn while folded had no width
+  if (h.open) $("replies").querySelectorAll(".ansrow").forEach(r => { quickFit(r); grow(r.firstChild); });  // boxes drawn while folded had no width
   tipHide();
   size();
   return natural();

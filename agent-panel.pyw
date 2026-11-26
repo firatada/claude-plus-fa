@@ -431,6 +431,8 @@ REPLY_BELOW = 8        # logical pixels the reply window keeps from the work are
 REPLY_MIN_W, REPLY_MIN_H = 540, 240  # logical px, the smallest the user can size it: the bottom bar whole at its longest
                        # count (530 measured), one row of tabs, the bottom bar and 3 lines of replies (69 px) between
 SEND_WAIT = 4          # seconds Send to Session waits for the terminal to read the line it pastes
+DROP_WAIT = 1.0        # seconds a drop on an answer box waits for WebView2 to hand pywebview the dropped files' paths
+SWEEP_EVERY = 600      # seconds between two sweeps of the pictures pasted into answer boxes (agent-reply.py sweep_files())
 SEND_FRONT = 1.5       # seconds it gives the terminal to be in front, on top and showing the session's tab
 SEEN_MAX = 400         # replies kept by message id for Send to Session and Copy (Panel.reply_seen)
 SEND_SETTLE = 0.25     # seconds between the terminal coming in front and the paste: the terminal reports the focus to
@@ -2875,6 +2877,19 @@ class StripApi:
         self._p.events.put("pin:" + json.dumps(at))  # done on the poll loop's thread, as every other strip change
 
 
+def drop_state():
+    """pywebview's list of the paths WebView2 handed it for dropped files ({"paths": [(name, path)]}, filled from a
+    "FilesDropped" message while a drop listener is counted), with one listener counted; None when this pywebview
+    has none (a drop then keeps only pictures, saved from their data)."""
+    try:
+        from webview.dom import _dnd_state
+        if _dnd_state.get("num_listeners", 0) < 1:
+            _dnd_state["num_listeners"] = 1
+        return _dnd_state
+    except Exception:
+        return None
+
+
 class ReplyApi:
     """What the reply window (agent-reply.html) may call."""
 
@@ -2939,13 +2954,50 @@ class ReplyApi:
         if edge in ("r", "b", "rb"):
             self._p.reply_unsize(edge)
 
-    def draft(self, sid, key, passage, text):
+    def draft(self, sid, key, passage, text, files=None):
+        # files: the paths of the pictures and files in the box, in its order (agent-reply.py files_of())
         d = self._p.drafts
         if d:
             try:
-                d.put(str(sid), str(key), str(passage), str(text))
+                d.put(str(sid), str(key), str(passage), str(text), files)
             except OSError:
                 pass  # kept in the page; written with the next change
+
+    def paste_clip(self, mode="any"):
+        # a paste into an answer box while the clipboard holds no text (Ctrl+V), or Alt+V (mode "image"): the files
+        # copied in File Explorer, or the picture saved as a PNG (agent-reply.py clip_files()); {files} or {note}
+        m = self._p.reply_mod
+        try:
+            return m.clip_files("image" if mode == "image" else "any") if m else {"note": "Pasting is not available here."}
+        except Exception:
+            return {"note": "Could not read the clipboard."}
+
+    def dropped(self, names):
+        # files dropped on an answer box: the page posted them to WebView2 ("FilesDropped", as pywebview's own drop
+        # does), which hands their paths to pywebview's drop list before this call comes; the paths of those named
+        # (by file name), in the order named. {files}
+        st, out = drop_state(), []
+        want = [str(n) for n in names or []][:50]
+        end = time.time() + DROP_WAIT
+        while st is not None and want:
+            for n in list(want):
+                hit = next((x for x in st["paths"] if x[0] == n), None)
+                if hit:
+                    st["paths"].remove(hit)
+                    want.remove(n)
+                    out.append(hit[1])
+            if not want or time.time() > end:
+                break
+            time.sleep(0.02)
+        return {"files": out}
+
+    def save_image(self, url):
+        # a picture dropped with no file behind it (a browser's image), as a data: URL: saved as a PNG; {files} or {note}
+        m = self._p.reply_mod
+        try:
+            return m.picture_from_data(str(url)) if m else {"note": "Pictures cannot be saved here."}
+        except Exception:
+            return {"note": "Could not read that picture."}
 
     def dictation(self, step):
         # Space held in an answer box: "ready" (is the speech-to-text server up; started when it is not: {up},
@@ -3034,15 +3086,15 @@ class ReplyApi:
         # of this area answered; the copy is made only while the clipboard still holds it (None: something else was
         # copied since). Answers the new sequence number, or False when the clipboard is busy.
         try:
-            mod, rows = self._p.reply_mod, []
+            mod, rows, images = self._p.reply_mod, [], []
             for a in answers or []:
                 try:
                     line = int(a.get("line"))
                 except (TypeError, ValueError):
                     line = -1
-                rows.append((line, str(a.get("passage") or ""), str(a.get("text") or ""),
+                rows.append((line, str(a.get("passage") or ""), mod.with_files(str(a.get("text") or ""), a.get("files"), images),
                              mod.area_size(str(a.get("key") or "").rpartition("#")[2])))
-            out = mod.area_copy(str(text or ""), rows)
+            out = mod.image_tail(mod.area_copy(str(text or ""), rows), images)
             return bool(out) and mod.set_clipboard_text(out, None if expect is None else int(expect))
         except Exception:
             return False
@@ -3251,6 +3303,7 @@ class Panel:
             except Exception:
                 self.drafts = None
         self.reads, self.tabs, self.reply_sid, self.reply_pick = {}, [], None, None
+        self.swept = 0.0  # when the pictures pasted into answer boxes were last swept (reply_tabs())
         self.front_key = None  # (window, shown name) in front at the last poll turn (follow_terminal)
         self.terminals = []  # session terminals, newest in front first (note_terminal(), read by tray_click())
         self.used = 0.0  # when the panel was last used: a card clicked or opened, one of its windows in front (tray_stale)
@@ -3292,6 +3345,7 @@ class Panel:
             # from its file, not as a string: a file page is a secure context, so it may record the microphone
             # (allow_microphone())
             rurl = "file:///" + os.path.abspath(REPLY_HTML).replace("\\", "/").replace(" ", "%20")
+            drop_state()  # from the start, so the first drop on an answer box already has its paths
             self.reply = webview.create_window(REPLY_TITLE, url=rurl, js_api=ReplyApi(self), width=REPLY_W,
                                                height=200, min_size=(0, 0), frameless=True, easy_drag=False,
                                                on_top=False, hidden=True, shadow=True, background_color="#FFFFFF")
@@ -4788,6 +4842,14 @@ class Panel:
         live = {s["path"] for s in self.sessions if s.get("status")}
         for p in [p for p in self.reads if p not in live]:
             del self.reads[p]  # a closed session is read afresh when it opens again
+        if self.drafts and time.time() - self.swept > SWEEP_EVERY:  # pictures no answer holds, a day after
+            self.swept = time.time()
+            try:
+                with self.drafts.lock:
+                    data = {k: dict(v) for k, v in self.drafts.data.items()}
+                self.reply_mod.sweep_files(data)
+            except Exception:
+                pass
         tabs.sort(key=lambda x: (x["typed"], x["s"]["at"]), reverse=True)
         return tabs
 
@@ -5037,8 +5099,10 @@ class Panel:
         ([{key "<message id>#<block>", passage, text, line}], as the page's sendList() gives them), its text as the
         window was handed it (reply_seen, by message id) with the answers inside it (agent-reply.py format_answered_replies()).
         A key "<message id>#" (no block: the page's toSend() with no answer typed) names a reply sent as it is; a key
-        "<message id>#<a>-<b>" an area answered as a whole (its blocks a to b, agent-reply.py area_size())."""
-        mod, order, by = self.reply_mod, [], {}
+        "<message id>#<a>-<b>" an area answered as a whole (its blocks a to b, agent-reply.py area_size()). An
+        answer's pictures and files go as lines after its text (with_files()), the pictures' paths again at the end,
+        each alone on a line, for Claude Code to attach them (image_tail())."""
+        mod, order, by, images = self.reply_mod, [], {}, []
         for a in answers:
             rid, _, block = str(a.get("key") or "").rpartition("#")
             if rid not in by:
@@ -5050,12 +5114,13 @@ class Panel:
                 line = int(a.get("line"))
             except (TypeError, ValueError):
                 line = -1
-            by[rid].append((line, str(a.get("passage") or ""), str(a.get("text") or ""), mod.area_size(block)))
+            by[rid].append((line, str(a.get("passage") or ""), mod.with_files(str(a.get("text") or ""), a.get("files"), images),
+                            mod.area_size(block)))
         groups = []
         for rid in order:
             text, at = self.reply_seen.get((sid, rid)) or (None, None)
             groups.append((text, mod.when_of(at), by[rid]))
-        return mod.format_answered_replies(groups)
+        return mod.image_tail(mod.format_answered_replies(groups), images)
 
     def reply_send(self, sid, answers):
         """Send to Session: each reply answered, whole, with the answers inside it (reply_text()), pasted into the
@@ -5081,9 +5146,9 @@ class Panel:
         def where():
             return front_state(hwnd, user32.GetForegroundWindow(), top_window(), window_title(hwnd), s.get("name"),
                                self.shared(s, hwnd))
-        sent = [a for a in answers if str(a.get("text") or "").strip()]
-        send_log("send", sid[:8], "answers %d" % len(sent), "characters %d" % len(text),
-                 "lines %d" % (text.count("\n") + 1))
+        sent = [a for a in answers if str(a.get("text") or "").strip() or a.get("files")]
+        send_log("send", sid[:8], "answers %d" % len(sent), "files %d" % sum(len(a.get("files") or []) for a in sent),
+                 "characters %d" % len(text), "lines %d" % (text.count("\n") + 1))
         focus_session(s, self.other_names(s))
         start = time.time()
         again = True
