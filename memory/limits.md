@@ -29,5 +29,6 @@ What is true now; history in [`trials.md`](../trials.md).
 - Tidy: throwaway Windows Terminal windows only (`trials.md`, 2026-11-25), not yet seen on the maintainer's own terminals.
 - Minimise keeping the panel: throwaway windows and a throwaway Windows Terminal window (`trials.md`, 2026-11-24), not a real session's terminal. Close keeping the panel: fake Win32 and the destroy event on a throwaway window; the throwaway close sequence was skipped (foreground lock) and not seen on a real terminal (`trials.md`, 2026-11-26). `keep_under()`: throwaway windows only; what raised the band over an active terminal is unknown (`trials.md`).
 - Not tested: a real mouse double click on the desktop icon; a terminal with several session tabs for `shared()`; a light taskbar on the real tray.
+- New session ("+"): the start was tested with a fake `Popen` and the picker with a fake dialog; Windows' real folder picker and a real console were not opened by a test (`trials.md`, 2026-11-27). A WSL folder is offered only from sessions of a running distro; a picked `\\wsl.localhost\...` folder is checked with `os.path.isdir`, which may start its distro.
 - The Google Drive pause: [`drive-pause.md`](./drive-pause.md) § Limits.
 - The cache warning: [`cache-warning.md`](./cache-warning.md) § Limits.

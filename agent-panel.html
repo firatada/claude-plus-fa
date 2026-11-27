@@ -103,6 +103,19 @@ h1 { font-size: 15px; font-weight: 600; }
 }
 .search:focus-within { border-color: var(--blue); box-shadow: var(--ring); }
 .search > svg { flex: none; color: var(--muted); }
+/* the search and, right of it, "+": a new session in a recent folder or one picked; one height */
+body:not(.top) #find { flex: none; display: flex; gap: 8px; margin: 2px var(--edge) 12px; }
+body:not(.top) #find > .search { flex: 1; min-width: 0; margin: 0; }
+body.top #find { display: contents; }
+#new {
+  flex: none; min-width: 32px; min-height: 32px; padding: 0; border: 1px solid var(--line); border-radius: var(--r-ctl);
+  background: var(--panel); color: var(--muted); display: grid; place-items: center; transition: transform .16s ease-out;
+}
+#new:hover, #new[aria-expanded="true"] { color: var(--blue); background: var(--surface2); }
+#new:active { transform: scale(.97); }
+@media (prefers-reduced-motion: reduce) { #new:active { transform: none; } }
+/* its menu: a folder's name on one line, cut with "…" (the full path is the item's tooltip) */
+.pop.newm .item { max-width: 248px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #q { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; color: var(--text); }
 #q::placeholder { color: var(--faint); }
 #q::-webkit-search-cancel-button, #q::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
@@ -280,7 +293,7 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
    on top it drops under the gear, as the set-aside list drops under its link. One row per setting: its name, a line
    saying what it does, the reason it cannot be used now (amber, a standing fact), and its control on the right */
 #prefs { display: none; }
-body.prefs:not(.top) .search, body.prefs:not(.top) #list { display: none; }
+body.prefs:not(.top) #find, body.prefs:not(.top) #list { display: none; }
 body.prefs #prefs {
   flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 0 var(--edge) 8px;
   animation: drop .16s var(--ease);
@@ -444,6 +457,7 @@ body.top .logo.mascot { width: 32px; height: 32px; }
 body.top svg.logo { width: 28px; height: 28px; }
 body.top #hide, body.top #shots { margin-left: 0; min-width: var(--tab); min-height: var(--tab); }
 body.top .search { margin: 0; flex: 0 1 210px; min-width: 120px; min-height: var(--tab); }
+body.top #new { min-width: var(--tab); min-height: var(--tab); }
 /* a narrow screen gives the tabs the room the reset times took */
 @media (max-width: 1400px) { body.top .rt { display: none; } }
 /* the cards are tabs in one row that never scrolls: the tabs that do not fit wrap onto a second row,
@@ -536,6 +550,7 @@ body.top #drop.open {
       stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
   </button>
 </header>
+<div id="find">
 <label class="search">
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
     stroke-linecap="round" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.6"/><path d="M10 10l3.8 3.8"/></svg>
@@ -547,6 +562,12 @@ body.top #drop.open {
       stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
   </button>
 </label>
+  <button id="new" type="button" aria-label="New session" aria-haspopup="menu" aria-expanded="false" data-tip
+    data-full="New session">
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M2 7h10"
+      stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+  </button>
+</div>
 <div id="list"></div>
 <section id="prefs" tabindex="-1" aria-labelledby="prefs-h">
   <div class="phead">
@@ -1456,6 +1477,7 @@ function closeMenu() {
   }
   menuCard = null;
   setTarget(null);
+  $("new").setAttribute("aria-expanded", "false");
 }
 // opens below the pointer when it fits, above when it does not, and grows out of the pointer
 function placePop(m, x, y) {
@@ -1547,6 +1569,42 @@ function openMenu(s, card, x, y) {
   placePop(m, x, y);
   m.querySelector(".item").focus({preventScroll: true});
 }
+// "+" right of the search: the folders of recent sessions (agent-panel.pyw recent_folders(), newest first, each once, only
+// those still there), then Choose folder…, Windows' folder picker; a pick starts claude --dangerously-skip-permissions
+// in a new console there (start_new()). It is the card menu's element, so Esc, a click outside, Tab, scroll, focus
+// loss and the arrow keys treat it alike, and the focus goes back to "+".
+function openNewMenu(folders) {
+  tipHide(); closeMenu(); sayGone();
+  const btn = $("new");
+  menuCard = btn;
+  btn.setAttribute("aria-expanded", "true");
+  const m = menu = document.createElement("div");
+  m.className = "pop newm" + (byKey ? " now" : "");
+  byKey = false;
+  m.setAttribute("role", "menu");
+  m.setAttribute("aria-label", "New session");
+  const start = r => r && say(null, r.t, r.err);
+  const item = (label, tip, act) => {
+    const b = document.createElement("button");
+    b.className = "item";
+    b.setAttribute("role", "menuitem");
+    b.textContent = label;
+    b.dataset.tip = ""; b.dataset.full = tip;
+    b.onclick = () => { closeMenu(); act(); };
+    m.append(b);
+  };
+  for (const f of folders) item(f.name, f.path, () => api().new_session(f.path).then(start));
+  if (folders.length) m.insertAdjacentHTML("beforeend", '<div class="sep" role="separator"></div>');
+  item("Choose folder…", "Picks any folder for the new session", () => api().pick_folder().then(start));
+  document.body.append(m);
+  const r = btn.getBoundingClientRect();
+  placePop(m, r.right - m.offsetWidth, r.bottom + 4);
+  m.querySelector(".item").focus({preventScroll: true});
+}
+$("new").onclick = e => {
+  byKey = e.detail === 0;
+  api().new_folders().then(f => openNewMenu(f || []));
+};
 function confirmIn(m, card, title, text, ok, danger, act) {
   m.setAttribute("role", "dialog");
   m.setAttribute("aria-labelledby", "cq");

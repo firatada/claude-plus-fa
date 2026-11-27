@@ -467,6 +467,9 @@ VIEW_MIN_W = 480       # logical pixels: the preview is never narrower (its head
 VIEW_MARGIN = 24       # logical pixels the preview keeps from the screen's edges and from the strip
 SESSION_FILE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$")
 RESUME = "claude --resume %s --dangerously-skip-permissions"
+NEW = "claude --dangerously-skip-permissions"  # a new session from the header's "+" (start_new())
+NEW_MAX = 10           # recent folders the "+" menu lists
+WSL_UNC = re.compile(r"^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(\\.*)?$", re.I)  # a folder inside a WSL distro
 WIDTH = 280            # logical pixels
 STRIP = 46             # logical pixels: the top dock's strip, a 34 px tab centred in it (6 px above and below);
                        # its bottom edge meets a maximised Chrome's address box (toolbar top y = 40, box top y = 46
@@ -1191,6 +1194,55 @@ def open_session(s, cmd=None):
                                 cwd=cwd, creationflags=CREATE_NEW_CONSOLE, env=clean_env())
     return subprocess.Popen(["cmd.exe", "/k", "title %s& %s" % (title, cmd)],
                             cwd=cwd, creationflags=CREATE_NEW_CONSOLE, env=clean_env())
+
+
+# ---------- a new session from the header's "+" ----------
+def folder_name(path):
+    """The last part of a folder's path; a drive root or a bare share keeps its whole path."""
+    return os.path.basename(path.rstrip("\\/")) or path
+
+
+def wsl_folder(path):
+    """(distro, Linux path) for a folder inside a WSL distro written the Windows way (\\\\wsl.localhost\\<distro>\\...
+    or \\\\wsl$\\<distro>\\...), else (None, path): a new session there starts inside the distro, as a resumed one."""
+    m = WSL_UNC.match(path.replace("/", "\\"))
+    return (m.group(1), (m.group(2) or "").replace("\\", "/") or "/") if m else (None, path)
+
+
+def recent_folders(sessions, exists=folder_exists, n=NEW_MAX):
+    """The folders the "+" menu offers: those of the sessions with the latest activity first, each once (Windows
+    ignores case), only folders still there, at most n; headless runs are left out. Each {"path": where_of(), "name"}."""
+    out, seen = [], set()
+    for s in sorted(sessions, key=lambda s: s.get("at") or 0, reverse=True):
+        if s.get("headless") or not s.get("cwd"):
+            continue
+        path = where_of(s)
+        if path.lower() in seen:
+            continue
+        seen.add(path.lower())
+        if exists(s):
+            out.append({"path": path, "name": folder_name(path)})
+            if len(out) >= n:
+                break
+    return out
+
+
+def start_new(path, launch=open_session):
+    """A new Claude Code session (NEW) in a new console in `path`, started as a closed session is resumed
+    (open_session(): cmd, PowerShell for a UNC folder, wsl.exe --cd inside a distro). A folder gone since the menu
+    listed it, or the picker showed it, is said so and nothing starts."""
+    path = (path or "").strip()
+    if not path:
+        return None
+    name = folder_name(path)
+    if not os.path.isdir(path):
+        return err("%s is not there any more. Pick another folder." % path)
+    distro, cwd = wsl_folder(path)
+    try:
+        launch({"id": None, "cwd": cwd, "distro": distro, "title": name}, NEW)
+    except OSError as e:
+        return err("Claude Code could not start in %s: %s" % (name, e.strerror or e))
+    return ok("Starting a new session in %s…" % name)
 
 
 # ---------- bringing an open session's window forward ----------
@@ -3002,6 +3054,20 @@ class Api:
 
     def open(self, sid):
         return self._p.open(sid)
+
+    def new_folders(self):
+        try:
+            return recent_folders(list(self._p.sessions))
+        except Exception:
+            return []
+
+    def new_session(self, path):
+        self._p.used = time.time()
+        return start_new(str(path))
+
+    def pick_folder(self):
+        self._p.used = time.time()
+        return self._p.pick_folder()
 
     def set_hidden(self, sid, on):
         self._p.set_hidden(sid, on)
@@ -5954,6 +6020,20 @@ class Panel:
             self.lift(hwnd)  # the window was just put on top: the panel goes right under it
             return None
         return ok("Double-click to open it.")
+
+    def pick_folder(self, dialog=None):
+        """The "+" menu's Choose folder…: Windows' own folder picker, owned by the panel, opening in the folder of the
+        latest session (recent_folders()); the folder picked gets a new session (start_new()), Cancel does nothing."""
+        recent = recent_folders(list(self.sessions), n=1)
+        start = recent[0]["path"] if recent else os.path.expanduser("~")
+        kind = getattr(getattr(webview, "FileDialog", None), "FOLDER", None) or getattr(webview, "FOLDER_DIALOG", 20)
+        try:
+            got = (dialog or self.window.create_file_dialog)(kind, directory=start)
+        except Exception:
+            return err("The folder picker could not open.")
+        if not got:
+            return None
+        return start_new(got[0] if isinstance(got, (list, tuple)) else got)
 
     def open(self, sid):
         """Start a closed session, once. Each call runs on its own thread, and a held Enter or Space on a card sends

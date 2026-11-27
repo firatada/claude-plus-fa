@@ -60,6 +60,7 @@ Using it:
 - With that Windows Terminal setting on, only the terminal in front keeps a taskbar button: whenever a Windows Terminal window comes to the front (a card, the taskbar, Alt+Tab, a click), the other Windows Terminal windows go to the notification area, still running, and come back from their cards.
 - A link you Ctrl+click in a session's terminal opens in front, even when Windows would leave the browser or editor behind the terminal.
 - Double-click a closed session to open it in its own folder, in a new terminal, as `claude --resume <session> --dangerously-skip-permissions`.
+- Click **+** right of the search to start a new session: pick one of the last 10 folders you worked in, or **Choose folder…** for any other. It opens in a new terminal there as `claude --dangerously-skip-permissions`.
 - Right-click a session to **Hide** it, **Close** it, or **Delete** it (its conversation goes to the Recycle Bin; your project files are never touched).
 - Hidden sessions, sessions whose folder is gone and `claude -p` runs are listed under **Hidden, Deleted and Headless** at the bottom. A finished `claude -p` run leaves the panel 24 hours after its last prompt or reply (`"headless_hours"` in `~/.claude/claude-plus.local.json` changes this); its conversation stays on disk.
 - Open or hide the panel with `Ctrl+Alt+C`, its tray icon, or the **Field Agents** icon on your desktop. It starts when you sign in to Windows.
