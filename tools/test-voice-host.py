@@ -325,7 +325,7 @@ check("missing packages: whisper with the reason", "not installed" in a.get("whi
 m.MISSING = ""
 
 # 15. host_pids(): a session file in HOST_DIR whose pid is alive
-tmp = tempfile.mkdtemp()
+tmp = tempfile.mkdtemp(prefix="claude-plus-test-voice-")
 try:
     os.makedirs(os.path.join(tmp, "sessions"))
     for name, o in (("a.json", {"pid": os.getpid(), "cwd": m.HOST_DIR + "\\"}),

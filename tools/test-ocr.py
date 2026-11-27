@@ -206,7 +206,7 @@ def unit(shots):
 def main():
     keep = "--keep" in sys.argv
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
-    tmp = tempfile.mkdtemp(prefix="cpfa-ocr-")
+    tmp = tempfile.mkdtemp(prefix="claude-plus-test-ocr-")
     gt = truth()
     procs = []
     try:

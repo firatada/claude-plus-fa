@@ -67,7 +67,7 @@ class ToTidy(unittest.TestCase):
 
 class TrayOn(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="zz-tidy-")
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-tidy-")
         self.old = {k: os.environ.get(k) for k in ("LOCALAPPDATA", "SCOOP")}
         os.environ["LOCALAPPDATA"] = self.dir
         os.environ["SCOOP"] = os.path.join(self.dir, "scoop")
@@ -255,7 +255,7 @@ class Foreground:
 class RealTerminals(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.dir = tempfile.mkdtemp(prefix="zz-tidy-")
+        cls.dir = tempfile.mkdtemp(prefix="claude-plus-test-tidy-")
         child = os.path.join(cls.dir, "child.py")
         with open(child, "w") as f:
             f.write(CHILD)

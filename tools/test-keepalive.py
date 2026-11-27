@@ -41,7 +41,7 @@ def panel(tmp):
           "LOCAL": os.path.join(tmp, "claude-plus.local.json"), "STATE_DIR": state, "CLAUDE": tmp,
           "KEEPALIVE_FILE": os.path.join(state, "keepalive.json"), "KEEPALIVE_LOG": os.path.join(state, "keepalive.log"),
           "KEEPING": set(), "clean_env": lambda: {"X": "1"}, "folder_exists": lambda s: True,
-          "alive": lambda pid: True, "is_voice_dir": lambda cwd: False}
+          "alive": lambda pid: True, "is_voice_dir": lambda cwd: False, "is_test_dir": lambda cwd: False}
     # the module-level constants first (their own assignments name STATE_DIR, which the test sets instead)
     body = [n for n in keep if not (isinstance(n, ast.Assign) and any(
         getattr(t, "id", None) in ("KEEPALIVE_FILE", "KEEPALIVE_LOG", "KEEPING") for t in n.targets))]
@@ -89,7 +89,7 @@ def sent(s, n, last, ok=True):
 
 class Conditions(unittest.TestCase):
     def setUp(self):
-        self.p = panel(tempfile.mkdtemp(prefix="cpfa-ka-"))
+        self.p = panel(tempfile.mkdtemp(prefix="claude-plus-test-ka-"))
 
     def due(self, s, rec=None, at=None, on=True, away=False):
         return self.p["keepalive_due"](s, rec, at if at is not None else T0, on, away)
@@ -151,7 +151,7 @@ class Conditions(unittest.TestCase):
 
 class Warning(unittest.TestCase):
     def setUp(self):
-        self.p = panel(tempfile.mkdtemp(prefix="cpfa-ka-"))
+        self.p = panel(tempfile.mkdtemp(prefix="claude-plus-test-ka-"))
 
     def stage(self, s, now, rec=None, keep=True):
         return self.p["cache_stage"](s, now, rec, keep and self.p["keepalive_fits"](s, rec))
@@ -215,7 +215,7 @@ class Warning(unittest.TestCase):
 
 class Outcome(unittest.TestCase):
     def setUp(self):
-        self.p = panel(tempfile.mkdtemp(prefix="cpfa-ka-"))
+        self.p = panel(tempfile.mkdtemp(prefix="claude-plus-test-ka-"))
 
     def res(self, read, wrote=1404, result="ok", turns=1, error=False):
         return json.dumps({"result": result, "num_turns": turns, "is_error": error,
@@ -266,7 +266,7 @@ class FakePopen:
 
 class Run(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="cpfa-ka-")
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-ka-")
         self.p = panel(self.tmp)
         FakePopen.ns, FakePopen.calls, FakePopen.seen = self.p, [], []
         fake = type(subprocess)("subprocess")
@@ -373,7 +373,7 @@ class Run(unittest.TestCase):
 
 class Consumers(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="cpfa-ka-")
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-ka-")
         self.p = panel(self.tmp)
         self.sessions = os.path.join(self.tmp, "sessions")
         os.makedirs(self.sessions)

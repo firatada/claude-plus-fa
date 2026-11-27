@@ -967,6 +967,41 @@ def is_voice_dir(cwd):
         return False
 
 
+# Throwaway folders claude-plus's own tests and trials make under %TEMP% start with TEST_PREFIX (tempfile.mkdtemp's
+# prefix); OLD_TEST_PREFIXES are the names older tools and trials used. Their sessions are no user's.
+TEST_PREFIX = "claude-plus-test-"
+OLD_TEST_PREFIXES = ("claude-plus-keepalive-trial-", "cpfa-", "cpf-")
+
+
+def temp_roots():
+    """The temp folder as Windows names it and in its long form (Claude Code writes a session's cwd long)."""
+    t = tempfile.gettempdir()
+    out = {os.path.normcase(os.path.normpath(t))}
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        if ctypes.windll.kernel32.GetLongPathNameW(t, buf, 1024):
+            out.add(os.path.normcase(os.path.normpath(buf.value)))
+    except (AttributeError, OSError):
+        pass
+    return out
+
+
+TEMP_ROOTS = temp_roots()
+
+
+def is_test_dir(cwd):
+    """A folder in %TEMP% whose first part starts with TEST_PREFIX (or an older test name): a session there was
+    started by claude-plus's own tests, so it is never listed, never a tab, never alerted, never kept alive."""
+    try:
+        p = os.path.normcase(os.path.normpath(cwd)) if cwd else ""
+    except (TypeError, ValueError):
+        return False
+    for root in TEMP_ROOTS:
+        if p.startswith(root + os.sep):
+            return p[len(root) + 1:].split(os.sep)[0].startswith((TEST_PREFIX,) + OLD_TEST_PREFIXES)
+    return False
+
+
 def running():
     out = {}
     folder = os.path.join(CLAUDE, "sessions")
@@ -981,7 +1016,7 @@ def running():
             o = json.load(open(os.path.join(folder, n), encoding="utf-8"))
         except Exception:
             continue
-        if o.get("sessionId") and o.get("pid") and alive(o["pid"]) and not is_voice_dir(o.get("cwd"))                 and o["sessionId"] not in KEEPING:  # a keep-alive's fork is no session of the user's
+        if o.get("sessionId") and o.get("pid") and alive(o["pid"]) and not is_voice_dir(o.get("cwd")) and not is_test_dir(o.get("cwd"))                 and o["sessionId"] not in KEEPING:  # a keep-alive's fork is no session of the user's
             # waitingFor is set while a prompt in the session (a permission question, a dialog) waits
             # for an answer; the status then says "busy" (older versions) or "waiting" (2.1.319)
             out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"],
@@ -1080,6 +1115,8 @@ def scan(cache):
                 sid = f[:-6]
                 run = live.get(sid)
                 cwd = home_of(folder, hit.get("cwds") or [], hit.get("home"))
+                if is_test_dir(cwd):
+                    continue  # a session claude-plus's own tests started: no card anywhere
                 title = (run or {}).get("name") or hit.get("title") or hit.get("first") or os.path.basename(cwd or folder)
                 sessions.append({"id": sid, "cwd": cwd, "distro": distro, "title": title, "path": path,
                                  "folder": os.path.basename((cwd or "").rstrip("\\/")) or folder,

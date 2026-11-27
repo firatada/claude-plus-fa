@@ -64,7 +64,7 @@ class Fake:
 
 class CacheWarning(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="cpfa-cache-")
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-cache-")
         self.p = panel(self.tmp)
         self.played = []
         fake = types.ModuleType("winsound")

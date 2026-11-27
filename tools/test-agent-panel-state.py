@@ -408,10 +408,11 @@ class LastActivity(unittest.TestCase):
     def setUp(self):
         self.ns = pyw_functions("scan", "parse", "text_of", "prompt_words", "PASTED", "last_at", "TURN_LINE", "AT_LOOK", "SESSION_FILE",
                                 "slug", "home_of", "find_home", "CWD", "HOME_LOOK", "cache_of", "USAGE_LINE",
-                                "CACHE_LOOK", cls_methods=("update_live",))
-        self.tmp = tempfile.mkdtemp(prefix="cpfa-at-")
+                                "CACHE_LOOK", "TEST_PREFIX", "OLD_TEST_PREFIXES", "is_test_dir", cls_methods=("update_live",))
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-at-")
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.ns.update(CLAUDE=self.tmp, wsl_roots=lambda: [], running=lambda: {}, read_ctx=lambda sid: None)
+        self.ns.update(CLAUDE=self.tmp, wsl_roots=lambda: [], running=lambda: {}, read_ctx=lambda sid: None,
+                       TEMP_ROOTS={os.path.normcase(os.path.join(self.tmp, "temp"))})
         self.dir = os.path.join(self.tmp, "projects", "C--work")
         os.makedirs(self.dir)
 

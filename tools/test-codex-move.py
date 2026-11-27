@@ -6,7 +6,7 @@
 import importlib.util, json, os, shutil, sys, tempfile, threading, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TMP = tempfile.mkdtemp(prefix="cpfa-move-")
+TMP = tempfile.mkdtemp(prefix="claude-plus-test-move-")
 
 
 def load():

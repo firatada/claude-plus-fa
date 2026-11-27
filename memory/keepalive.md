@@ -39,7 +39,7 @@ Owns: `KEEPALIVE_*`, `KEEPING`, `stretch_rec()`, `cache_base()`, `keepalive_fits
 
 ## Tests
 - `python -I tools/test-keepalive.py` (22, fake clock and fake `claude`): conditions, the count, the reset, the failure stop, the warning's stages, view and sounds with keep-alives, the command, the run's record, log and fork listing, and each consumer (`running()`, `drive-pause.py` sessions, prompt and Stop hooks, `prompt-recall.py`).
-- `python tools/keepalive-trial.py [--quick | --wait1 MIN --wait2 MIN]` (not `-I`: it needs `pywinpty` and `pyte` from the user packages): two throwaway interactive sessions in hidden pseudo-consoles (no window) under `%TEMP%`, one kept alive by real forks, one control; usage read from transcripts and the forks' JSON. Costs real tokens.
+- `python tools/keepalive-trial.py [--quick | --wait1 MIN --wait2 MIN]` (not `-I`: it needs `pywinpty` and `pyte` from the user packages): two throwaway interactive sessions in hidden pseudo-consoles (no window) under `%TEMP%\claude-plus-test-keepalive-*` (never listed by the panel), one kept alive by real forks, one control; usage read from transcripts and the forks' JSON. Costs real tokens.
 
 ## Limits
 - Needs the panel running and the setting on. Sessions inside WSL are left out (the fork would have to run in the distro).

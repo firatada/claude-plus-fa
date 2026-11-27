@@ -201,7 +201,7 @@ def main():
     quick = "--quick" in args
     wait1 = float(args[args.index("--wait1") + 1]) if "--wait1" in args else 50
     wait2 = float(args[args.index("--wait2") + 1]) if "--wait2" in args else 50
-    root = tempfile.mkdtemp(prefix="claude-plus-keepalive-trial-")
+    root = tempfile.mkdtemp(prefix="claude-plus-test-keepalive-")
     log("trial folder", root, "quick" if quick else "wait1 %s min, wait2 %s min" % (wait1, wait2))
     results = {"root": root, "keepalive": KEEPALIVE, "forks": [], "turns": {}}
     names = ["T"] if quick else ["T", "C"]

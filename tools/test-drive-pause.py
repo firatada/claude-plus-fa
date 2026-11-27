@@ -15,7 +15,7 @@ import importlib.util, json, os, sys, tempfile, time, unittest
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TMP = tempfile.mkdtemp(prefix="cpfa-drive-")
+TMP = tempfile.mkdtemp(prefix="claude-plus-test-drive-")
 
 
 def load():

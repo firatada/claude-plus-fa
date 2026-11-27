@@ -90,7 +90,7 @@ class Rules(unittest.TestCase):
 
 class Temp(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="cpfa-paste-test-")
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-paste-")
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -124,7 +124,7 @@ class State(unittest.TestCase):
     """When the keys are taken: stand-ins for RegisterHotKey/UnregisterHotKey, titles and the panel's list file."""
 
     def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="cpfa-paste-test-")
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-paste-")
         self.file = os.path.join(self.dir, "paste-windows.json")
         self.write([TERM])
         self.titles = {TERM: "✳ mindmap", OTHER: "Untitled - Notepad"}
@@ -212,7 +212,7 @@ class State(unittest.TestCase):
 
 class Keeper(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="cpfa-paste-test-")
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-paste-")
         self.state = os.path.join(self.dir, "screenshots.json")
 
     def tearDown(self):
@@ -308,7 +308,7 @@ class RoundTrip(unittest.TestCase):
     Word (PNG, CF_DIBV5) and the paste key (Pillow's grabclipboard, then saved_file()) read."""
 
     def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="cpfa-clip-test-")
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-clip-")
         self.before = clip_text()
 
     def tearDown(self):

@@ -10,7 +10,7 @@
 import importlib.util, io, json, os, sys, tempfile, threading, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TMP = tempfile.mkdtemp(prefix="cpfa-wayout-")
+TMP = tempfile.mkdtemp(prefix="claude-plus-test-wayout-")
 
 
 def load():

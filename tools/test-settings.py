@@ -72,7 +72,7 @@ def real_drive_pause(local):
 
 class Settings(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="cpfa-settings-")
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-settings-")
         with open(os.path.join(self.tmp, "drive-pause.py"), "w", encoding="utf-8") as f:
             f.write(FAKE_DRIVE)
         self.proc = Proc()

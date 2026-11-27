@@ -65,7 +65,7 @@ TOOL = {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "ls"
 
 class Base(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
         self.path = os.path.join(self.dir, "s.jsonl")
         open(self.path, "w").close()
 
@@ -183,7 +183,7 @@ class Replies(Base):
 
 class Drafts(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
         self.file = os.path.join(self.dir, "sub", "reply-drafts.json")
 
     def tearDown(self):
@@ -709,7 +709,7 @@ def node_markdown():
     import subprocess
     keep.append("const PLAN = %s;" % json.dumps(PLAN))
     # from a file: the script outgrew Windows' command line (32,767 characters)
-    d = tempfile.mkdtemp()
+    d = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
     try:
         path = os.path.join(d, "markdown.js")
         with open(path, "w", encoding="utf-8") as f:
@@ -1024,7 +1024,7 @@ class Dictation(unittest.TestCase):
 
     def test_a_server_that_is_down_is_started_once_and_waited_for(self):
         port, started, srv = free_port(), [], []
-        script = os.path.join(tempfile.mkdtemp(), "server.py")
+        script = os.path.join(tempfile.mkdtemp(prefix="claude-plus-test-reply-"), "server.py")
         open(script, "w").close()
 
         def start(path):  # stands in for start_hidden: the stand-in server comes up a moment later
@@ -1045,7 +1045,7 @@ class Dictation(unittest.TestCase):
                 k.server_close()
 
     def test_a_server_that_never_comes_up_ends_in_a_note(self):
-        script = os.path.join(tempfile.mkdtemp(), "server.py")
+        script = os.path.join(tempfile.mkdtemp(prefix="claude-plus-test-reply-"), "server.py")
         open(script, "w").close()
         d = ar.Dictation({"dictation_url": "http://127.0.0.1:%d" % free_port(), "dictation_server": script}.get,
                          None, lambda path: None)
@@ -1062,7 +1062,7 @@ class Pins(unittest.TestCase):
     """The pinned replies: per session, in pin order, PIN_MAX at most, kept with their own text."""
 
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
         self.file = os.path.join(self.dir, "sub", "reply-pins.json")
 
     def tearDown(self):
@@ -1237,7 +1237,7 @@ class Links(unittest.TestCase):
     open call, File Explorer and the foreground grant are stand-ins; the files are made up in a temporary folder."""
 
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
         self.sub = os.path.join(self.dir, "a b")
         os.makedirs(self.sub)
         self.shot = os.path.join(self.sub, "shot 1.png")
@@ -1451,7 +1451,7 @@ def page_run(test=PAGE_TEST, size="800,600", budget=3000, flags=()):
     page = page[:at] + PAGE_STUB + page[at:]
     at = page.rindex("</body>")
     page = page[:at] + test + page[at:]
-    d = tempfile.mkdtemp()
+    d = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
     try:
         path = os.path.join(d, "page.html")
         with open(path, "w", encoding="utf-8") as f:
@@ -2488,7 +2488,7 @@ class QuickAnswers(unittest.TestCase):
             tree = ast.parse(f.read())
         keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("local", "quick_answers")]
         keep += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "QUICK_ANSWERS" for t in n.targets)]
-        d = tempfile.mkdtemp()
+        d = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
         try:
             path = os.path.join(d, "claude-plus.local.json")
             if content is not None:
@@ -3099,7 +3099,7 @@ class FilesRules(unittest.TestCase):
     the clipboard, and the sweep of the pictures saved for it. Everything in a temporary folder."""
 
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)

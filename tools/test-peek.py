@@ -82,7 +82,7 @@ class Log:
 class Peek(unittest.TestCase):
     def setUp(self):
         self.ns = load()
-        self.tmp = tempfile.mkdtemp(prefix="peek-test-")
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-peek-")
         self.ns["CLAUDE"] = self.tmp
         self.now = time.time()
         self.started = self.now - 3600  # the session's process started an hour ago

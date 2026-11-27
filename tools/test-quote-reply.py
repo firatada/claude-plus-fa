@@ -117,7 +117,7 @@ class Parser(unittest.TestCase):
 
 class Hook(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        self.dir = tempfile.mkdtemp(prefix="claude-plus-test-quote-")
         self.saved = qr.LIST, qr.USED, qr.RESETS, qr.clip
         qr.LIST, qr.USED = os.path.join(self.dir, "list.json"), os.path.join(self.dir, "used.json")
         qr.RESETS = os.path.join(self.dir, "resets")
@@ -351,7 +351,7 @@ class Quoted(unittest.TestCase):
         self.assertEqual(qr.parse(':1 use "foo" here :2 no', {1, 2})[0], [(1, 'use "foo" here'), (2, "no")])
 
     def test_hook_reads_the_transcript_only_with_a_marker(self):
-        d = tempfile.mkdtemp()
+        d = tempfile.mkdtemp(prefix="claude-plus-test-quote-")
         try:
             t = os.path.join(d, "t.jsonl")
             with open(t, "w", encoding="utf-8") as f:

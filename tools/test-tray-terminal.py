@@ -86,7 +86,7 @@ def wait(test, secs=3.0):
 class TrayTerminal(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.dir = tempfile.mkdtemp(prefix="zz-tray-")
+        cls.dir = tempfile.mkdtemp(prefix="claude-plus-test-tray-")
         child, pidf = os.path.join(cls.dir, "child.py"), os.path.join(cls.dir, "pid.txt")
         with open(child, "w") as f:
             f.write(CHILD)

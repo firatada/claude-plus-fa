@@ -11,7 +11,8 @@ import ast, ctypes, datetime, json, msvcrt, os, re, shutil, tempfile, time, unit
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 NAMES = ("TURN_LINE", "AT_LOOK", "HOME_LOOK", "USAGE_LINE", "CACHE_LOOK", "cache_of", "SESSION_FILE", "CWD", "RESUME", "CREATE_NEW_CONSOLE",
-         "text_of", "PASTED", "prompt_words", "last_at", "parse", "slug", "find_home", "home_of", "scan", "folder_exists", "clean", "open_session")
+         "text_of", "PASTED", "prompt_words", "last_at", "parse", "slug", "find_home", "home_of", "scan", "folder_exists", "clean", "open_session",
+         "TEST_PREFIX", "OLD_TEST_PREFIXES", "temp_roots", "TEMP_ROOTS", "is_test_dir")
 SID = "0f0f0f0f-1111-2222-3333-444444444444"
 HOME = "\\\\host\\share\\proj"      # where the session lives now (a UNC folder, as a WSL project is)
 OLD = "C:\\gone\\proj"              # where it started, long gone
@@ -23,7 +24,7 @@ def pyw():
         tree = ast.parse(f.read())
     keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in NAMES or
             isinstance(n, ast.Assign) and any(getattr(t, "id", None) in NAMES for t in n.targets)]
-    ns = {"os": os, "re": re, "json": json, "datetime": datetime, "time": time}
+    ns = {"os": os, "re": re, "json": json, "datetime": datetime, "time": time, "tempfile": tempfile, "ctypes": ctypes}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
     ns.update(wsl_roots=lambda: [], running=lambda: {}, read_ctx=lambda sid: None)
     return ns
@@ -47,7 +48,7 @@ def sparse(path, size):
 
 class Discovery(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="cpfa-sessions-")
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-sessions-")
         self.ns = pyw()
         self.ns["CLAUDE"] = self.tmp
         self.folder = os.path.join(self.tmp, "projects", re.sub(r"[^A-Za-z0-9]", "-", HOME))
@@ -75,6 +76,23 @@ class Discovery(unittest.TestCase):
         self.assertEqual(len(s), 1)
         self.assertEqual(s[0]["cwd"], HOME)  # before the fix: OLD, so the card sat under "folder deleted"
         self.assertEqual(s[0]["folder"], "proj")
+
+    def test_test_folders_are_never_listed(self):
+        temp = os.path.join(self.tmp, "Temp")
+        self.ns["TEMP_ROOTS"] = {os.path.normcase(temp)}
+        is_test = self.ns["is_test_dir"]
+        for d in ("claude-plus-test-paste-ab12", "claude-plus-test-keepalive-x\\T", "claude-plus-keepalive-trial-ie\\C",
+                  "cpfa-wayback", "CPF-paste-probe-work"):
+            self.assertTrue(is_test(os.path.join(temp, d)), d)
+        for d in (os.path.join(temp, "my-project"), os.path.join(temp, "x", "claude-plus-test-a"), temp,
+                  "C:\\apps\\claude-plus-test-a", None, ""):
+            self.assertFalse(is_test(d), d)
+        for cwd, sid in ((os.path.join(temp, "claude-plus-test-paste-ab12"), SID), (HOME, SID[:-1] + "5")):
+            folder = os.path.join(self.tmp, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd))
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, sid + ".jsonl"), "wb") as f:
+                f.write(line(cwd, "user", "a prompt"))
+        self.assertEqual([s["cwd"] for s in self.ns["scan"]({})], [HOME])
 
     def test_a_session_that_starts_with_a_paste_is_named_by_it(self):
         pasted = '\n\n<pasted_content id="6f11">\nThree live sites: registrar moves\n</pasted_content id="6f11">\n\n --- where does https come from?'

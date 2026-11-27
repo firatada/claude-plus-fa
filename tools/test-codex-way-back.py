@@ -9,7 +9,7 @@ import ast, glob, importlib.util, json, os, shutil, tempfile, time, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
-TMP = tempfile.mkdtemp(prefix="cpfa-back-")
+TMP = tempfile.mkdtemp(prefix="claude-plus-test-back-")
 
 
 def load_fb():
