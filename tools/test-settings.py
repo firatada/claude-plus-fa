@@ -15,7 +15,7 @@ import ast, importlib.util, json, os, subprocess, sys, tempfile, threading, unit
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 NAMES = ("local", "save_local", "DRIVE_MINUTES", "MINUTES_MAX", "NO_DRIVE", "drive_pause_py", "drive_found",
-         "idle_minutes", "settings_rows", "drive_task", "set_setting", "ok", "err", "cache_warning_on")
+         "idle_minutes", "settings_rows", "drive_task", "set_setting", "ok", "err", "cache_warning_on", "keepalive_on")
 
 FAKE_DRIVE = """IDLE_MINUTES = 30
 import os
@@ -101,7 +101,7 @@ class Settings(unittest.TestCase):
     def test_default_is_off_with_30_minutes(self):
         self.installed()
         r = self.rows()
-        self.assertEqual(list(r), ["cache_warning", "drive_pause", "drive_idle_minutes"])
+        self.assertEqual(list(r), ["cache_warning", "keepalive", "drive_pause", "drive_idle_minutes"])
         self.assertIs(r["drive_pause"]["value"], False)
         self.assertEqual(r["drive_pause"]["kind"], "switch")
         self.assertIsNone(r["drive_pause"]["blocked"])

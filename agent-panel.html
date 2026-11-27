@@ -150,7 +150,9 @@ h1 { font-size: 15px; font-weight: 600; }
    expires, by a red ! astride the card's right edge, beside the title, so nothing on the card moves for it.
    Stage 1 (15 min left) blinks slowly, stage 2 (5 min left) fast with a red halo; never more than three
    flashes a second (design.md). Expired: a still grey ring, the next prompt will read the whole context again.
-   Under reduced motion it stands still; stage 2 keeps its halo, so the two still differ by shape */
+   Under reduced motion it stands still; stage 2 keeps its halo, so the two still differ by shape.
+   Kept (a keep-alive refreshed the cache, cache_view()'s "kept" at stage 0): a still green ring with a turning
+   arrow, the cache is warm; the warning marks above take its place when they come */
 .card { position: relative; }
 .cw {
   position: absolute; top: 29px; right: -8px; width: 16px; height: 16px; border-radius: 50%; display: grid;
@@ -161,6 +163,7 @@ h1 { font-size: 15px; font-weight: 600; }
 .cw.s1 { animation: cwblink 1.6s ease-in-out infinite; }
 .cw.s2 { animation: cwblink .6s ease-in-out infinite; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--red-tint); }
 .cw.s3 { background: var(--panel); color: var(--muted); box-shadow: inset 0 0 0 1.5px var(--muted), 0 0 0 2px var(--bg); }
+.cw.kept { background: var(--panel); color: var(--green); box-shadow: inset 0 0 0 1.5px var(--green), 0 0 0 2px var(--bg); }
 @keyframes cwblink { 50% { opacity: .2; } }
 .name { min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arrow { flex: none; visibility: hidden; color: var(--blue); font-size: 12px; }
@@ -784,21 +787,35 @@ function fill(el, s, q) {
   const cw = el.querySelector(".cw"), c = s.cache;
   cw.hidden = !c;
   if (c) {
-    cw.className = "cw s" + c.stage;
+    cw.className = c.stage ? "cw s" + c.stage : "cw kept";
+    const glyph = c.stage ? "!" : "↻";
+    if (cw.textContent !== glyph) cw.textContent = glyph;
     cw.dataset.full = cacheSaid(c);
   }
 }
 // the cache mark's words: how long until the session's prompt cache expires, or that it has, and what the next
 // prompt then pays (the context of its last reply, agent-panel.pyw cache_of()). Short: on the card's label
 const kTokens = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M" : Math.max(1, Math.round(n / 1000)) + "k";
+// A keep-alive's words (agent-panel.pyw keep_alive(), "kept"): when the last one ran, and how many are left.
+const hm = ms => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+function keptSaid(k) {
+  return k.ok ? "Kept alive at " + hm(k.last) + " (" + k.n + " of " + k.of + ", " +
+                (k.left ? k.left + " left" : "none left") + ")."
+              : "The keep-alive at " + hm(k.last) + " did not refresh it; no more until your next prompt.";
+}
 function cacheSaid(c, short) {
-  const ms = c.ends - Date.now(), gone = c.stage === 3 || ms <= 0;
+  const ms = c.ends - Date.now(), gone = c.stage === 3 || ms <= 0, k = c.kept;
+  const left = lasted(Math.max(60000, Math.ceil(ms / 60000) * 60000));
+  if (!c.stage) {
+    if (short) return "cache kept alive at " + hm(k.last);
+    return keptSaid(k) + " It expires in " + left + (k.left ? " unless the next keep-alive runs." : ".");
+  }
   const when = gone ? "Cache expired" + (ms <= -60000 ? " " + lasted(-ms) + " ago" : "")
-                    : "Cache expires in " + lasted(Math.max(60000, Math.ceil(ms / 60000) * 60000));
+                    : "Cache expires in " + left;
   if (short) return when.toLowerCase();
   const what = c.tokens ? "up to " + kTokens(c.tokens) + " tokens of context" : "its whole context";
   return when + ". " + (gone ? "The next prompt here pays again for " : "After that, the next prompt here pays again for ") +
-         what + ".";
+         what + "." + (k ? " " + keptSaid(k) : "");
 }
 // what a screen reader hears for a card: "my-app, working, 0:42, <its folder>, context 41%"
 function cardLabel(s, st) {

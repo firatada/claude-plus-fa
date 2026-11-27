@@ -29,6 +29,10 @@ LOG = os.path.join(STATE_DIR, "drive-pause.log")
 # the hidden Claude Code that dictates in the reply window (agent-panel.pyw VOICE_DIR): it starts with the panel at
 # sign-in, which is no use of Claude
 VOICE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", HOME), "claude-plus", "voice-host")
+# Field Agents' keep-alives (agent-panel.pyw keep_alive()): a headless fork that refreshes an idle session's prompt
+# cache, which is no use of Claude. Its id is listed under "forks" before it starts; its prompt starts with this.
+KEEPALIVE_FILE = os.path.join(CLAUDE, "state", "agent-panel", "keepalive.json")
+KEEPALIVE_PREFIX = "Keep-alive from claude-plus:"
 
 TASK = "claude-plus-fa Google Drive pause"
 TICK_MINUTES = 5
@@ -259,11 +263,12 @@ def sessions():
         names = os.listdir(SESSIONS)
     except OSError:
         return out
+    forks = read(KEEPALIVE_FILE).get("forks") or {}
     for n in names:
         if not n.endswith(".json"):
             continue
         o = read(os.path.join(SESSIONS, n))
-        if not o.get("pid") or not alive(o["pid"]):
+        if not o.get("pid") or not alive(o["pid"]) or o.get("sessionId") in forks:
             continue
         try:
             if o.get("cwd") and os.path.normcase(os.path.normpath(o["cwd"])) == \
@@ -365,8 +370,8 @@ def hook_input():
 def on_prompt(data):
     """A prompt: Claude is in use from now. Only what must not wait happens here; the quit runs in a helper."""
     on, _ = settings()
-    if not on:
-        return
+    if not on or str(data.get("prompt") or "").lstrip().startswith(KEEPALIVE_PREFIX):
+        return  # a keep-alive (its hooks are off; this is the second guard) is no use of Claude
     sid = (data.get("session_id") or "")[:8]
     write(ACTIVITY, {"at": time.time(), "what": "prompt", "session": sid})
     state = read(STATE)
@@ -380,7 +385,7 @@ def on_prompt(data):
 
 def on_stop(data):
     on, _ = settings()
-    if on:
+    if on and data.get("session_id") not in (read(KEEPALIVE_FILE).get("forks") or {}):  # a keep-alive's end: no use
         write(ACTIVITY, {"at": time.time(), "what": "reply", "session": (data.get("session_id") or "")[:8]})
 
 

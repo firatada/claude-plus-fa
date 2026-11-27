@@ -15,7 +15,7 @@
 # PowerShell clipboard read (agent-panel-paste.py, a process of its own, started and watched by watch_paste()).
 # A link Ctrl+clicked in a session's terminal whose program Windows keeps behind it (the foreground lock) is brought
 # to the front (follow_links()).
-import base64, ctypes, ctypes.wintypes as wt, datetime, glob, importlib.util, io, json, math, os, queue, re, shutil, subprocess, sys, tempfile, threading, time
+import base64, ctypes, ctypes.wintypes as wt, datetime, glob, importlib.util, io, json, math, os, queue, re, shutil, subprocess, sys, tempfile, threading, time, uuid
 import urllib.request
 import webview
 
@@ -199,7 +199,7 @@ def settings_rows():
     found, on = drive_found(mod), local("drive_pause") is True
     default = getattr(mod, "IDLE_MINUTES", DRIVE_MINUTES)
     minutes = idle_minutes(default)
-    warn = cache_warning_on()
+    warn, keep = cache_warning_on(), keepalive_on()
     return [
         {"key": "cache_warning", "kind": "switch", "label": "Warn Before a Session's Cache Expires",
          "hint": "A red ! on an open session's card 15 and 5 minutes before its prompt cache expires, each with a "
@@ -207,6 +207,13 @@ def settings_rows():
          "value": warn, "blocked": None, "why": None,
          "tip": "Turns it off. No mark and no sound." if warn else
                 "Turns it on. A card warns 15 and 5 minutes before its cache expires."},
+        {"key": "keepalive", "kind": "switch", "label": "Keep Idle Sessions' Cache Alive",
+         "hint": "Sends a short keep-alive to an open, idle session with over 100k tokens of context 10 minutes "
+                 "before its cache expires, 3 times at most until your next prompt. It runs in the background: the "
+                 "session's window and transcript are not touched.",
+         "value": keep, "blocked": None, "why": None,
+         "tip": "Turns it off. No keep-alives are sent." if keep else
+                "Turns it on. Idle sessions over 100k tokens keep their cache up to 3 more hours."},
         # turned on by hand while Drive is missing: it can still be turned off
         {"key": "drive_pause", "kind": "switch", "label": "Open Google Drive While Claude Is Idle",
          "hint": "Starts Google Drive for desktop after Claude Code has been idle for the time below, and quits it "
@@ -245,6 +252,14 @@ def set_setting(key, value):
         else:
             out = ok("On. A card warns 15 and 5 minutes before its cache expires." if value else
                      "Off. No cache mark and no sound.")
+    elif key == "keepalive":
+        if not isinstance(value, bool):
+            out = err("Not saved: that is not on or off.")
+        elif not save_local(key, value):
+            out = err(unsaved)
+        else:
+            out = ok("On. Idle sessions over 100k tokens get a keep-alive 10 minutes before their cache expires."
+                     if value else "Off. No keep-alives are sent.")
     elif key == "drive_pause":
         mod, script = drive_pause_py()
         if not isinstance(value, bool):
@@ -466,6 +481,14 @@ AT_LOOK = 8388608      # bytes from a transcript's end searched for its last pro
 CACHE_LEAD = (15 * 60, 5 * 60)  # seconds before an open session's prompt cache expires that its card warns, then
                        # warns harder (45 and 55 min on the 1 h cache); a cache no longer than the first is never warned
 CACHE_LOOK = 2097152   # bytes from a transcript's end searched for its last reply's usage (cache_of())
+KEEPALIVE_LEAD = 10 * 60  # seconds before an idle session's cache expires that a keep-alive is sent (50 min on 1 h)
+KEEPALIVE_MAX = 3      # keep-alives per idle stretch (a real prompt starts a new one): about 3 h of 1 h cache
+KEEPALIVE_MIN_TOKENS = 100000  # a session's context must be over this for a keep-alive to be worth sending
+KEEPALIVE_WAIT = 180   # seconds a keep-alive may run before it is stopped and counted as failed
+KEEPALIVE_TEXT = "Keep-alive from claude-plus: reply only `ok`, do nothing else."  # hooks know it by its start
+KEEPALIVE_FILE = os.path.join(STATE_DIR, "keepalive.json")  # {"sessions": {id: record}, "forks": {id: {...}}}
+KEEPALIVE_LOG = os.path.join(STATE_DIR, "keepalive.log")
+KEEPING = set()        # the forks running now (their session ids): running() leaves them out
 HOME_LOOK = 67108864   # bytes from a transcript's end searched, once per file, for the folder it is filed under when
                        # neither its first 256 KB nor its last MB names it (find_home())
 STATUS_PAGE = "https://status.claude.com/"
@@ -594,9 +617,10 @@ def cache_of(path, size, tail=None):
     """The session's prompt cache as its last replies left it: {"ttl": seconds or None, "tokens": int or None}.
     "tokens" is the newest Claude reply's whole context (input + cache read + cache written), what a prompt after
     the cache expired pays to write again; "ttl" is the cache's lifetime, read from the newest Claude reply that
-    wrote any (usage.cache_creation: ephemeral_1h_input_tokens 3600, ephemeral_5m_input_tokens 300). None when the
+    wrote any (usage.cache_creation: ephemeral_1h_input_tokens 3600, ephemeral_5m_input_tokens 300); "model" is the
+    newest Claude reply's model (a keep-alive must ask the same one, or it reads another cache). None when the
     last CACHE_LOOK bytes hold no Claude reply (a GLM session, a new one), so its card never warns."""
-    out = {"ttl": None, "tokens": None}
+    out = {"ttl": None, "tokens": None, "model": None}
     end, carry = size, b""
     with open(path, "rb") as f:
         while end > 0 and size - end < CACHE_LOOK:
@@ -618,6 +642,7 @@ def cache_of(path, size, tail=None):
                         continue
                     u = m.get("usage") or {}
                     if out["tokens"] is None:
+                        out["model"] = m.get("model")
                         out["tokens"] = sum(int(u.get(k) or 0) for k in (
                             "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
                     c = u.get("cache_creation") or {}
@@ -633,44 +658,184 @@ def cache_of(path, size, tail=None):
     return out
 
 
-def cache_stage(s, now):
+def stretch_rec(s, rec):
+    """The keep-alive record of the session's current idle stretch, or None: a record kept for an older `at` (a prompt
+    or a reply came since) no longer counts."""
+    return rec if rec and s.get("at") and rec.get("stretch") == s["at"] else None
+
+
+def cache_base(s, rec=None):
+    """When the session's prompt cache was last used: its last real activity (`at`, last_at()), or the last keep-alive
+    that read the whole cache in the same idle stretch, whichever is later."""
+    r = stretch_rec(s, rec)
+    return max(s["at"], r["refreshed"]) if r and r.get("refreshed") else s.get("at")
+
+
+def keepalive_fits(s, rec=None, away=False):
+    """Whether the session may still get a keep-alive in this idle stretch, the clock aside: its terminal open and
+    idle (not working, not waiting for an approval or a question), not on GLM or Codex (`away`), not inside WSL, not a
+    headless run, a known cache longer than CACHE_LEAD[0] (a 5-minute cache never), a context over
+    KEEPALIVE_MIN_TOKENS, fewer than KEEPALIVE_MAX sent and none failed."""
+    c, r = s.get("cache") or {}, stretch_rec(s, rec) or {}
+    return (s.get("status") == "idle" and not s.get("waiting") and not away and not s.get("distro")
+            and not s.get("headless") and (c.get("ttl") or 0) > CACHE_LEAD[0]
+            and (c.get("tokens") or 0) > KEEPALIVE_MIN_TOKENS and r.get("sent", 0) < KEEPALIVE_MAX
+            and not r.get("failed"))
+
+
+def keepalive_due(s, rec, now, on, away=False):
+    """A keep-alive goes now: on, the session fits, and its cache has KEEPALIVE_LEAD or less left (not yet expired:
+    after that a keep-alive would write the whole context, as the next prompt would)."""
+    if not on or not keepalive_fits(s, rec, away):
+        return False
+    ttl, idle = s["cache"]["ttl"], now - cache_base(s, rec)
+    return ttl - KEEPALIVE_LEAD <= idle < ttl
+
+
+def cache_stage(s, now, rec=None, pending=False):
     """Where an open session stands against its prompt cache: 0 nothing to say, 1 the cache expires within
     CACHE_LEAD[0], 2 within CACHE_LEAD[1], 3 it has expired (the next prompt writes the whole context again).
-    Counted from the session's last real activity (its `at`, last_at()), only while its terminal is open and it
-    is not working (a session waiting for an answer counts: its cache expires too)."""
+    Counted from when the cache was last used (cache_base(): the session's last real activity, or a keep-alive
+    since), only while its terminal is open and it is not working (a session waiting for an answer counts: its
+    cache expires too). `pending`: a keep-alive is still to come in this stretch (keepalive_fits()); it is due
+    before stage 2, so stage 1 is neither shown nor sounded."""
     if not s.get("status") or (s["status"] == "busy" and not s.get("waiting")):
         return 0
     ttl = (s.get("cache") or {}).get("ttl")
     if not ttl or ttl <= CACHE_LEAD[0] or not s.get("at"):
         return 0
-    idle = now - s["at"]
-    return 3 if idle >= ttl else 2 if idle >= ttl - CACHE_LEAD[1] else 1 if idle >= ttl - CACHE_LEAD[0] else 0
+    idle = now - cache_base(s, rec)
+    stage = 3 if idle >= ttl else 2 if idle >= ttl - CACHE_LEAD[1] else 1 if idle >= ttl - CACHE_LEAD[0] else 0
+    return 0 if pending and stage == 1 else stage
 
 
-def cache_view(s, now):
+def cache_view(s, now, rec=None, keep=False, warn=True, away=False):
     """What the card's cache mark shows: None, or {"stage" (cache_stage()), "ends" (epoch ms the cache expires),
-    "tokens"}. The page counts the minutes left itself, so the state pushed changes only when the stage does."""
-    stage = cache_stage(s, now)
-    if not stage:
-        return None
+    "tokens", "kept"}. "kept" is this idle stretch's keep-alives ({"n" sent, "of" KEEPALIVE_MAX, "last" epoch ms of
+    the last one, "ok" whether it refreshed the cache, "left"}); a card whose cache a keep-alive refreshed shows a
+    still mark of its own at stage 0. `keep`: the keep-alive setting; `warn`: the cache warning's (off: no stage is
+    shown, only what keep-alives did). The page counts the minutes left itself, so the state pushed changes only
+    when the stage or the keep-alives do."""
+    r = stretch_rec(s, rec)
+    stage = cache_stage(s, now, rec, keep and keepalive_fits(s, rec, away)) if warn else 0
+    kept = None
+    if r and r.get("sent") and s.get("status"):
+        kept = {"n": r["sent"], "of": KEEPALIVE_MAX, "last": int(r["last"] * 1000), "ok": not r.get("failed"),
+                "left": 0 if r.get("failed") else max(0, KEEPALIVE_MAX - r["sent"])}
     c = s.get("cache") or {}
-    return {"stage": stage, "ends": int((s["at"] + c["ttl"]) * 1000), "tokens": c.get("tokens")}
+    if (not stage and not (kept and kept["ok"])) or not c.get("ttl"):
+        return None
+    return {"stage": stage, "ends": int((cache_base(s, rec) + c["ttl"]) * 1000), "tokens": c.get("tokens"),
+            "kept": kept}
 
 
-def cache_rings(rung, sessions, now, on):
+def cache_rings(rung, sessions, now, on, recs=None, keep=False, away=()):
     """check_cache()'s rule, kept apart for the tests: (the stage to sound now, 0 for none; the new record).
-    `rung` maps a session id to (its `at`, the highest stage already sounded or seen in that idle stretch)."""
-    out, loud = {}, 0
+    `rung` maps a session id to (when its cache was last used, cache_base(); the highest stage already sounded or
+    seen since); a keep-alive moves that time as a prompt does, so a later warning sounds again. `recs`: the
+    keep-alive records by session id, `keep` the keep-alive setting, `away` the ids on GLM or Codex."""
+    out, loud, recs = {}, 0, recs or {}
     for s in sessions if on else ():
-        stage = cache_stage(s, now)
+        rec = recs.get(s["id"])
+        stage = cache_stage(s, now, rec, keep and keepalive_fits(s, rec, s["id"] in away))
         if not stage:
             continue
+        base = cache_base(s, rec)
         at, before = rung.get(s["id"], (None, 0))
-        before = before if at == s["at"] else 0  # a newer `at`: a prompt or a reply started a new stretch
+        before = before if at == base else 0  # a newer base: a prompt, a reply or a keep-alive started a new stretch
         if stage < 3 and stage > before:
             loud = max(loud, stage)
-        out[s["id"]] = (s["at"], max(stage, before))
+        out[s["id"]] = (base, max(stage, before))
     return loud, out
+
+
+def keepalive_on():
+    """The keep-alive: "keepalive" in claude-plus.local.json, off unless set to true."""
+    return local("keepalive") is True
+
+
+def keepalive_argv(exe, sid, fork, model=None):
+    """The keep-alive's command: a headless resume of the session, forked under a new id chosen here (so the other
+    features can leave it out before it starts), nothing saved to disk (no transcript; the original is untouched),
+    every hook off (prompt hooks, Stop hooks and the context guard never see it), on the session's own model.
+    Claude Code sends the session's recorded system prompt and its messages as they are, so the request reads the
+    interactive session's cache and so refreshes it (measured: trials.md, 2026-11-26)."""
+    return ([exe, "-p", "--resume", sid, "--fork-session", "--session-id", fork, "--no-session-persistence",
+             "--output-format", "json", "--settings", json.dumps({"disableAllHooks": True})]
+            + (["--model", model] if model else []) + [KEEPALIVE_TEXT])
+
+
+def k_tokens(n):
+    return "%.1fM" % (n / 1e6) if n >= 1e6 else "%dk" % max(1, round(n / 1000)) if n else "0"
+
+
+def keepalive_outcome(code, out, err, tokens):
+    """What a keep-alive's run did: (refreshed, why it failed or None, its figures). Refreshed only when it ended
+    well, read at least half the context from the cache (otherwise it wrote a new cache, at the price of a miss)
+    and did nothing but reply."""
+    try:
+        res = json.loads(out or "")
+        if not isinstance(res, dict):
+            raise ValueError
+    except ValueError:
+        tail = " ".join((err or out or "").split())[-160:]
+        return False, "no answer (exit %s)%s" % (code, ": " + tail if tail else ""), {}
+    u = res.get("usage") or {}
+    nums = {"read": int(u.get("cache_read_input_tokens") or 0), "wrote": int(u.get("cache_creation_input_tokens") or 0),
+            "input": int(u.get("input_tokens") or 0), "reply": " ".join(str(res.get("result") or "").split())[:40],
+            "turns": res.get("num_turns")}
+    if code != 0 or res.get("is_error"):
+        return False, "failed (exit %s): %s" % (code, nums["reply"] or " ".join((err or "").split())[-160:]), nums
+    if tokens and nums["read"] < tokens / 2:
+        return False, "missed the cache: read %s of %s" % (k_tokens(nums["read"]), k_tokens(tokens)), nums
+    if (res.get("num_turns") or 1) > 1:
+        return False, "did more than reply (%s turns)" % res.get("num_turns"), nums
+    return True, None, nums
+
+
+def keepalive_forks():
+    """The keep-alive forks running now, by session id, from KEEPALIVE_FILE (drive-pause.py reads the same list)."""
+    try:
+        with open(KEEPALIVE_FILE, encoding="utf-8") as f:
+            v = json.load(f).get("forks") or {}
+        return set(v) if isinstance(v, dict) else set()
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+def keepalive_load():
+    """The keep-alive records by session id from KEEPALIVE_FILE ({} when missing or unreadable), so a restart of the
+    panel neither forgets how many were sent nor sends them again."""
+    try:
+        with open(KEEPALIVE_FILE, encoding="utf-8") as f:
+            v = json.load(f).get("sessions")
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def keepalive_save(recs, forks):
+    """Writes the records (those of the last two days) and the forks running now; returns the records kept."""
+    now = time.time()
+    recs = {k: r for k, r in recs.items() if isinstance(r, dict) and now - (r.get("last") or 0) < 2 * 86400}
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = KEEPALIVE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"sessions": recs, "forks": forks}, f)
+        for _ in range(5):  # a reader (drive-pause.py) holding the file makes the swap fail for a moment
+            try:
+                os.replace(tmp, KEEPALIVE_FILE)
+                break
+            except PermissionError:
+                time.sleep(0.05)
+    except OSError:
+        pass
+    return recs
+
+
+def keepalive_log(*a):
+    append_log(KEEPALIVE_LOG, *a)
 
 
 def cache_warning_on():
@@ -816,7 +981,7 @@ def running():
             o = json.load(open(os.path.join(folder, n), encoding="utf-8"))
         except Exception:
             continue
-        if o.get("sessionId") and o.get("pid") and alive(o["pid"]) and not is_voice_dir(o.get("cwd")):
+        if o.get("sessionId") and o.get("pid") and alive(o["pid"]) and not is_voice_dir(o.get("cwd"))                 and o["sessionId"] not in KEEPING:  # a keep-alive's fork is no session of the user's
             # waitingFor is set while a prompt in the session (a permission question, a dialog) waits
             # for an answer; the status then says "busy" (older versions) or "waiting" (2.1.319)
             out[o["sessionId"]] = {"status": o.get("status") or "idle", "name": o.get("name"), "pid": o["pid"],
@@ -3258,6 +3423,8 @@ class Panel:
         self.turns = {}  # session id -> its current turn, for the working card's timer; see turn_start()
         self.bg_seen = {}  # session id -> first read that saw its background work (ms); see bg_start()
         self.cache_rung = None  # session id -> (its `at`, the highest cache stage sounded for it); see check_cache()
+        self.kept = keepalive_load()  # session id -> its keep-alive record; see check_keepalive()
+        self.keep_busy = False  # a keep-alive runs now (one at a time)
         self.metas = {}  # subagent meta files read so far: path -> (mtime, running agent or False); see subagents()
         self.live = {}  # the session files of the last live pass, for peek()
         self.peeks = {}  # what peek() read so far, by transcript: last prompts, first prompts, background commands
@@ -3715,6 +3882,7 @@ class Panel:
         self.push()
         self.check_alerts()
         self.check_cache()
+        self.check_keepalive()
         self.watch_return()
         self.keep_voice()
 
@@ -4533,11 +4701,71 @@ class Panel:
         each session stands, so a restart (a reinstall) sounds nothing. Off with the setting; silent with the tray's
         Alert Sound off."""
         sound = cache_rings(self.cache_rung if self.cache_rung is not None else {}, self.sessions, time.time(),
-                            cache_warning_on())
+                            cache_warning_on(), self.kept, keepalive_on(), set(self.returns))
         first, self.cache_rung = self.cache_rung is None, sound[1]
         if sound[0] and not first and self.opts["sound"] and os.path.exists(CACHE_SOUNDS[sound[0]]):
             import winsound
             winsound.PlaySound(CACHE_SOUNDS[sound[0]], winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+
+    # ----- the keep-alive: an idle session's prompt cache refreshed before it expires (memory/keepalive.md) -----
+    def check_keepalive(self):
+        """After every live pass: the first open idle session whose cache has KEEPALIVE_LEAD or less left
+        (keepalive_due()) gets a keep-alive on a thread of its own, one at a time. Off unless "keepalive" is true."""
+        if self.keep_busy or not keepalive_on():
+            return
+        now = time.time()
+        for s in self.sessions:
+            if keepalive_due(s, self.kept.get(s["id"]), now, True, s["id"] in self.returns) and folder_exists(s):
+                self.keep_busy = True
+                threading.Thread(target=self.keep_alive, args=(dict(s),), daemon=True).start()
+                return
+
+    def keep_alive(self, s):
+        """One keep-alive (keepalive_argv()): its outcome goes into the session's record (KEEPALIVE_FILE) and one
+        line into KEEPALIVE_LOG. Every attempt counts toward KEEPALIVE_MAX; one that did not refresh the cache ends
+        this idle stretch's keep-alives, so the card's warning comes back. The fork's id is in KEEPING and in the
+        file's "forks" before it starts, so neither this panel nor the Google Drive pause takes it for a session."""
+        sid, fork, t0 = s["id"], str(uuid.uuid4()), time.time()
+        rec = dict(stretch_rec(s, self.kept.get(sid)) or {"stretch": s["at"], "sent": 0})
+        tokens, code, out, errs = (s.get("cache") or {}).get("tokens"), None, b"", b""
+        try:
+            st = os.stat(s["path"])
+            c = cache_of(s["path"], st.st_size)
+            tokens = c.get("tokens") or tokens
+            exe = shutil.which("claude") or os.path.expanduser(r"~\.local\bin\claude.exe")
+            cwd = s["cwd"].replace("/", "\\") if s["cwd"].startswith("//") else s["cwd"]
+            KEEPING.add(fork)
+            self.kept = keepalive_save(self.kept, {fork: {"session": sid, "at": t0}})
+            p = subprocess.Popen(keepalive_argv(exe, sid, fork, c.get("model")), cwd=cwd, env=clean_env(),
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 creationflags=CREATE_NO_WINDOW)
+            try:
+                out, errs = p.communicate(timeout=KEEPALIVE_WAIT)
+                code = p.returncode
+            except subprocess.TimeoutExpired:
+                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True,
+                               stdin=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+                p.communicate()
+                errs = b"stopped after %d s" % KEEPALIVE_WAIT
+            good, why, nums = keepalive_outcome(code, out.decode("utf-8", "replace"), errs.decode("utf-8", "replace"),
+                                                tokens)
+        except Exception as e:  # noqa: BLE001 - a keep-alive that cannot run must still count, or it is tried again
+            good, why, nums = False, "could not run: %r" % e, {}
+        secs = time.time() - t0
+        rec["sent"], rec["last"] = rec.get("sent", 0) + 1, t0
+        if good:
+            rec["refreshed"] = t0
+        else:
+            rec["failed"] = why
+        self.kept[sid] = rec
+        KEEPING.discard(fork)
+        self.kept = keepalive_save(self.kept, {})
+        self.keep_busy = False
+        keepalive_log(sid[:8], "keep-alive %d/%d, context %s:" % (rec["sent"], KEEPALIVE_MAX, k_tokens(tokens or 0)),
+                      ("refreshed (read %s, wrote %s, reply %r, %.1f s)" % (
+                          k_tokens(nums["read"]), k_tokens(nums["wrote"]), nums["reply"], secs)) if good else
+                      ("not refreshed, %s (%.1f s); no more in this idle stretch" % (why, secs)))
+        self.push()
 
     def in_front(self, s):
         hwnd = s.get("pid") and window_of(s["pid"])
@@ -5571,7 +5799,7 @@ class Panel:
 
     def state(self):
         lim, now, hours = read_limits(), time.time(), headless_hours()
-        turns, seen, warn = {}, {}, cache_warning_on()
+        turns, seen, warn, keep = {}, {}, cache_warning_on(), keepalive_on()
 
         def usage(v, fmt):
             try:
@@ -5586,7 +5814,9 @@ class Panel:
                              "ctx": s.get("ctx"), "hidden": s["id"] in self.hidden, "turn": self.turn_start(s, turns),
                              "bgSince": self.bg_start(s, seen),
                              "here": folder_exists(s), "distro": s["distro"], "age": ago(s["at"]),
-                             "headless": s.get("headless", False), "cache": cache_view(s, now) if warn else None,
+                             "headless": s.get("headless", False),
+                             "cache": cache_view(s, now, self.kept.get(s["id"]), keep, warn, s["id"] in self.returns)
+                             if warn or keep else None,
                              "via": (self.returns.get(s["id"]) or {}).get("via"),
                              "viaOpen": bool((self.returns.get(s["id"]) or {}).get("open")),
                              "bg": [{"kind": w["kind"], "what": w["what"], "for": lasted(w["since"])} for w in s.get("bg", [])]}

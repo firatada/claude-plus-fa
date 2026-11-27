@@ -17,7 +17,8 @@ import ast, datetime, json, os, re, sys, tempfile, types, unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 NAMES = ("local", "AT_LOOK", "CACHE_LEAD", "CACHE_LOOK", "TURN_LINE", "USAGE_LINE", "last_at", "cache_of",
-         "cache_stage", "cache_view", "cache_rings", "cache_warning_on")
+         "cache_stage", "cache_view", "cache_rings", "cache_warning_on", "stretch_rec", "cache_base", "keepalive_fits",
+         "keepalive_on", "KEEPALIVE_LEAD", "KEEPALIVE_MAX", "KEEPALIVE_MIN_TOKENS")
 T0 = 1_800_000_000.0  # a made-up "now" for the idle stretch's start
 MIN = 60
 
@@ -58,6 +59,7 @@ class Fake:
 
     def __init__(self, sessions, sound=True):
         self.sessions, self.opts, self.cache_rung = sessions, {"sound": sound}, None
+        self.kept, self.returns = {}, {}
 
 
 class CacheWarning(unittest.TestCase):
@@ -95,7 +97,7 @@ class CacheWarning(unittest.TestCase):
     def test_cache_of_reads_the_1h_lifetime_and_the_context(self):
         path = self.transcript([prompt(T0 - 60), reply(T0 - 50, h1=5000, mid="1"),
                                 reply(T0, h1=1200, read=240000, inp=7, mid="2")])
-        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": 3600, "tokens": 241207})
+        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": 3600, "tokens": 241207, "model": "claude-opus-5-5"})
 
     def test_cache_of_reads_a_5_minute_cache(self):
         path = self.transcript([reply(T0, m5=900, read=50000)])
@@ -103,14 +105,14 @@ class CacheWarning(unittest.TestCase):
 
     def test_newest_reply_that_wrote_nothing_gives_tokens_and_an_older_one_the_lifetime(self):
         path = self.transcript([reply(T0 - 99, h1=800, mid="1"), reply(T0, read=300000, write=0, mid="2")])
-        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": 3600, "tokens": 300003})
+        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": 3600, "tokens": 300003, "model": "claude-opus-5-5"})
 
     def test_glm_sessions_and_subagent_lines_are_not_read(self):
         path = self.transcript([reply(T0, model="glm-4.7-flash", h1=900)])
-        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": None, "tokens": None})
+        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": None, "tokens": None, "model": None})
         path = self.transcript([reply(T0 - 9, h1=100, read=1000, mid="1"),
                                 reply(T0, m5=7, read=9, side=True, mid="2")], "side.jsonl")
-        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": 3600, "tokens": 1103})
+        self.assertEqual(self.p["cache_of"](path, os.path.getsize(path)), {"ttl": 3600, "tokens": 1103, "model": "claude-opus-5-5"})
 
     # ----- the thresholds -----
     def test_thresholds_at_45_55_and_60_minutes(self):
@@ -131,7 +133,7 @@ class CacheWarning(unittest.TestCase):
     def test_cache_view_gives_the_stage_the_end_and_the_tokens(self):
         s = self.session(idle_min=46)
         self.assertEqual(self.p["cache_view"](s, s["_now"]),
-                         {"stage": 1, "ends": int((T0 + 3600) * 1000), "tokens": 250000})
+                         {"stage": 1, "ends": int((T0 + 3600) * 1000), "tokens": 250000, "kept": None})
         self.assertIsNone(self.p["cache_view"](self.session(idle_min=10), T0 + 10 * MIN))
 
     # ----- the reset on a prompt -----

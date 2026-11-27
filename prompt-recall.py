@@ -8,7 +8,8 @@ import json, os, sys, time
 STATE = os.path.join(os.path.expanduser("~"), ".claude", "state", "context")
 # Claude Code also sends its own messages through this hook as if they were prompts
 # (a finished background task arrives as <task-notification>…); they must not replace yours.
-MACHINE = ("<task-notification>", "<system-reminder>")
+# Field Agents' keep-alive is no prompt of yours either (its hooks are off; this is the second guard).
+MACHINE = ("<task-notification>", "<system-reminder>", "Keep-alive from claude-plus:")
 
 try:
     data = json.loads(sys.stdin.buffer.read().decode("utf-8"))

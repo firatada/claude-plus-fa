@@ -331,7 +331,8 @@ class HeadlessShown(unittest.TestCase):
     NOW = 2_000_000_000
 
     def setUp(self):
-        ns = pyw_functions("shown", "headless_hours", "cache_view", "cache_stage", "cache_warning_on", "CACHE_LEAD",
+        ns = pyw_functions("shown", "headless_hours", "cache_view", "cache_stage", "cache_warning_on", "CACHE_LEAD", "keepalive_on", "stretch_rec",
+                           "cache_base", "keepalive_fits", "KEEPALIVE_MAX", "KEEPALIVE_MIN_TOKENS",
                            cls_methods=("state",))
         ns.update(HEADLESS_HOURS=24, local=lambda k: None, read_limits=lambda: {}, where_of=lambda s: s["cwd"],
                   folder_exists=lambda s: s["cwd"] != "C:/gone", ago=lambda t: "", lasted=lambda t: "",
@@ -362,7 +363,7 @@ class HeadlessShown(unittest.TestCase):
             bg_start = lambda self, s, seen: None
             keeping = lambda self: False
         self.p = P()
-        self.p.sessions = self.sessions
+        self.p.sessions, self.p.kept = self.sessions, {}
 
     def ids(self):
         return [s["id"] for s in self.p.state()["sessions"]]
@@ -500,7 +501,7 @@ class LastActivity(unittest.TestCase):
 
         class P:
             update_live = self.ns["update_live"]
-            find_windows = background = feed_shots = push = check_alerts = check_cache = watch_return = keep_voice = noop
+            find_windows = background = feed_shots = push = check_alerts = check_cache = check_keepalive = watch_return = keep_voice = noop
         p = P()
         p.sessions, p.launched, p.last_scan = sessions, {}, 1
         p.update_live()

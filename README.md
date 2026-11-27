@@ -53,6 +53,7 @@ Every Claude Code session on your PC in one list on the right edge of the screen
 - **Rest the pointer on a card** and it opens downward to show what its session is working on: every subagent, Workflow agent, `claude -p` run and background command still running, grouped under the prompt you typed that set it off, newest prompt first, each with how long it has run (*14 min*). Agents are numbered *Agent 1*, *Agent 2*, ...; a Workflow's agents sit together under one *Workflow* line with its name. Your last prompt comes first, alone when it started nothing still running. When they do not all fit, click *and n more* for a column of them all beside the panel.
 - Each card shows how full that session's context is. The bottom shows your 5-hour and weekly usage.
 - **Red !** on the card's right edge: an open session you left idle is about to lose its prompt cache, which Claude keeps for an hour after the last prompt or reply. It blinks with a soft sound 15 minutes before, faster with a sharper sound 5 minutes before; after the hour it turns into a still grey ring. Point at it for the minutes left and how many tokens the next prompt there pays for again. A prompt in that session clears it. Turn it off in **Settings** (**Warn Before a Session's Cache Expires**); the tray's **Alert Sound** silences its sounds too.
+- **Green ↻** in the same place: the keep-alive (below) refreshed that session's cache. Point at it for when, how many are left and when the cache now expires.
 
 Using it:
 - Click an open session to bring its window to the front, even from the notification area (Windows Terminal's **Hide Terminal in the notification area when it is minimized**). Click it again to put it away.
@@ -153,6 +154,18 @@ Or, without the panel, in `~/.claude/claude-plus.local.json`:
 | `"drive_idle_minutes"` | `30` | How long Claude Code must be idle before Drive starts |
 
 Both are read every time, so a change needs no reinstall. The panel writes the same two keys. Without Google Drive for desktop installed it does nothing.
+
+### Cache keep-alive (off unless you turn it on)
+
+A prompt after the cache has expired pays again for the whole context (a 1-hour cache write costs twice the input price; reading it costs a tenth). With this on, Field Agents keeps an idle session's cache alive for you:
+
+- 10 minutes before the cache of an open, idle session expires (50 minutes after your last prompt or reply), Field Agents sends it a keep-alive: *Keep-alive from claude-plus: reply only `ok`, do nothing else.*
+- Only sessions with more than 100k tokens of context, at most 3 times before your next prompt (about 3 more hours). Not while the session works or waits for an approval or a question, nor on GLM or Codex.
+- It is a separate `claude -p` run in the background that resumes a copy of the session (`--fork-session`, nothing saved, hooks off), so it reads the same cache and keeps it alive. Your terminal, its prompt box and the conversation are not touched, and nothing it does shows up as your activity.
+- Each keep-alive costs about a fifteenth of what the expiry would: on a 119k-token session it reads the 119k from the cache and writes 1k to 3k, about 0.04 USD at list price as Claude Code reported it, where a prompt after the expiry writes all 119k again at twice the input price.
+- If one does not refresh the cache (or fails), no more are sent until your next prompt, and the **Red !** comes back. Every keep-alive is written to `~/.claude/state/agent-panel/keepalive.log`.
+
+Turn it on in Field Agents: click the gear right of **Status**, then the switch **Keep Idle Sessions' Cache Alive**. Or set `"keepalive": true` in `~/.claude/claude-plus.local.json`. It needs Field Agents running.
 
 ## Requirements
 
