@@ -232,6 +232,21 @@ class Outcome(unittest.TestCase):
         self.assertIn("no answer (exit 1)", out(1, "", "boom", 118632)[1])
         self.assertIn("did more than reply", out(0, self.res(118630, turns=2), "", 118632)[1])
         self.assertFalse(out(None, "", "stopped after 180 s", 118632)[0])
+        # a model that tried a tool anyway: refused, then --max-turns 1 ends the run (measured: exit 1,
+        # subtype error_max_turns, is_error, no result, 2 turns): failed, so the stretch ends
+        capped = json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 2,
+                             "usage": {"input_tokens": 2, "cache_read_input_tokens": 104516,
+                                       "cache_creation_input_tokens": 15529}})
+        good, why, _ = out(1, capped, "", 104518)
+        self.assertFalse(good)
+        self.assertIn("failed (exit 1)", why)
+        self.assertEqual(out(0, self.res(104516, 12814, result="ok"), "", 104518)[:2], (True, None))  # measured
+
+    def test_text(self):
+        text = self.p["KEEPALIVE_TEXT"]
+        self.assertEqual(text, "Keep-alive from claude-plus. This is not a task: use no tool, do not continue or "
+                               "check any work. Reply with the single word ok.")
+        self.assertTrue(text.startswith("Keep-alive from claude-plus"))  # what the hooks know it by
 
     def test_command(self):
         argv = self.p["keepalive_argv"]("claude.exe", "SID", "FORK", "claude-opus-5-5")
@@ -239,7 +254,12 @@ class Outcome(unittest.TestCase):
         for flag in ("--fork-session", "--no-session-persistence"):
             self.assertIn(flag, argv)
         self.assertEqual(argv[argv.index("--session-id") + 1], "FORK")
-        self.assertEqual(json.loads(argv[argv.index("--settings") + 1]), {"disableAllHooks": True})
+        self.assertEqual(json.loads(argv[argv.index("--settings") + 1]),
+                         {"disableAllHooks": True, "permissions": {"ask": ["*"]}})  # every tool would ask ...
+        self.assertEqual(argv[argv.index("--permission-mode") + 1], "dontAsk")  # ... and nobody may: refused
+        self.assertEqual(argv[argv.index("--max-turns") + 1], "1")  # one refused round at most
+        for flag in ("--tools", "--disallowedTools", "--allowedTools", "--setting-sources"):
+            self.assertNotIn(flag, argv)  # the tool list stays as it is, so the cache prefix does
         self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5-5")
         self.assertEqual(argv[-1], self.p["KEEPALIVE_TEXT"])
         self.assertNotIn("--dangerously-skip-permissions", argv)  # the fork may not run tools unasked

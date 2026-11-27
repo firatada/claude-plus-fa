@@ -32,7 +32,7 @@ VOICE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", HOME), "claude-plus", "v
 # Field Agents' keep-alives (agent-panel.pyw keep_alive()): a headless fork that refreshes an idle session's prompt
 # cache, which is no use of Claude. Its id is listed under "forks" before it starts; its prompt starts with this.
 KEEPALIVE_FILE = os.path.join(CLAUDE, "state", "agent-panel", "keepalive.json")
-KEEPALIVE_PREFIX = "Keep-alive from claude-plus:"
+KEEPALIVE_PREFIX = "Keep-alive from claude-plus"
 
 TASK = "claude-plus-fa Google Drive pause"
 TICK_MINUTES = 5

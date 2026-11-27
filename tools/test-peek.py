@@ -598,7 +598,7 @@ class Recall(unittest.TestCase):
         self.assertEqual(self.run_hook(PASTE_THEN_TYPED),
                          "My answers inside your reply of 21:06:\n\n> a quoted line\n\n Buradan hareketle ne yazabiliriz?")
         self.assertIsNone(self.run_hook("<task-notification>\n<task-id>a</task-id>"))
-        self.assertIsNone(self.run_hook("Keep-alive from claude-plus: reply only `ok`, do nothing else."))
+        self.assertIsNone(self.run_hook("Keep-alive from claude-plus. This is not a task: use no tool, do not continue or check any work. Reply with the single word ok."))
         self.assertEqual(self.run_hook("plain typed prompt"), "plain typed prompt")
 
 

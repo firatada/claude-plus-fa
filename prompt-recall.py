@@ -9,7 +9,7 @@ STATE = os.path.join(os.path.expanduser("~"), ".claude", "state", "context")
 # Claude Code also sends its own messages through this hook as if they were prompts
 # (a finished background task arrives as <task-notification>…); they must not replace yours.
 # Field Agents' keep-alive is no prompt of yours either (its hooks are off; this is the second guard).
-MACHINE = ("<task-notification>", "<system-reminder>", "Keep-alive from claude-plus:")
+MACHINE = ("<task-notification>", "<system-reminder>", "Keep-alive from claude-plus")
 # A pasted text reaches this hook wrapped as <pasted_content id="ab12">\n...\n</pasted_content id="ab12"> (Claude Code
 # 2.1.278 on); the status line shows what it holds, not the tags.
 PASTED = re.compile(r'<pasted_content(?: id="([^"]*)")?>\n?(.*?)\n?</pasted_content(?: id="\1")?>', re.S)

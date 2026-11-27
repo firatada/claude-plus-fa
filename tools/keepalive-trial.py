@@ -32,7 +32,7 @@ spec.loader.exec_module(vh)
 CLAUDE = os.path.expanduser("~/.claude")
 PROJECTS = os.path.join(CLAUDE, "projects")
 SESSIONS = os.path.join(CLAUDE, "sessions")
-KEEPALIVE = "Keep-alive from claude-plus: reply only `ok`, do nothing else."
+KEEPALIVE = "Keep-alive from claude-plus. This is not a task: use no tool, do not continue or check any work. Reply with the single word ok."
 EXE = shutil.which("claude") or os.path.expanduser(r"~\.local\bin\claude.exe")
 LOG = []
 
@@ -138,7 +138,8 @@ def fork(cwd, sid, tag):
     before_files = set(os.listdir(os.path.join(PROJECTS, slug(cwd))))
     before_sessions = set(os.listdir(SESSIONS))
     argv = [EXE, "-p", "--resume", sid, "--fork-session", "--no-session-persistence", "--output-format", "json",
-            "--settings", json.dumps({"disableAllHooks": True}), KEEPALIVE]
+            "--permission-mode", "dontAsk", "--max-turns", "1",
+            "--settings", json.dumps({"disableAllHooks": True, "permissions": {"ask": ["*"]}}), KEEPALIVE]
     t0 = time.time()
     p = subprocess.Popen(argv, cwd=cwd, env=vh.clean_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          stdin=subprocess.DEVNULL, creationflags=0x08000000)

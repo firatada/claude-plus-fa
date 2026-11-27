@@ -486,7 +486,8 @@ KEEPALIVE_LEAD = 10 * 60  # seconds before an idle session's cache expires that 
 KEEPALIVE_MAX = 3      # keep-alives per idle stretch (a real prompt starts a new one): about 3 h of 1 h cache
 KEEPALIVE_MIN_TOKENS = 100000  # a session's context must be over this for a keep-alive to be worth sending
 KEEPALIVE_WAIT = 180   # seconds a keep-alive may run before it is stopped and counted as failed
-KEEPALIVE_TEXT = "Keep-alive from claude-plus: reply only `ok`, do nothing else."  # hooks know it by its start
+KEEPALIVE_TEXT = ("Keep-alive from claude-plus. This is not a task: use no tool, do not continue or check any work. "
+                  "Reply with the single word ok.")  # hooks know it by its first words, "Keep-alive from claude-plus"
 KEEPALIVE_FILE = os.path.join(STATE_DIR, "keepalive.json")  # {"sessions": {id: record}, "forks": {id: {...}}}
 KEEPALIVE_LOG = os.path.join(STATE_DIR, "keepalive.log")
 KEEPING = set()        # the forks running now (their session ids): running() leaves them out
@@ -760,9 +761,13 @@ def keepalive_argv(exe, sid, fork, model=None):
     features can leave it out before it starts), nothing saved to disk (no transcript; the original is untouched),
     every hook off (prompt hooks, Stop hooks and the context guard never see it), on the session's own model.
     Claude Code sends the session's recorded system prompt and its messages as they are, so the request reads the
-    interactive session's cache and so refreshes it (measured: trials.md, 2026-11-26)."""
+    interactive session's cache and so refreshes it (measured: trials.md, 2026-11-26).
+    No tool can run, whatever the model replies: an ask rule on every tool ("*", which wins over the user's allow
+    rules) in dontAsk mode refuses each call before it runs, and --max-turns 1 ends the run after one refused round.
+    The tool list stays as it is, so the prefix and the cache do too (measured: trials.md, 2026-11-27)."""
     return ([exe, "-p", "--resume", sid, "--fork-session", "--session-id", fork, "--no-session-persistence",
-             "--output-format", "json", "--settings", json.dumps({"disableAllHooks": True})]
+             "--output-format", "json", "--permission-mode", "dontAsk", "--max-turns", "1",
+             "--settings", json.dumps({"disableAllHooks": True, "permissions": {"ask": ["*"]}})]
             + (["--model", model] if model else []) + [KEEPALIVE_TEXT])
 
 

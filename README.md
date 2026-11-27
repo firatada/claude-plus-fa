@@ -159,9 +159,9 @@ Both are read every time, so a change needs no reinstall. The panel writes the s
 
 A prompt after the cache has expired pays again for the whole context (a 1-hour cache write costs twice the input price; reading it costs a tenth). With this on, Field Agents keeps an idle session's cache alive for you:
 
-- 10 minutes before the cache of an open, idle session expires (50 minutes after your last prompt or reply), Field Agents sends it a keep-alive: *Keep-alive from claude-plus: reply only `ok`, do nothing else.*
+- 10 minutes before the cache of an open, idle session expires (50 minutes after your last prompt or reply), Field Agents sends it a keep-alive: *Keep-alive from claude-plus. This is not a task: use no tool, do not continue or check any work. Reply with the single word ok.*
 - Only sessions with more than 100k tokens of context, at most 3 times before your next prompt (about 3 more hours). Not while the session works or waits for an approval or a question, nor on GLM or Codex.
-- It is a separate `claude -p` run in the background that resumes a copy of the session (`--fork-session`, nothing saved, hooks off), so it reads the same cache and keeps it alive. Your terminal, its prompt box and the conversation are not touched, and nothing it does shows up as your activity.
+- It is a separate `claude -p` run in the background that resumes a copy of the session (`--fork-session`, nothing saved, hooks off), so it reads the same cache and keeps it alive. It cannot run a tool: every tool call is refused before it runs, even the ones your settings allow. Your terminal, its prompt box and the conversation are not touched, and nothing it does shows up as your activity.
 - Each keep-alive costs about a fifteenth of what the expiry would: on a 119k-token session it reads the 119k from the cache and writes 1k to 3k, about 0.04 USD at list price as Claude Code reported it, where a prompt after the expiry writes all 119k again at twice the input price.
 - If one does not refresh the cache (or fails), no more are sent until your next prompt, and the **Red !** comes back. Every keep-alive is written to `~/.claude/state/agent-panel/keepalive.log`.
 
