@@ -16,7 +16,7 @@
 # Times are fake; nothing is sent to Anthropic, no process is started (subprocess is a fake), every path is on a
 # temp folder. The .pyw is never imported (its one-instance mutex would raise the running panel): the functions are
 # taken out by ast.
-import ast, datetime, hashlib, importlib.util, json, os, re, subprocess, sys, tempfile, threading, time, unittest, uuid
+import ast, datetime, hashlib, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, threading, time, unittest, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -89,7 +89,9 @@ def sent(s, n, last, ok=True):
 
 class Conditions(unittest.TestCase):
     def setUp(self):
-        self.p = panel(tempfile.mkdtemp(prefix="claude-plus-test-ka-"))
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-ka-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.p = panel(self.tmp)
 
     def due(self, s, rec=None, at=None, on=True, away=False):
         return self.p["keepalive_due"](s, rec, at if at is not None else T0, on, away)
@@ -151,7 +153,9 @@ class Conditions(unittest.TestCase):
 
 class Warning(unittest.TestCase):
     def setUp(self):
-        self.p = panel(tempfile.mkdtemp(prefix="claude-plus-test-ka-"))
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-ka-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.p = panel(self.tmp)
 
     def stage(self, s, now, rec=None, keep=True):
         return self.p["cache_stage"](s, now, rec, keep and self.p["keepalive_fits"](s, rec))
@@ -215,7 +219,9 @@ class Warning(unittest.TestCase):
 
 class Outcome(unittest.TestCase):
     def setUp(self):
-        self.p = panel(tempfile.mkdtemp(prefix="claude-plus-test-ka-"))
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-ka-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.p = panel(self.tmp)
 
     def res(self, read, wrote=1404, result="ok", turns=1, error=False):
         return json.dumps({"result": result, "num_turns": turns, "is_error": error,
@@ -287,6 +293,7 @@ class FakePopen:
 class Run(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-ka-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.p = panel(self.tmp)
         FakePopen.ns, FakePopen.calls, FakePopen.seen = self.p, [], []
         fake = type(subprocess)("subprocess")
@@ -394,6 +401,7 @@ class Run(unittest.TestCase):
 class Consumers(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-ka-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.p = panel(self.tmp)
         self.sessions = os.path.join(self.tmp, "sessions")
         os.makedirs(self.sessions)

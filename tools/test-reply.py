@@ -1024,7 +1024,9 @@ class Dictation(unittest.TestCase):
 
     def test_a_server_that_is_down_is_started_once_and_waited_for(self):
         port, started, srv = free_port(), [], []
-        script = os.path.join(tempfile.mkdtemp(prefix="claude-plus-test-reply-"), "server.py")
+        d = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
+        self.addCleanup(shutil.rmtree, d, True)
+        script = os.path.join(d, "server.py")
         open(script, "w").close()
 
         def start(path):  # stands in for start_hidden: the stand-in server comes up a moment later
@@ -1045,7 +1047,9 @@ class Dictation(unittest.TestCase):
                 k.server_close()
 
     def test_a_server_that_never_comes_up_ends_in_a_note(self):
-        script = os.path.join(tempfile.mkdtemp(prefix="claude-plus-test-reply-"), "server.py")
+        d = tempfile.mkdtemp(prefix="claude-plus-test-reply-")
+        self.addCleanup(shutil.rmtree, d, True)
+        script = os.path.join(d, "server.py")
         open(script, "w").close()
         d = ar.Dictation({"dictation_url": "http://127.0.0.1:%d" % free_port(), "dictation_server": script}.get,
                          None, lambda path: None)

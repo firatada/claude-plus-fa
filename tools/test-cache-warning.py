@@ -12,7 +12,7 @@
 # Run: python -I tools/test-cache-warning.py
 # Times are fake (no waiting); the .pyw is never imported (its one-instance mutex would raise the running panel): the
 # functions are taken out by ast. winsound is a fake, so nothing plays.
-import ast, datetime, json, os, re, sys, tempfile, types, unittest
+import ast, datetime, json, os, re, shutil, sys, tempfile, types, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -65,6 +65,7 @@ class Fake:
 class CacheWarning(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-cache-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.p = panel(self.tmp)
         self.played = []
         fake = types.ModuleType("winsound")

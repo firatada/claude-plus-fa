@@ -10,7 +10,7 @@
 # Run: python -I tools/test-settings.py
 # The .pyw is never imported (its one-instance mutex would raise the running panel): the functions are taken out by
 # ast. Every path is on a temp folder; subprocess is a fake, so no scheduled task is made and Drive is never touched.
-import ast, importlib.util, json, os, subprocess, sys, tempfile, threading, unittest
+import ast, importlib.util, json, os, shutil, subprocess, sys, tempfile, threading, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -73,6 +73,7 @@ def real_drive_pause(local):
 class Settings(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-settings-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         with open(os.path.join(self.tmp, "drive-pause.py"), "w", encoding="utf-8") as f:
             f.write(FAKE_DRIVE)
         self.proc = Proc()

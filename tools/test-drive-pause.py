@@ -11,11 +11,12 @@
 # Run: python -I tools/test-drive-pause.py
 # drive-pause.py is loaded as a module with every path on a temp folder; processes, Drive, schtasks and spawning are
 # fakes: no real process is started, stopped or touched, and no scheduled task is made.
-import importlib.util, json, os, sys, tempfile, time, unittest
+import atexit, importlib.util, json, os, shutil, sys, tempfile, time, unittest
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TMP = tempfile.mkdtemp(prefix="claude-plus-test-drive-")
+atexit.register(shutil.rmtree, TMP, True)
 
 
 def load():
