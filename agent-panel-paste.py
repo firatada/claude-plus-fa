@@ -32,6 +32,8 @@ MODS = {CTRL_V: 0x0002, ALT_V: 0x0001}  # MOD_CONTROL, MOD_ALT (exact: Ctrl+Shif
 VK_V, VK_CONTROL, VK_MENU = 0x56, 0x11, 0x12
 REARM = 0.08           # seconds the hotkeys stay off after passing a key through, while Windows delivers it
 READ_WAIT = 2.0        # seconds the terminal gets to read the path before the clipboard comes back anyway
+PIECE_GAP = 0.5        # seconds between two pastes of one typing request: Claude Code takes one before the next comes
+                       # (a picture's path pasted alone turns into [Image #N] there; 0.3 s was measured enough)
 CHECK_EVERY = 1000     # ms: the foreground and the panel's list looked at again (a missed event, a new session)
 CLAUDE_TITLE = re.compile(r"^[^\w\s]{1,2}\s+\S")  # Claude Code titles its tab "<status glyph> <name>"
 CF_BITMAP, CF_DIB, CF_DIBV5, CF_UNICODETEXT, CF_ENHMETAFILE = 2, 8, 17, 13, 14
@@ -413,8 +415,11 @@ class Keys:
         window and shows a Claude Code tab. Returns TYPED_STARTED (the paste runs on a thread) or why not."""
         try:
             d = json.loads(data.decode("utf-8"))
-            rid, target, text = int(d["id"]), int(d["hwnd"]), str(d["text"])
+            rid, target = int(d["id"]), int(d["hwnd"])
+            pieces = [str(x) for x in d["pieces"]] if "pieces" in d else [str(d["text"])]
         except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            return TYPED_BAD
+        if not pieces:
             return TYPED_BAD
         if self.busy or self.closing:
             return TYPED_BUSY
@@ -426,23 +431,34 @@ class Keys:
         self.unreg()
         self.typed = {k: v for k, v in self.typed.items() if k > rid - 20}
         self.typed[rid] = TYPED_PENDING
-        threading.Thread(target=self.type_text, args=(rid, target, text), daemon=True).start()
+        threading.Thread(target=self.type_text, args=(rid, target, pieces), daemon=True).start()
         return TYPED_STARTED
 
-    def type_text(self, rid, target, text):
-        """On a thread of its own: the text pasted into the terminal in front, the clipboard put back."""
+    def type_text(self, rid, target, pieces):
+        """On a thread of its own: the pieces pasted into the terminal in front, one paste each, in order (Send to
+        Session pastes a picture's path alone where it stands, so Claude Code attaches it there), PIECE_GAP apart;
+        then the clipboard put back. It stops at a piece the terminal did not read or once the terminal left the
+        front."""
         done = TYPED_FAILED
         try:
             saved, lost = save_clip(self.hwnd)
             if saved is None:
                 self.log("type", "clipboard busy")
                 return
-            if user32.GetForegroundWindow() != target or not self.set_path(text, target):
-                self.log("type", "front changed")
-                return
-            send_keys(keys_for(CTRL_V, held(VK_CONTROL), held(VK_MENU), paste=True))
-            read = self.rendered.wait(READ_WAIT)
-            self.log("type", ("read" if read else "not read") + ", " + self.restore(saved), "%d characters" % len(text))
+            n = 0
+            for k, text in enumerate(pieces):
+                if k:
+                    time.sleep(PIECE_GAP)
+                if user32.GetForegroundWindow() != target or not self.set_path(text, target):
+                    self.log("type", "front changed at piece %d of %d" % (k + 1, len(pieces)))
+                    break
+                send_keys(keys_for(CTRL_V, held(VK_CONTROL), held(VK_MENU), paste=True))
+                if not self.rendered.wait(READ_WAIT):
+                    break
+                n += 1
+            read = n == len(pieces)
+            self.log("type", ("read" if read else "not read") + ", " + self.restore(saved),
+                     "%d characters in %d of %d pieces" % (sum(len(x) for x in pieces[:n]), n, len(pieces)))
             done = TYPED_READ if read else TYPED_FAILED
         except Exception as e:
             self.log("type error", repr(e))

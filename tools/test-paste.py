@@ -188,6 +188,35 @@ class State(unittest.TestCase):
         self.assertTrue(k.check(TERM))
         self.assertEqual(logged[0][1], [pp.CTRL_V])
 
+    def test_a_typing_request_pastes_its_pieces_one_after_another(self):
+        # Send to Session: the text up to a picture, the picture's path alone, the rest; one Ctrl+V each, in order,
+        # PIECE_GAP apart, the clipboard saved once and put back once (stand-ins for the clipboard and the keys)
+        names = ("save_clip", "send_keys", "PIECE_GAP")
+        old = {n: getattr(pp, n) for n in names}
+        old_fg = pp.user32.GetForegroundWindow
+        pasted, front = [], {"h": TERM}
+        try:
+            pp.save_clip = lambda h: ([], [])
+            pp.send_keys = lambda keys: pasted.append(self.k.text) or self.k.rendered.set()
+            pp.PIECE_GAP = 0.01
+            pp.user32.GetForegroundWindow = lambda: front["h"]
+            self.k.set_path = lambda text, target: setattr(self.k, "text", text) or self.k.rendered.clear() or True
+            self.k.restore = lambda saved: pasted.append("restored") or "restored"
+            self.k.hwnd = 0
+            self.k.type_text(7, TERM, ["My answer: this ", r"C:\s\one.png", " and that"])
+            self.assertEqual(pasted, ["My answer: this ", r"C:\s\one.png", " and that", "restored"])
+            self.assertEqual(self.k.typed[7], pp.TYPED_READ)
+            pasted.clear()
+            self.k.set_path = lambda text, target: (front.update(h=OTHER) if text.endswith(".png") else None) or \
+                setattr(self.k, "text", text) or self.k.rendered.clear() or True
+            self.k.type_text(8, TERM, ["a ", r"C:\s\one.png", " b"])  # the terminal left the front: it stops there
+            self.assertEqual(pasted, ["a ", r"C:\s\one.png", "restored"])
+            self.assertEqual(self.k.typed[8], pp.TYPED_FAILED)
+        finally:
+            for n, v in old.items():
+                setattr(pp, n, v)
+            pp.user32.GetForegroundWindow = old_fg
+
     def test_render_only_for_the_terminal(self):
         put, pid_of = pp.put, pp.pid_of
         given = []

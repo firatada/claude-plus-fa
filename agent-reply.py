@@ -3,7 +3,9 @@
 # kept per session until they are sent; the replies pinned per session; the text Send to Session pastes into the
 # session's prompt (each reply answered, whole, with the answers inside it), which Copy puts on the clipboard;
 # Holding Space dictates through a local speech-to-text server (Dictation). A picture or file pasted or dropped into an
-# answer box goes with its answer as a path (with_files(), image_tail(); pictures saved by clip_files() in FILES).
+# answer box stands in its text where it went in, as a token (TOKEN) holding its path; it goes out as its number there
+# and its path after the answer (with_files(), image_tail(); Send to Session pastes each picture's path alone in its
+# place, send_pieces()); pictures saved by clip_files() in FILES.
 #
 # A reply is the text of one main-thread assistant message that ended its turn (stop_reason "end_turn"): its text
 # blocks, joined. Not a reply: thinking, tool calls and their results, the text Claude writes between tool calls
@@ -22,6 +24,10 @@ FILES = os.path.join(os.path.expanduser("~"), ".claude", "state", "agent-panel",
 FILE_KEEP = 24 * 3600   # seconds a saved picture outlives the last answer holding it (sweep_files())
 FILES_MAX = 20          # pictures and files one answer holds
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")  # what Claude Code attaches when a pasted line is only its path
+# A picture or file inside an answer's text, where it was pasted or dropped: its path between two private-use marks
+# (the page's chip; agent-reply.html TOK). PIECE marks a picture Send to Session pastes alone in that place.
+TOKEN = re.compile("\ue000([^\ue000\ue001]+)\ue001")
+PIECE = re.compile("\ue002([^\ue002\ue003]+)\ue003")
 PIN_MAX = 8            # pinned replies per session
 MARKER = re.compile(r"(?<!\S):(\d+)(?!\S)")  # a ":N" as quote-reply.py reads it
 HEAD = 'My answers inside %s (your reply is quoted with "> ", my answers start with "My answer"):'
@@ -227,30 +233,86 @@ def file_kind(path):
     return "image" if str(path).lower().endswith(IMAGE_EXT) else "file"
 
 
-def with_files(text, files, images):
-    """An answer's text as it goes out, with one line per picture or file of its box after it, in the box's order:
-    "[Image N: <path>]" (N counts the pictures of the whole paste, images, which this extends) or "[File: <path>]".
-    Such a line holds text besides the path, so Claude Code keeps it as text, where it stands (2.1.332, measured)."""
-    lines = []
-    for p in files_of(files):
-        if file_kind(p) == "image":
-            if p not in images:
-                images.append(p)
-            lines.append("[Image %d: %s]" % (images.index(p) + 1, p))
-        else:
-            lines.append("[File: %s]" % p)
-    t = (text or "").rstrip()
-    return "\n".join(([t] if t.strip() else []) + lines)
+def tokens(text):
+    """The paths of the pictures and files standing in an answer's text, in reading order (repeats kept)."""
+    return [m.group(1) for m in TOKEN.finditer(text or "")]
 
 
-def image_tail(text, images):
-    """The end of a paste holding pictures: each picture's path alone on a line, in the order with_files() numbered
-    them (quoted when it holds a space, as Windows Terminal drops one). Claude Code takes such a line out of the
-    pasted text and attaches the picture as [Image #N] (shown before the text), so Claude sees it as a picture pasted
-    in the terminal; the "[Image N: <path>]" line says where it belongs."""
+def with_legacy(text, files):
+    """An answer's text with every path of files (a draft written before 2026-11-27 kept them in a list beside its
+    text) that does not stand in it put at its end, in their order."""
+    t, have = text or "", set(tokens(text))
+    extra = ["\ue000%s\ue001" % p for p in files_of(files) if p not in have]
+    if not extra:
+        return t
+    return (t.rstrip() + " " if t.strip() else "") + " ".join(extra)
+
+
+def numbers():
+    """The numbering of what one paste or copy sends: pictures and files counted apart, in reading order."""
+    return {"image": [], "file": []}
+
+
+def number_of(path, num):
+    """The path's number in num (its kind's list, which this extends; the same path keeps its number)."""
+    seen = num[file_kind(path)]
+    if path not in seen:
+        seen.append(path)
+    return seen.index(path) + 1
+
+
+def with_files(text, files, num, split=False):
+    """An answer's text as it goes out: each picture or file where it stands, as its number ("[Image 1]", "[File 1]";
+    num numbers them through everything sent at once), then one line per picture and file naming its path, in
+    reading order ("[Image 1: <path>]"). Such a line holds text besides the path, so Claude Code keeps it as text
+    (2.1.332, measured). files: an older draft's list, put at the end of its text (with_legacy()). split (Send to
+    Session): a picture stands as a PIECE mark, where send_pieces() pastes its path alone, so Claude Code attaches it
+    as its own [Image #N] in that very place (measured 2026-11-27); it gets no number and no naming line."""
+    t = with_legacy(text, files).strip()
+    names = []
+
+    def put(m):
+        p = m.group(1)
+        if split and file_kind(p) == "image":
+            return "\ue002%s\ue003" % p
+        label = "%s %d" % ("Image" if file_kind(p) == "image" else "File", number_of(p, num))
+        if label not in [n[0] for n in names]:
+            names.append((label, p))
+        return "[%s]" % label
+    body = TOKEN.sub(put, t)
+    return "\n".join(([body] if body.strip() else []) + ["[%s: %s]" % n for n in names])
+
+
+def image_tail(text, num):
+    """The end of a copy holding pictures: each picture's path alone on a line, in their numbers' order (quoted when
+    it holds a space, as Windows Terminal drops one). Pasted into Claude Code, such a line is taken out of the text
+    and the picture attached as [Image #N] (shown before the text); the "[Image N: <path>]" line says where it
+    belongs. num: numbers() as with_files() filled it (or a plain list of the pictures' paths)."""
+    images = num["image"] if isinstance(num, dict) else num
     if not text or not images:
         return text
-    return text + "\n\n" + "\n".join('"%s"' % p if " " in p else p for p in images)
+    return text + "\n\n" + "\n".join(quote_path(p) for p in images)
+
+
+def quote_path(p):
+    """A path as a paste of it alone must read: quoted when it holds a space."""
+    return '"%s"' % p if " " in p else p
+
+
+def send_pieces(text):
+    """What Send to Session pastes, one paste after another: the text up to a picture, the picture's path alone, the
+    text after it, ... (PIECE marks from with_files(split=True)). A path pasted alone becomes Claude Code's [Image #N]
+    at the caret, inside the sentence, and Claude sees that picture there (measured 2026-11-27 on 2.1.332: the
+    words before each of two pictures named right, also after a folded [Pasted text #N])."""
+    out, at = [], 0
+    for m in PIECE.finditer(text or ""):
+        if m.start() > at:
+            out.append(text[at:m.start()])
+        out.append(quote_path(m.group(1)))
+        at = m.end()
+    if at < len(text or ""):
+        out.append(text[at:])
+    return [x for x in out if x]
 
 
 def save_picture(im, folder=None, now=None):
@@ -314,11 +376,12 @@ def picture_from_data(url, folder=None):
 
 
 def sweep_files(data, folder=None, now=None, keep=FILE_KEEP):
-    """The pictures saved in FILES that no answer holds any more go once they are keep seconds old (the session may
-    still read a path it was sent for a while). data: the drafts' store ({sid: {key: answer}}). Answers how many went."""
+    """The pictures saved in FILES that no answer holds any more go keep seconds after an answer last held them (each
+    sweep renews the time of those held), so a picture taken out of a box is there for undo and for the session that
+    may still read a path it was sent. data: the drafts' store ({sid: {key: answer}}). Answers how many went."""
     folder, now = folder or FILES, now or time.time()
     held = {os.path.normcase(os.path.abspath(p)) for d in (data or {}).values() for a in (d or {}).values()
-            if isinstance(a, dict) for p in a.get("files") or []}
+            if isinstance(a, dict) for p in list(a.get("files") or []) + tokens(a.get("text"))}
     gone = 0
     try:
         names = os.listdir(folder)
@@ -327,7 +390,10 @@ def sweep_files(data, folder=None, now=None, keep=FILE_KEEP):
     for n in names:
         p = os.path.join(folder, n)
         try:
-            if os.path.normcase(os.path.abspath(p)) in held or not os.path.isfile(p) or now - os.path.getmtime(p) < keep:
+            if os.path.normcase(os.path.abspath(p)) in held:
+                os.utime(p, (now, now))  # held now: once taken out (undo can bring its chip back) it is kept keep more
+                continue
+            if not os.path.isfile(p) or now - os.path.getmtime(p) < keep:
                 continue
             os.remove(p)
             gone += 1

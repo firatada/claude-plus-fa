@@ -446,6 +446,7 @@ REPLY_BELOW = 8        # logical pixels the reply window keeps from the work are
 REPLY_MIN_W, REPLY_MIN_H = 540, 240  # logical px, the smallest the user can size it: the bottom bar whole at its longest
                        # count (530 measured), one row of tabs, the bottom bar and 3 lines of replies (69 px) between
 SEND_WAIT = 4          # seconds Send to Session waits for the terminal to read the line it pastes
+PIECE_WAIT = 1.5       # seconds more for each paste after the first (agent-panel-paste.py PIECE_GAP and the read)
 DROP_WAIT = 1.0        # seconds a drop on an answer box waits for WebView2 to hand pywebview the dropped files' paths
 SWEEP_EVERY = 600      # seconds between two sweeps of the pictures pasted into answer boxes (agent-reply.py sweep_files())
 SEND_FRONT = 1.5       # seconds it gives the terminal to be in front, on top and showing the session's tab
@@ -3310,15 +3311,16 @@ class ReplyApi:
         # of this area answered; the copy is made only while the clipboard still holds it (None: something else was
         # copied since). Answers the new sequence number, or False when the clipboard is busy.
         try:
-            mod, rows, images = self._p.reply_mod, [], []
+            mod, rows = self._p.reply_mod, []
+            num = mod.numbers()
             for a in answers or []:
                 try:
                     line = int(a.get("line"))
                 except (TypeError, ValueError):
                     line = -1
-                rows.append((line, str(a.get("passage") or ""), mod.with_files(str(a.get("text") or ""), a.get("files"), images),
+                rows.append((line, str(a.get("passage") or ""), mod.with_files(str(a.get("text") or ""), a.get("files"), num),
                              mod.area_size(str(a.get("key") or "").rpartition("#")[2])))
-            out = mod.image_tail(mod.area_copy(str(text or ""), rows), images)
+            out = mod.image_tail(mod.area_copy(str(text or ""), rows), num)
             return bool(out) and mod.set_clipboard_text(out, None if expect is None else int(expect))
         except Exception:
             return False
@@ -5381,15 +5383,17 @@ class Panel:
         while len(self.reply_seen) > SEEN_MAX:
             self.reply_seen.pop(next(iter(self.reply_seen)))
 
-    def reply_text(self, sid, answers):
+    def reply_text(self, sid, answers, split=False):
         """What Send to Session pastes and Copy copies: each reply answered, in the order its answers come
         ([{key "<message id>#<block>", passage, text, line}], as the page's sendList() gives them), its text as the
         window was handed it (reply_seen, by message id) with the answers inside it (agent-reply.py format_answered_replies()).
         A key "<message id>#" (no block: the page's toSend() with no answer typed) names a reply sent as it is; a key
         "<message id>#<a>-<b>" an area answered as a whole (its blocks a to b, agent-reply.py area_size()). An
-        answer's pictures and files go as lines after its text (with_files()), the pictures' paths again at the end,
-        each alone on a line, for Claude Code to attach them (image_tail())."""
-        mod, order, by, images = self.reply_mod, [], {}, []
+        answer's pictures and files stand where they are in it as their numbers, named with their paths after its
+        text (with_files()), the pictures' paths again at the end, each alone on a line, for Claude Code to attach them
+        (image_tail()). split (Send to Session): each picture is left as a mark where it stands instead, for
+        send_pieces() to paste its path alone there."""
+        mod, order, by, num = self.reply_mod, [], {}, self.reply_mod.numbers()
         for a in answers:
             rid, _, block = str(a.get("key") or "").rpartition("#")
             if rid not in by:
@@ -5401,13 +5405,14 @@ class Panel:
                 line = int(a.get("line"))
             except (TypeError, ValueError):
                 line = -1
-            by[rid].append((line, str(a.get("passage") or ""), mod.with_files(str(a.get("text") or ""), a.get("files"), images),
-                            mod.area_size(block)))
+            by[rid].append((line, str(a.get("passage") or ""),
+                            mod.with_files(str(a.get("text") or ""), a.get("files"), num, split), mod.area_size(block)))
         groups = []
         for rid in order:
             text, at = self.reply_seen.get((sid, rid)) or (None, None)
             groups.append((text, mod.when_of(at), by[rid]))
-        return mod.image_tail(mod.format_answered_replies(groups), images)
+        out = mod.format_answered_replies(groups)
+        return out if split else mod.image_tail(out, num)
 
     def reply_send(self, sid, answers):
         """Send to Session: each reply answered, whole, with the answers inside it (reply_text()), pasted into the
@@ -5419,9 +5424,10 @@ class Panel:
             return err("That session is closed. Use Copy and paste it where you need it.")
         if not self.reply_mod:
             return err("The reply rules did not load. Use Copy.")
-        text = self.reply_text(sid, answers)
+        text = self.reply_text(sid, answers, split=True)
         if not text:
             return err("There is no reply here yet.")
+        pieces = self.reply_mod.send_pieces(text)  # each picture's path pasted alone where it stands
         h = paste_window()
         if not h:
             return err('The paste key is not running ("paste_keys" is off), so nothing can be pasted. Use Copy.')
@@ -5435,7 +5441,7 @@ class Panel:
                                self.shared(s, hwnd))
         sent = [a for a in answers if str(a.get("text") or "").strip() or a.get("files")]
         send_log("send", sid[:8], "answers %d" % len(sent), "files %d" % sum(len(a.get("files") or []) for a in sent),
-                 "characters %d" % len(text), "lines %d" % (text.count("\n") + 1))
+                 "characters %d" % len(text), "lines %d" % (text.count("\n") + 1), "pastes %d" % len(pieces))
         focus_session(s, self.other_names(s))
         start = time.time()
         again = True
@@ -5452,7 +5458,7 @@ class Panel:
             return err("Could not bring the terminal of %s to the front: %s. Use Copy." % (name, why))
         time.sleep(SEND_SETTLE)
         rid = int(time.time() * 1000) % 2000000000
-        data = json.dumps({"id": rid, "hwnd": int(hwnd), "text": text}).encode("utf-8")
+        data = json.dumps({"id": rid, "hwnd": int(hwnd), "pieces": pieces}).encode("utf-8")
         buf = ctypes.create_string_buffer(data, len(data))
         cds = COPYDATASTRUCT(TYPE_TEXT, len(data), ctypes.cast(buf, ctypes.c_void_p))
         res = ctypes.c_size_t()
@@ -5462,7 +5468,7 @@ class Panel:
                    4: "its window shows no Claude Code tab"}.get(res.value, "the paste key did not answer")
             send_log("paste key", why)
             return err("Could not paste it: %s. Use Copy." % why)
-        got, end = 0, time.time() + SEND_WAIT
+        got, end = 0, time.time() + SEND_WAIT + PIECE_WAIT * (len(pieces) - 1)
         while time.time() < end and not got:
             time.sleep(0.05)
             r = ctypes.c_size_t()
