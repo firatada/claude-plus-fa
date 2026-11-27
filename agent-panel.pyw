@@ -861,8 +861,8 @@ def parse(path):
         if o.get("cwd") and o["cwd"] not in info["cwds"]:
             info["cwds"].append(o["cwd"])
         if not info["first"] and o.get("type") == "user" and not o.get("isMeta") and not o.get("isSidechain"):
-            t = " ".join(text_of(o.get("message")).split())
-            if t and not t.startswith("<") and not t.startswith("This session is being continued"):
+            t = " ".join((prompt_words(text_of(o.get("message"))) or "").split())
+            if t and not t.startswith("This session is being continued"):
                 info["first"] = t[:160]
     for m in re.finditer(rb'"cwd":"((?:[^"\\]|\\.)*)"', tail):
         try:
@@ -1927,6 +1927,22 @@ def arrange(rows, path, sid, cache):
     return out
 
 
+# Claude Code (seen from 2.1.278 on) stores a pasted text inside the prompt wrapped as
+# <pasted_content id="ab12">\n...\n</pasted_content id="ab12">; a prompt that starts with a paste then starts with "<"
+# like its own system lines. The wrapper is the user's prompt; its words are what it holds.
+PASTED = re.compile(r'<pasted_content(?: id="([^"]*)")?>\n?(.*?)\n?</pasted_content(?: id="\1")?>', re.S)
+
+
+def prompt_words(t):
+    """The words of a user line's text when they are a prompt: pasted blocks unwrapped, typed text around them
+    kept; None for a line Claude Code writes itself in a tag (command output, a system reminder, a task's
+    notification) or an empty one."""
+    t = (t or "").replace("\ufeff", "").strip()
+    if not t or t.startswith("<") and not t.startswith("<pasted_content"):
+        return None
+    return PASTED.sub(lambda m: m.group(2), t).strip() or None
+
+
 def flat(t):
     """A prompt as one line of words (whitespace collapsed) cut at PEEK_CHARS; None when empty."""
     t = " ".join((t or "").replace("\ufeff", "").split())  # a prompt pasted from a file can start with a BOM
@@ -1954,9 +1970,9 @@ def typed_prompt(o):
     if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c):
         return None
     t = text_of(o.get("message")).strip()
-    if not t or t.startswith("<") or t.startswith("This session is being continued") or t.startswith("[Request interrupted"):
+    if t.startswith("This session is being continued") or t.startswith("[Request interrupted"):
         return None
-    return flat(t)
+    return flat(prompt_words(t))
 
 
 def last_prompt(path, cache):

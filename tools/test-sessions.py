@@ -11,7 +11,7 @@ import ast, ctypes, datetime, json, msvcrt, os, re, shutil, tempfile, time, unit
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 NAMES = ("TURN_LINE", "AT_LOOK", "HOME_LOOK", "USAGE_LINE", "CACHE_LOOK", "cache_of", "SESSION_FILE", "CWD", "RESUME", "CREATE_NEW_CONSOLE",
-         "text_of", "last_at", "parse", "slug", "find_home", "home_of", "scan", "folder_exists", "clean", "open_session")
+         "text_of", "PASTED", "prompt_words", "last_at", "parse", "slug", "find_home", "home_of", "scan", "folder_exists", "clean", "open_session")
 SID = "0f0f0f0f-1111-2222-3333-444444444444"
 HOME = "\\\\host\\share\\proj"      # where the session lives now (a UNC folder, as a WSL project is)
 OLD = "C:\\gone\\proj"              # where it started, long gone
@@ -75,6 +75,14 @@ class Discovery(unittest.TestCase):
         self.assertEqual(len(s), 1)
         self.assertEqual(s[0]["cwd"], HOME)  # before the fix: OLD, so the card sat under "folder deleted"
         self.assertEqual(s[0]["folder"], "proj")
+
+    def test_a_session_that_starts_with_a_paste_is_named_by_it(self):
+        pasted = '\n\n<pasted_content id="6f11">\nThree live sites: registrar moves\n</pasted_content id="6f11">\n\n --- where does https come from?'
+        with open(self.path, "wb") as f:
+            f.write(line(HOME, "user", "<command-name>/model</command-name>"))
+            f.write(line(HOME, "user", pasted))
+        self.assertEqual(self.ns["parse"](self.path)["first"],
+                         "Three live sites: registrar moves --- where does https come from?")
 
     def test_searched_once_per_file(self):
         self.write_moved()

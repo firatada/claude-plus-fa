@@ -406,7 +406,7 @@ class LastActivity(unittest.TestCase):
     DAY = 86400
 
     def setUp(self):
-        self.ns = pyw_functions("scan", "parse", "text_of", "last_at", "TURN_LINE", "AT_LOOK", "SESSION_FILE",
+        self.ns = pyw_functions("scan", "parse", "text_of", "prompt_words", "PASTED", "last_at", "TURN_LINE", "AT_LOOK", "SESSION_FILE",
                                 "slug", "home_of", "find_home", "CWD", "HOME_LOOK", "cache_of", "USAGE_LINE",
                                 "CACHE_LOOK", cls_methods=("update_live",))
         self.tmp = tempfile.mkdtemp(prefix="cpfa-at-")

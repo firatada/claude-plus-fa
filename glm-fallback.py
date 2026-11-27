@@ -489,6 +489,21 @@ def codex_cost(o):
     return n
 
 
+# Claude Code (seen from 2.1.278 on) stores a pasted text inside the prompt wrapped as
+# <pasted_content id="ab12">\n...\n</pasted_content id="ab12">; a prompt that starts with a paste then starts with "<"
+# like its own system lines. The wrapper is the user's prompt; its words are what it holds.
+PASTED = re.compile(r'<pasted_content(?: id="([^"]*)")?>\n?(.*?)\n?</pasted_content(?: id="\1")?>', re.S)
+
+
+def prompt_words(t):
+    """The words of a user line's text when they are a prompt: pasted blocks unwrapped, typed text around them
+    kept; None for a line Claude Code writes itself in a tag (command output, a system reminder) or an empty one."""
+    t = (t or "").replace("\ufeff", "").strip()
+    if not t or t.startswith("<") and not t.startswith("<pasted_content"):
+        return None
+    return PASTED.sub(lambda m: m.group(2), t).strip() or None
+
+
 def is_prompt(o):
     """A prompt the user typed: where a turn starts (not a tool result, a meta line or a compaction summary)."""
     msg = o.get("message")
@@ -676,8 +691,8 @@ def session_name(transcript):
             except ValueError:
                 continue
             if o.get("type") == "user" and not o.get("isMeta") and not o.get("isSidechain"):
-                t = " ".join(text_of((o.get("message") or {}).get("content")).split())
-                if t and not t.startswith("<") and not t.startswith("This session is being continued"):
+                t = " ".join((prompt_words(text_of((o.get("message") or {}).get("content"))) or "").split())
+                if t and not t.startswith("This session is being continued"):
                     name = t[:160]
                     break
     return " ".join(str(name or "").split())

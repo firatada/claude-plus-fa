@@ -161,6 +161,13 @@ class Names(unittest.TestCase):
         self.assertEqual(fb.session_name(self.transcript([meta, u])), "make the news video")
         self.assertEqual(fb.session_name(os.path.join(TMP, "none.jsonl")), "")
 
+    def test_a_session_that_starts_with_a_paste(self):
+        u = {"type": "user", "message": {"role": "user", "content":
+             '\n\n<pasted_content id="89a2">\nC:\\work\\loan\n</pasted_content id="89a2">\n\n bu klasorde cmd acamiyorum'}}
+        self.assertEqual(fb.session_name(self.transcript([u])), "C:\\work\\loan bu klasorde cmd acamiyorum")
+        cmd = {"type": "user", "message": {"role": "user", "content": "<command-name>/model</command-name>"}}
+        self.assertEqual(fb.session_name(self.transcript([cmd, u])), "C:\\work\\loan bu klasorde cmd acamiyorum")
+
     def test_window_name(self):
         self.assertEqual(fb.window_name('a "b" & c | 50% <x>'), "a b  c  50 x")
 

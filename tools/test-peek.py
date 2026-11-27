@@ -10,8 +10,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 FT_EPOCH = 116444736000000000
 CONSTS = ("PEEK_TAIL", "PEEK_MORE", "PEEK_CHARS", "BG_TAIL", "LATE", "BG_START", "BG_END", "KIND",
-          "CHAIN_STEP", "CHAIN_MAX", "RUN_WAIT", "UUID_OF", "STAMP", "QUIET")
-FUNCS = ("text_of", "flat", "typed_prompt", "last_prompt", "bg_commands", "late_child", "subagents", "stamp", "back",
+          "CHAIN_STEP", "CHAIN_MAX", "RUN_WAIT", "UUID_OF", "STAMP", "QUIET", "PASTED")
+FUNCS = ("text_of", "prompt_words", "flat", "typed_prompt", "last_prompt", "bg_commands", "late_child", "subagents", "stamp", "back",
          "chain_prompt", "blocks", "call_of", "workflow_of", "shell_of", "settled", "wf_run", "agent_meta",
          "agent_trigger", "run_trigger", "flow_name", "arrange")
 
@@ -509,6 +509,97 @@ class Peek(unittest.TestCase):
         self.assertEqual(self.ns["peek"](panel, "S"), {"id": "S", "groups": [
             {"prompt": "Old work", "last": True, "bg": []}]})
         self.assertIsNone(self.ns["peek"](panel, "nope"))
+
+
+# How Claude Code (2.1.278 to 2.1.332 seen) stores a prompt that holds a paste: the shapes below are copied from real
+# transcripts with their words replaced.
+PASTED_ONLY = '\n\n<pasted_content id="bd64">\nReference notes for later.\n\nsecond paragraph\n</pasted_content id="bd64">\n'
+TYPED_THEN_PASTE = 'o zaman sana promptunu veriyorum: \n\n<pasted_content id="aa9a">\nYou are given a task\n</pasted_content id="aa9a">\n'
+PASTE_THEN_TYPED = '\n\n<pasted_content id="f0e9">\nMy answers inside your reply of 21:06:\n\n> a quoted line\n</pasted_content id="f0e9">\n\n Buradan hareketle ne yazabiliriz?'
+TWO_PASTES = '\n\n<pasted_content id="a1">\nfirst block\n</pasted_content id="a1">\n\n and \n\n<pasted_content id="b2">\n<div>second</div>\n</pasted_content id="b2">\n'
+IMAGES_THEN_PASTE = [{"type": "text", "text": '[Image #1] [Image #2]\n\n<pasted_content id="190a">\nMy answers inside your reply of 23:10:\n> - red\n</pasted_content id="190a">\n\n For each answer say the colour.'},
+                     {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}]
+
+
+class Pasted(unittest.TestCase):
+    """A prompt that starts with a paste is the user's prompt; its words are what the wrapper holds."""
+
+    def setUp(self):
+        self.ns = load()
+        self.tmp = tempfile.mkdtemp(prefix="claude-plus-test-peek-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def typed(self, content, **kw):
+        return self.ns["typed_prompt"](dict({"type": "user", "message": {"role": "user", "content": content}}, **kw))
+
+    def test_the_words_inside_the_wrapper(self):
+        self.assertEqual(self.typed(PASTED_ONLY), "Reference notes for later. second paragraph")
+        self.assertEqual(self.typed(TYPED_THEN_PASTE), "o zaman sana promptunu veriyorum: You are given a task")
+        self.assertEqual(self.typed(PASTE_THEN_TYPED),
+                         "My answers inside your reply of 21:06: > a quoted line Buradan hareketle ne yazabiliriz?")
+        self.assertEqual(self.typed(TWO_PASTES), "first block and <div>second</div>")
+        self.assertEqual(self.typed(IMAGES_THEN_PASTE),
+                         "[Image #1] [Image #2] My answers inside your reply of 23:10: > - red For each answer say the colour.")
+
+    def test_system_lines_are_still_no_prompt(self):
+        for t in ("<command-name>/model</command-name>\n<command-message>model</command-message>",
+                  "<local-command-stdout>Set model to Opus</local-command-stdout>",
+                  "<bash-input>dir</bash-input>", "<bash-stdout>x</bash-stdout><bash-stderr></bash-stderr>",
+                  "<system-reminder>\nx\n</system-reminder>", "<task-notification>\n<task-id>a</task-id>",
+                  '\n\n<pasted_content id="e0">\n\n</pasted_content id="e0">\n', "   "):
+            self.assertIsNone(self.typed(t), t)
+        self.assertIsNone(self.typed(PASTED_ONLY, isMeta=True))
+        self.assertIsNone(self.typed(PASTED_ONLY, origin={"kind": "peer"}))
+
+    def test_last_prompt_is_the_pasted_one(self):
+        log = Log(time.time() - 600)
+        log.user("the evening before")
+        log.say("old reply")
+        p_id = log.user(PASTE_THEN_TYPED)["uuid"]
+        log.say("new reply")
+        path = os.path.join(self.tmp, "S.jsonl")
+        write(path, log.lines)
+        got = self.ns["last_prompt"](path, {})
+        self.assertEqual(got["id"], p_id)
+        self.assertTrue(got["text"].startswith("My answers inside your reply of 21:06"))
+
+    def test_a_pasted_prompt_queued_while_claude_works(self):
+        log = Log(time.time() - 60)
+        log.user("first")
+        q = log.add({"type": "attachment", "attachment": {"type": "queued_command", "commandMode": "prompt",
+                                                          "origin": {"kind": "human"}, "prompt": PASTED_ONLY}})
+        path = os.path.join(self.tmp, "S.jsonl")
+        write(path, log.lines)
+        self.assertEqual(self.ns["last_prompt"](path, {})["id"], q["uuid"])
+
+
+class Recall(unittest.TestCase):
+    """prompt-recall.py keeps what a pasted prompt holds for the status line, never the tags."""
+
+    def run_hook(self, prompt):
+        import subprocess, sys
+        home = tempfile.mkdtemp(prefix="claude-plus-test-recall-")
+        try:
+            env = dict(os.environ, USERPROFILE=home, HOME=home)
+            subprocess.run([sys.executable, "-I", os.path.join(ROOT, "prompt-recall.py")], env=env, timeout=30,
+                           input=json.dumps({"session_id": "S", "prompt": prompt}).encode("utf-8"), check=True)
+            p = os.path.join(home, ".claude", "state", "context", "S.prompt.json")
+            if not os.path.exists(p):
+                return None
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)["prompt"]
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_pasted_prompts(self):
+        self.assertEqual(self.run_hook(PASTED_ONLY), "Reference notes for later.\n\nsecond paragraph")
+        self.assertEqual(self.run_hook(PASTE_THEN_TYPED),
+                         "My answers inside your reply of 21:06:\n\n> a quoted line\n\n Buradan hareketle ne yazabiliriz?")
+        self.assertIsNone(self.run_hook("<task-notification>\n<task-id>a</task-id>"))
+        self.assertIsNone(self.run_hook("Keep-alive from claude-plus: reply only `ok`, do nothing else."))
+        self.assertEqual(self.run_hook("plain typed prompt"), "plain typed prompt")
 
 
 if __name__ == "__main__":

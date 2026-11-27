@@ -20,13 +20,13 @@ def pyw(*names):
     with open(os.path.join(ROOT, "agent-panel.pyw"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
     keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    keep += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "PEEK_CHARS" for t in n.targets)]
+    keep += [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("PEEK_CHARS",) + names for t in n.targets)]
     ns = {"re": re}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "agent-panel.pyw", "exec"), ns)
     return ns
 
 
-typed = pyw("typed_prompt", "text_of", "flat")["typed_prompt"]
+typed = pyw("typed_prompt", "text_of", "flat", "prompt_words", "PASTED")["typed_prompt"]
 n = [0]
 
 
@@ -122,6 +122,15 @@ class Replies(Base):
         self.add(user("one", 1), part("m1", text("Reply one."), "end_turn", 2), user("two", 3),
                  part("m2", text("Reply two."), "end_turn", 4))
         self.assertEqual(self.replies(), ["Reply two."])
+
+    def test_a_pasted_prompt_starts_afresh(self):
+        # Claude Code 2.1.278+ wraps a paste; a prompt starting with one was missed, so Latest kept the old reply
+        pasted = '\n\n<pasted_content id="f0e9">\nMy answers inside your reply of 22:39:\n> x\n</pasted_content id="f0e9">\n'
+        self.add(user("one", 1), part("m1", text("Reply one."), "end_turn", 2), user(pasted, 3))
+        t = ar.Transcript(self.path, typed)
+        self.assertEqual(self.replies(t), [])
+        self.assertEqual(t.prompt["text"], "My answers inside your reply of 22:39: > x")
+        self.assertEqual(t.prompt["at"], ar.stamp(ts(3)))
 
     def test_no_reply_yet(self):
         self.add(user("one", 1), part("m1", text("Reply one."), "end_turn", 2), user("two", 3),
