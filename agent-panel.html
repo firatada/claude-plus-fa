@@ -216,6 +216,21 @@ mark { background: var(--hit); color: inherit; border-radius: 2px; }
 }
 .say.up { animation-name: rise; }
 .say.up::before { top: auto; bottom: -5px; transform: rotate(225deg); }
+/* a session starting: a round bubble out of the card's hero, over the card's top-left corner (on top under the tab),
+   "Opening…" over the session's name; it covers whatever is there and catches no click */
+.say.think {
+  position: fixed; z-index: 6; max-width: min(220px, calc(100vw - 8px)); padding: 6px 14px 7px; border-radius: 18px;
+  pointer-events: none; transform-origin: var(--ox, 30px) 100%; animation: pop .18s var(--ease);
+}
+.say.think::before { display: none; }
+.say.think b { display: block; font-size: 11px; font-weight: 600; color: var(--violet); }
+.say.think span { display: block; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the trail of two small rounds from the bubble down to the hero's head, as a thought leaves it */
+.say.think i {
+  position: absolute; border-radius: 50%; background: var(--panel); border: 1px solid var(--line);
+  box-shadow: 0 2px 6px rgba(10, 26, 64, .12);
+}
+@keyframes pop { from { opacity: 0; transform: scale(.85); } }
 
 /* the set-aside section fades down into place when it is shown */
 .enter { animation: drop .16s var(--ease); }
@@ -656,7 +671,10 @@ function syncRegion() {
   const rs = [...document.querySelectorAll(".pop, .tip, .xbox, .say, #note:not(:empty), #drop.open, body.prefs #prefs")].map(e => {
     const r = parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0;
     return [e.offsetLeft, e.offsetTop, e.offsetWidth, e.offsetHeight, r].map(Math.round);
-  });
+  }).concat([...document.querySelectorAll(".say.think i")].map(e => {
+    const b = e.getBoundingClientRect();
+    return [b.left, b.top, b.width, b.height, b.width / 2].map(Math.round);
+  }));
   const k = JSON.stringify(rs);
   // pywebview puts an empty window.pywebview.api in place before it adds the methods: calling region()
   // in that gap threw inside the frame loop, which then stopped for good (no menu, list or tooltip
@@ -989,7 +1007,9 @@ function render() {
       }
       if (bubble) {
         const card = [...document.querySelectorAll(".card[data-id]")].find(c => c.dataset.id === bubble.dataset.for);
-        if (card) { bubble.style.animation = "none"; if (!top) list.append(bubble); placeSay(bubble, card); } else sayGone();
+        if (!card) sayGone();
+        else if (bubble.classList.contains("think")) { bubble.style.animation = "none"; placeThink(bubble, card); }
+        else { bubble.style.animation = "none"; if (!top) list.append(bubble); placeSay(bubble, card); }
       }
       if (revealing) els.forEach(e => { if (!before.has(e)) { e.classList.remove("enter"); void e.offsetWidth; e.classList.add("enter"); } });
       glide(els, was);
@@ -998,6 +1018,9 @@ function render() {
     if (tip && !document.body.contains(tipTarget)) tipHide();
   }
   fit();
+  // the bubble of a session starting goes once its card shows the session open
+  const th = document.querySelector(".say.think"), ths = th && find(th.dataset.for);
+  if (th && (!ths || ths.status)) { clearTimeout(sayJob); th.remove(); }
   if (scrollToAside && rest.length && !top) {
     scrollToAside = false;
     const r = $("sect").getBoundingClientRect(), l = list.getBoundingClientRect();
@@ -1119,7 +1142,58 @@ function say(card, text, err, wait) {
   // a success leaves by itself; an error stays until the next click or Esc
   if (!err && !wait) sayJob = setTimeout(sayGone, 5000);
 }
-const reply = card => r => r && say(card, r.t, r.err);
+const reply = card => r => r && (r.opening ? think(card, r) : say(card, r.t, r.err));
+// the longest a bubble waits for its session to show open: agent-panel.pyw LAUNCH_WAIT, after which a launch counts
+// as over there too
+const THINK_WAIT = 8000;
+// "Opening…" over the card's name, in a bubble out of the card's hero; it goes once the card shows the session open
+// (render()), at the next click or Esc, or after THINK_WAIT
+function think(card, r) {
+  const s = card && find(card.dataset.id);
+  if (!s || !document.body.contains(card)) return say(card, r.t, r.err);
+  announce(r.t);
+  sayGone();
+  const b = document.createElement("div");
+  b.className = "say think";
+  b.dataset.for = s.id;
+  b.innerHTML = "<b></b><span></span><i></i><i></i>";
+  b.querySelector("b").textContent = r.opening;
+  b.querySelector("span").textContent = s.title;
+  document.body.append(b);
+  placeThink(b, card);
+  sayJob = setTimeout(sayGone, THINK_WAIT);
+}
+// The bubble sits up and to the left of the hero's head, as far left as the window allows, its lower edge just above
+// the card's title row; on top, where nothing is above a tab, it hangs under the tab. Two rounds lead from its edge to
+// the head. It never leaves the window, the top card's included.
+function placeThink(b, card) {
+  const av = card.querySelector(".av:not([hidden])"), r = (av || card).getBoundingClientRect();
+  const w = b.offsetWidth, h = b.offsetHeight, top = onTop();
+  // the head: the figure's upper middle (head and cap take the top two thirds of the drawing)
+  const hx = av ? r.left + r.width / 2 : r.left + 20, hy = av ? r.top + r.height * (top ? .9 : .22) : r.top + 10;
+  const x = Math.max(4, Math.min(hx - 46, innerWidth - w - 4));
+  const y = top ? Math.min(hy + 14, innerHeight - h - 4) : Math.max(4, hy - 14 - h);
+  b.style.left = x + "px";
+  b.style.top = y + "px";
+  // the trail leaves the bubble's edge nearest the head and ends just short of it
+  const ax = Math.max(x + 18, Math.min(hx - 16, x + w - 18)), ay = top ? y : y + h;
+  const ex = hx - 5, ey = top ? hy + 3 : hy - 4;
+  b.style.transformOrigin = `${ax - x}px ${top ? "0" : "100%"}`;
+  b.querySelectorAll("i").forEach((d, k) => {
+    const f = k ? .78 : .38, size = k ? 5 : 8;
+    d.style.width = d.style.height = size + "px";
+    d.style.left = ax - x + (ex - ax) * f - size / 2 - 1 + "px";  // from inside the bubble's 1 px border
+    d.style.top = ay - y + (ey - ay) * f - size / 2 - 1 + "px";
+  });
+}
+// while the list scrolls the bubble follows its card, and goes once the card is out of the visible list
+function thinkFollow() {
+  const b = document.querySelector(".say.think");
+  if (!b) return;
+  const card = [...document.querySelectorAll(".card[data-id]")].find(c => c.dataset.id === b.dataset.for);
+  const l = (card && card.closest("#list, #drop") || $("list")).getBoundingClientRect(), r = card && card.getBoundingClientRect();
+  if (!r || r.bottom < l.top || r.top > l.bottom) sayGone(); else placeThink(b, card);
+}
 
 // ----- tooltip (mindmap tooltip.md: opens on movement after ~400 ms, leaves by itself after ~3 s) -----
 let tip = null, tipTarget = null, tipJob = null, tipEnd = null, tipDone = null, lx = -1, ly = -1;
@@ -1555,7 +1629,7 @@ list.addEventListener("pointermove", () => { hovering = true; });
 list.addEventListener("pointerleave", () => { hovering = false; lastKey = null; render(); });
 // the keyboard leaving the list ends its hold (a move between two cards keeps it: render() checks again)
 list.addEventListener("focusout", letGo);
-list.addEventListener("scroll", () => { tipHide(); peekHide(); if (quiet) quiet = false; else closeMenu(); });
+list.addEventListener("scroll", () => { tipHide(); peekHide(); thinkFollow(); if (quiet) quiet = false; else closeMenu(); });
 $("drop").addEventListener("scroll", () => { tipHide(); peekHide(); sayGone(); closeMenu(); });
 // a window raised over the panel sends no pointerleave, so losing focus ends the hold as well;
 // on top it also closes the list under the strip, as a dropdown does

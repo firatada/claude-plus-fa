@@ -2866,6 +2866,12 @@ def ok(t):
     return {"t": t, "err": False}
 
 
+def opening(t, head):
+    """A session starting: the page shows head over the card's name in a bubble from the card's hero, which stays
+    until the card shows the session open; t is what a screen reader hears."""
+    return {"t": t, "err": False, "opening": head}
+
+
 def err(t):
     """A failure: it stays on screen until the next click or Esc, and says what to do about it."""
     return {"t": t, "err": True}
@@ -4626,7 +4632,7 @@ class Panel:
             except Exception as e:
                 return err("Could not start Claude (%s)." % e)
             save_record(path, rec)
-        return ok("Opening " + short(title, end="…") + " with Claude.")
+        return opening("Opening " + short(title, end="…") + " with Claude.", "Opening with Claude…")
 
     def return_window(self, sid):
         """The GLM or Codex window a card click raises while it still runs the session, else None."""
@@ -5912,7 +5918,7 @@ class Panel:
                 return None
             self.launched[sid] = time.time()
             open_session(s, resume_cmd(s) if not s["distro"] else None)
-        return ok("Opening " + short(s["title"], end="…"))
+        return opening("Opening " + short(s["title"], end="…"), "Opening…")
 
     def raise_return(self, sid):
         """A click on the card of a session still running on GLM or Codex: that window comes up (a second click
